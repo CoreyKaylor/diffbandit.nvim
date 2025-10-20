@@ -1,0 +1,11 @@
+First line
+Second line
+Line to delete 1
+Line to delete 2
+Line to delete 3
+Third line
+Fourth line
+Line to delete 4
+Line to delete 5
+Fifth line
+Sixth line

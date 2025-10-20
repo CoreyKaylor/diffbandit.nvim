@@ -1,4 +1,3 @@
-local config_mod = require("diffbandit.config")
 local state = require("diffbandit.state")
 local diff_mod = require("diffbandit.diff")
 local Session = require("diffbandit.session")

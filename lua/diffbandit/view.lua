@@ -8,13 +8,6 @@ local function pad_connector(str, width)
   return str .. string.rep(" ", width - display)
 end
 
-local function placeholder_line(char)
-  if not char or char == "" then
-    return ""
-  end
-  return string.rep(char, 3)
-end
-
 local function connector_for(chunk_type, position, total, cfg, width)
   local shapes = cfg[chunk_type] or cfg.change
   if not shapes then
@@ -47,34 +40,29 @@ function M.build(left_lines, right_lines, hunks, config)
   local prev_b_end = 0
 
   local function add_line(left_text, right_text, connector_text, meta)
-    local skip_left = meta.filler_left and meta.kind == "add"
-    local skip_right = meta.filler_right and meta.kind == "delete"
+    -- Only add actual content lines to each buffer
+    -- Filler rows exist only in connector view for alignment
+    local left_index = nil
+    local right_index = nil
 
-    local left_index
-    if skip_left then
-      left_index = (#left_view > 0) and #left_view or nil
-    else
-      left_view[#left_view + 1] = left_text
+    -- Add to left buffer if not a filler (empty lines are valid content)
+    if not meta.filler_left then
+      left_view[#left_view + 1] = left_text or ""
       left_index = #left_view
     end
 
-    local right_index
-    if skip_right then
-      right_index = (#right_view > 0) and #right_view or nil
-    else
-      right_view[#right_view + 1] = right_text
+    -- Add to right buffer if not a filler (empty lines are valid content)
+    if not meta.filler_right then
+      right_view[#right_view + 1] = right_text or ""
       right_index = #right_view
     end
 
+    -- Connector always has full aligned view
     connector_view[#connector_view + 1] = pad_connector(connector_text or connectors_cfg.context or "", connector_width)
     line_meta[#line_meta + 1] = meta
 
     meta.left_index = left_index
     meta.right_index = right_index
-  end
-
-  local function next_placeholder()
-    return placeholder_line(config.ui.placeholder_char)
   end
 
   for _, h in ipairs(hunks) do
@@ -145,10 +133,46 @@ function M.build(left_lines, right_lines, hunks, config)
     local left_line_idx = h.left.start
     local right_line_idx = h.right.start
 
+    -- Heuristic realignment inside change hunks when counts differ: match most-similar
+    -- right line to the (single) left line to avoid blue highlighting on unrelated added lines.
+    local right_order = nil
+    if h.type == "change" and h.left.count == 1 and h.right.count > 1 then
+      local function common_prefix_len(a, b)
+        if not a or not b then return 0 end
+        local maxp = math.min(#a, #b)
+        local p = 0
+        while p < maxp do
+          local ca = a:sub(p + 1, p + 1)
+          local cb = b:sub(p + 1, p + 1)
+          if ca ~= cb then break end
+          p = p + 1
+        end
+        return p
+      end
+      local left_val = left_lines[h.left.start] or ""
+      local best_j = nil
+      local best_score = -1
+      for j = h.right.start, h.right.start + h.right.count - 1 do
+        local r = right_lines[j] or ""
+        local score = common_prefix_len(left_val, r)
+        if score > best_score then
+          best_score = score
+          best_j = j
+        end
+      end
+      if best_j then
+        right_order = { best_j }
+        for j = h.right.start, h.right.start + h.right.count - 1 do
+          if j ~= best_j then
+            right_order[#right_order + 1] = j
+          end
+        end
+      end
+    end
+
     for i = 1, max_lines do
-      -- Start with empty strings - only add placeholder for specific positions
-      local left_text = ""
-      local right_text = ""
+      local left_text
+      local right_text
       local left_line_num
       local right_line_num
       local filler_left = true
@@ -164,38 +188,62 @@ function M.build(left_lines, right_lines, hunks, config)
       end
 
       if i <= h.right.count then
-        right_text = right_lines[right_line_idx] or ""
-        right_line_num = right_line_idx
-        right_line_idx = right_line_idx + 1
+        if right_order then
+          local rj = right_order[i]
+          right_text = right_lines[rj] or ""
+          right_line_num = rj
+        else
+          right_text = right_lines[right_line_idx] or ""
+          right_line_num = right_line_idx
+          right_line_idx = right_line_idx + 1
+        end
         filler_right = false
       else
         right_text = ""
       end
 
-      local connector_text = connector_for(h.type, i, max_lines, connectors_cfg, connector_width)
+      -- For add/delete, let session.lua path rendering handle connector symbols
+      -- Only use connector_for for change hunks
+      local connector_text
+      if h.type == "add" or h.type == "delete" then
+        connector_text = string.rep(" ", connector_width)
+      else
+        connector_text = connector_for(h.type, i, max_lines, connectors_cfg, connector_width)
+      end
+
+      -- Reclassify extra rows inside change hunks as add/delete so
+      -- right-only rows get proper green backgrounds and left-only rows get delete.
+      local kind = h.type
+      if h.type == "change" then
+        if i > h.left.count and i <= h.right.count then
+          kind = "add"
+        elseif i > h.right.count and i <= h.left.count then
+          kind = "delete"
+        end
+      end
+
+      -- Keep change classification at the line level; intra-line coloring decides blue/green mix.
 
       add_line(left_text, right_text, connector_text, {
-        kind = h.type,
+        kind = kind,
         chunk = h.index,
         left_line = left_line_num,
         right_line = right_line_num,
         filler_left = filler_left,
         filler_right = filler_right,
-        position = i,
-        total = max_lines,
       })
     end
 
     chunk.display_end = #line_meta
 
+    -- Mark origin rows for session.lua to render underlines
+    -- Don't set connector symbols here - let session.lua path rendering handle it
     if chunk.type == "add" and chunk.display_start > 1 then
-      connector_view[chunk.display_start - 1] = pad_connector(connectors_cfg.origin_add or connectors_cfg.context or "", connector_width)
       local meta = line_meta[chunk.display_start - 1]
       if meta then
         meta.origin = "add"
       end
     elseif chunk.type == "delete" and chunk.display_start > 1 then
-      connector_view[chunk.display_start - 1] = pad_connector(connectors_cfg.origin_delete or connectors_cfg.context or "", connector_width)
       local meta = line_meta[chunk.display_start - 1]
       if meta then
         meta.origin = "delete"

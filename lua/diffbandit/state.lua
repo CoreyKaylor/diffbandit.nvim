@@ -28,8 +28,4 @@ function State.unregister(tabpage)
   State.sessions[tabpage] = nil
 end
 
-function State.current_session()
-  return State.sessions[vim.api.nvim_get_current_tabpage()]
-end
-
 return State

@@ -1,6 +1,7 @@
 local diff_mod = require("diffbandit.diff")
 local view_builder = require("diffbandit.view")
 local state = require("diffbandit.state")
+local paths_mod = require("diffbandit.paths")
 
 local Session = {}
 Session.__index = Session
@@ -21,8 +22,9 @@ local function format_line_number_left(num, width)
   if not num then
     return string.rep(" ", width)
   end
-  -- Return number without trailing padding to avoid excessive spacing
-  return tostring(num)
+  -- Left-align number (pad on right) so numbers expand rightward toward center
+  local fmt = string.format("%%-%dd", width)
+  return string.format(fmt, num)
 end
 
 local function build_display_lines(session)
@@ -60,8 +62,9 @@ function Session.start(sources, config)
   self.hunks = hunks
   self.view = view
   self.current_chunk = view.chunks[1] and 1 or 0
-  self.left_number_width = digits_of(#sources.left.lines)
+  self.left_number_width = math.max(2, digits_of(#sources.left.lines))
   self.right_number_width = digits_of(#sources.right.lines)
+  self.right_number_padding = self.config.ui.right_number_padding or 2
   self.ns = vim.api.nvim_create_namespace("DiffBanditHighlights" .. self.id)
   self.active_ns = vim.api.nvim_create_namespace("DiffBanditActive" .. self.id)
   self.path_ns = vim.api.nvim_create_namespace("DiffBanditConnectorPaths" .. self.id)
@@ -75,9 +78,9 @@ function Session.start(sources, config)
       self.connector_core_width = width
     end
   end
-  -- Gutter width accounts for: left_number + connector + right_number
-  -- Total: left_num + right_num + connector
-  self.gutter_width = self.left_number_width + self.right_number_width + self.connector_core_width
+  -- Gutter width: left_num + connector + right_num + right_padding
+  self.gutter_width = self.left_number_width + self.connector_core_width
+    + self.right_number_width + self.right_number_padding
 
   self:open_layout()
   self:render()
@@ -100,6 +103,7 @@ function Session:open_layout()
   self.tabpage = vim.api.nvim_get_current_tabpage()
   self.tabnr = vim.api.nvim_tabpage_get_number(self.tabpage)
 
+  -- Create buffers with basic options first (avoid bufhidden=wipe until in windows)
   local left_buf = vim.api.nvim_create_buf(false, true)
   local connector_buf = vim.api.nvim_create_buf(false, true)
   local right_buf = vim.api.nvim_create_buf(false, true)
@@ -108,9 +112,9 @@ function Session:open_layout()
   self.connector_buf = connector_buf
   self.right_buf = right_buf
 
+  -- Set non-destructive options first
   set_buffer_options(left_buf, {
     buftype = "nofile",
-    bufhidden = "wipe",
     swapfile = false,
     modifiable = false,
     filetype = self.left.filetype,
@@ -118,7 +122,6 @@ function Session:open_layout()
 
   set_buffer_options(right_buf, {
     buftype = "nofile",
-    bufhidden = "wipe",
     swapfile = false,
     modifiable = false,
     filetype = self.right.filetype,
@@ -126,29 +129,29 @@ function Session:open_layout()
 
   set_buffer_options(connector_buf, {
     buftype = "nofile",
-    bufhidden = "wipe",
     swapfile = false,
     modifiable = false,
   })
 
-  vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), left_buf)
+  -- Put buffers in windows BEFORE setting bufhidden=wipe
+  -- We want: LEFT (left_buf) | MIDDLE (connector_buf) | RIGHT (right_buf)
+  -- Use explicit split commands to be independent of user's splitright setting
 
-  vim.cmd("vsplit")
-  vim.cmd("wincmd h")
-
-  vim.cmd("vsplit")
-  local connector_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(connector_win, connector_buf)
-  vim.api.nvim_win_set_width(connector_win, self.gutter_width)
-
-  vim.cmd("wincmd h")
+  -- Start: initial window will become the LEFT pane
   local left_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(left_win, left_buf)
 
-  vim.cmd("wincmd l")
-  vim.cmd("wincmd l")
+  -- Create RIGHT window (rightbelow ensures it goes to the right regardless of splitright)
+  vim.cmd("rightbelow vsplit")
   local right_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(right_win, right_buf)
+
+  -- Go back to left window and create MIDDLE window to its right
+  vim.api.nvim_set_current_win(left_win)
+  vim.cmd("rightbelow vsplit")
+  local connector_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(connector_win, connector_buf)
+  vim.api.nvim_win_set_width(connector_win, self.gutter_width)
 
   self.left_win = left_win
   self.connector_win = connector_win
@@ -181,12 +184,19 @@ function Session:open_layout()
     winhl = "VertSplit:VertSplit,CursorLine:DiffBanditCursorLine",
   })
 
+  -- Now that all buffers are displayed in windows, set bufhidden=wipe for cleanup
+  set_buffer_options(left_buf, { bufhidden = "wipe" })
+  set_buffer_options(connector_buf, { bufhidden = "wipe" })
+  set_buffer_options(right_buf, { bufhidden = "wipe" })
+
   -- Set vertical split character to thin line
   vim.opt.fillchars:append({ vert = "│" })
 
   vim.api.nvim_set_current_win(self.left_win)
 
-  self.title = string.format("DiffBandit: %s ↔ %s", self.left.label or self.left.path or "", self.right.label or self.right.path or "")
+  local left_name = self.left.label or self.left.path or ""
+  local right_name = self.right.label or self.right.path or ""
+  self.title = string.format("DiffBandit: %s ↔ %s", left_name, right_name)
   vim.api.nvim_tabpage_set_var(self.tabpage, "diffbandit_title", self.title)
   vim.api.nvim_set_option_value("showtabline", 2, { scope = "global" })
 end
@@ -269,19 +279,18 @@ function Session:setup_keymaps()
   buffer_maps(self.connector_buf)
 end
 
-function Session:sync_scroll_from_left()
-  if self.disposed or not vim.api.nvim_win_is_valid(self.left_win) then
+local function sync_scroll(self, source_win, source_key, target_win, target_key)
+  if self.disposed or not vim.api.nvim_win_is_valid(source_win) then
     return
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(self.left_win)
-  local left_line = cursor[1]  -- 1-indexed
+  local cursor = vim.api.nvim_win_get_cursor(source_win)
+  local source_line = cursor[1]
   local col = cursor[2]
 
-  -- Find the metadata entry for this left buffer line
   local target_meta = nil
-  for idx, meta in ipairs(self.view.line_meta) do
-    if meta.left_index == left_line then
+  for _, meta in ipairs(self.view.line_meta) do
+    if meta[source_key] == source_line then
       target_meta = meta
       break
     end
@@ -291,52 +300,22 @@ function Session:sync_scroll_from_left()
     return
   end
 
-  -- Sync to right window if it has a corresponding line
   self.syncing_scroll = true
-  if target_meta.right_index and vim.api.nvim_win_is_valid(self.right_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.right_win, { target_meta.right_index, col })
+  if target_meta[target_key] and vim.api.nvim_win_is_valid(target_win) then
+    pcall(vim.api.nvim_win_set_cursor, target_win, { target_meta[target_key], col })
   end
-
-  -- Sync connector window to the same vertical position as the left buffer
   if vim.api.nvim_win_is_valid(self.connector_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.connector_win, { left_line, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.connector_win, { source_line, 0 })
   end
   self.syncing_scroll = false
 end
 
+function Session:sync_scroll_from_left()
+  sync_scroll(self, self.left_win, "left_index", self.right_win, "right_index")
+end
+
 function Session:sync_scroll_from_right()
-  if self.disposed or not vim.api.nvim_win_is_valid(self.right_win) then
-    return
-  end
-
-  local cursor = vim.api.nvim_win_get_cursor(self.right_win)
-  local right_line = cursor[1]  -- 1-indexed
-  local col = cursor[2]
-
-  -- Find the metadata entry for this right buffer line
-  local target_meta = nil
-  for idx, meta in ipairs(self.view.line_meta) do
-    if meta.right_index == right_line then
-      target_meta = meta
-      break
-    end
-  end
-
-  if not target_meta then
-    return
-  end
-
-  -- Sync to left window if it has a corresponding line
-  self.syncing_scroll = true
-  if target_meta.left_index and vim.api.nvim_win_is_valid(self.left_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.left_win, { target_meta.left_index, col })
-  end
-
-  -- Sync connector window to the same vertical position as the right buffer
-  if vim.api.nvim_win_is_valid(self.connector_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.connector_win, { right_line, 0 })
-  end
-  self.syncing_scroll = false
+  sync_scroll(self, self.right_win, "right_index", self.left_win, "left_index")
 end
 
 function Session:dispose()
@@ -367,57 +346,46 @@ function Session:close()
   end
 end
 
+-- Highlight lookup tables for left/right/connector panes
+local HIGHLIGHT_LEFT = {
+  context = "DiffBanditContext",
+  add = "DiffBanditAddLeft",
+  delete = "DiffBanditDelete",
+  change = { default = "DiffBanditChangeLeft", filler = "DiffBanditGap" },
+}
+
+local HIGHLIGHT_RIGHT = {
+  context = "DiffBanditContext",
+  add = { default = "DiffBanditAdd", filler = "DiffBanditGap" },
+  delete = { default = "DiffBanditChangeRight", filler = "DiffBanditGap" },
+  change = { default = "DiffBanditChangeRight", filler = "DiffBanditGap" },
+}
+
+local HIGHLIGHT_CONNECTOR = {
+  context = "DiffBanditConnectorContext",
+  add = "DiffBanditConnectorAdd",
+  delete = "DiffBanditConnectorDelete",
+  change = "DiffBanditConnectorChange",
+}
+
+local function get_highlight(tbl, meta, filler_key)
+  local entry = tbl[meta.kind]
+  if type(entry) == "table" then
+    return meta[filler_key] and entry.filler or entry.default
+  end
+  return entry
+end
+
 local function highlight_for_left(meta)
-  if meta.kind == "context" then
-    return "DiffBanditContext"
-  end
-  if meta.kind == "add" then
-    return "DiffBanditAddLeft"
-  end
-  if meta.kind == "delete" then
-    return "DiffBanditDelete"
-  end
-  if meta.kind == "change" then
-    return meta.filler_left and "DiffBanditGap" or "DiffBanditChangeLeft"
-  end
-  return nil
+  return get_highlight(HIGHLIGHT_LEFT, meta, "filler_left")
 end
 
 local function highlight_for_right(meta)
-  if meta.kind == "context" then
-    return "DiffBanditContext"
-  end
-  if meta.kind == "add" then
-    return meta.filler_right and "DiffBanditGap" or "DiffBanditAdd"
-  end
-  if meta.kind == "delete" then
-    if meta.filler_right then
-      return "DiffBanditGap"
-    end
-    return "DiffBanditChangeRight"
-  end
-  if meta.kind == "change" then
-    return meta.filler_right and "DiffBanditGap" or "DiffBanditChangeRight"
-  end
-  return nil
+  return get_highlight(HIGHLIGHT_RIGHT, meta, "filler_right")
 end
 
 local function highlight_for_connector(meta)
-  if meta.kind == "context" then
-    if meta.origin == "add" then
-      return "DiffBanditConnectorAdd"
-    elseif meta.origin == "delete" then
-      return "DiffBanditConnectorDelete"
-    end
-    return "DiffBanditConnectorContext"
-  end
-  if meta.kind == "add" then
-    return "DiffBanditConnectorAdd"
-  end
-  if meta.kind == "delete" then
-    return "DiffBanditConnectorDelete"
-  end
-  return "DiffBanditConnectorChange"
+  return HIGHLIGHT_CONNECTOR[meta.kind] or "DiffBanditConnectorChange"
 end
 
 function Session:render()
@@ -427,102 +395,60 @@ function Session:render()
 
   local left_lines, right_lines = build_display_lines(self)
 
-  -- Precompute connector routing lanes and required core width
-  local paths = {}
-  local function add_path(kind, top_row, start_row, end_row)
-    if top_row and start_row and end_row and start_row <= end_row then
-      paths[#paths + 1] = { kind = kind, top = top_row, start_row = start_row, end_row = end_row, lane = 0 }
-    end
-  end
-
-  -- Determine per-chunk path spans
-  for _, chunk in ipairs(self.view.chunks) do
-    if chunk.type == "add" then
-      local origin_meta = self.view.line_meta[chunk.display_start - 1]
-      local top_row = origin_meta and (origin_meta.left_index or origin_meta.right_index)
-      local s, e = nil, nil
-      for i = chunk.display_start, chunk.display_end do
-        local m = self.view.line_meta[i]
-        if m and m.kind == "add" then
-          local row = m.right_index or m.left_index
-          if row then
-            s = s and math.min(s, row) or row
-            e = e and math.max(e, row) or row
-          end
-        end
-      end
-      add_path("add", top_row, s, e)
-    elseif chunk.type == "delete" then
-      local origin_meta = self.view.line_meta[chunk.display_start - 1]
-      local top_row = origin_meta and (origin_meta.right_index or origin_meta.left_index)
-      local s, e = nil, nil
-      for i = chunk.display_start, chunk.display_end do
-        local m = self.view.line_meta[i]
-        if m and m.kind == "delete" then
-          local row = m.left_index or m.right_index
-          if row then
-            s = s and math.min(s, row) or row
-            e = e and math.max(e, row) or row
-          end
-        end
-      end
-      add_path("delete", top_row, s, e)
-    elseif chunk.type == "change" then
-      local s, e = nil, nil
-      for i = chunk.display_start, chunk.display_end do
-        local m = self.view.line_meta[i]
-        if m and m.kind == "change" then
-          local row = m.left_index or m.right_index
-          if row then
-            s = s and math.min(s, row) or row
-            e = e and math.max(e, row) or row
-          end
-        end
-      end
-      if s and e then
-        paths[#paths + 1] = { kind = "change", start_row = s, end_row = e }
-      end
-    end
-  end
-
-  -- Lane allocation for add/delete vertical paths
-  table.sort(paths, function(a, b)
-    local as = a.start_row or 0
-    local bs = b.start_row or 0
-    return as < bs
-  end)
-  local lanes = {} -- each lane keeps last end_row
+  -- Compute connector routing lanes using extracted paths module
+  local paths = paths_mod.compute_paths(self.view.chunks, self.view.line_meta)
   local max_lane = 0
   for _, p in ipairs(paths) do
-    if p.kind == "add" or p.kind == "delete" then
-      local assigned = false
-      for li = 1, #lanes do
-        if (lanes[li] or 0) < (p.start_row or 0) then
-          p.lane = li
-          lanes[li] = p.end_row or lanes[li]
-          assigned = true
-          break
-        end
-      end
-      if not assigned then
-        p.lane = #lanes + 1
-        lanes[#lanes + 1] = p.end_row or 0
-      end
-      if p.lane > max_lane then
-        max_lane = p.lane
-      end
+    if p.lane and p.lane > max_lane then
+      max_lane = p.lane
     end
   end
 
-  -- Required connector core width: one column per lane with one space between = (lanes*2-1)
-  local required_core = max_lane > 0 and (max_lane * 2 - 1) or self.connector_core_width
+  -- Build active_vertical_bars[row][lane] tracking which lanes have active bars at each row
+  local active_vertical_bars = paths_mod.compute_active_bars(paths)
+
+  -- Required connector core width: lanes + glyph column + spacing + indentation buffer
+  -- Formula ensures enough room for:
+  -- - Lane bars (2 chars each)
+  -- - Glyph indentation (can shift right by 2 chars per nesting level)
+  -- - Space between rightmost glyph and right line numbers (at least 2 chars)
+  local required_core = self.connector_core_width
+  if max_lane > 0 then
+    -- Each lane needs 3 chars, plus 6 for base glyph area and spacing
+    required_core = math.max(required_core, (max_lane * 3) + 6)
+  end
   if required_core > self.connector_core_width then
     self.connector_core_width = required_core
-    self.gutter_width = self.left_number_width + self.right_number_width + self.connector_core_width
+    self.gutter_width = self.left_number_width + self.connector_core_width
+      + self.right_number_width + self.right_number_padding
     if self.connector_win and vim.api.nvim_win_is_valid(self.connector_win) then
       vim.api.nvim_win_set_width(self.connector_win, self.gutter_width)
     end
   end
+
+  -- Define positioning functions now that connector_core_width is finalized
+  -- Glyphs are positioned per lane with indentation; vertical bars (rails) sit to the left
+  local rail_spacing = 1
+  local glyph_base_col = self.left_number_width + self.connector_core_width - 1
+  local function rail_col_for_lane(lane)
+    local idx = math.max(0, lane - 1)
+    return glyph_base_col - (idx * (rail_spacing + 1)) - 1
+  end
+  local function lane_col(lane)
+    return rail_col_for_lane(lane)
+  end
+
+  -- Compute underline data using extracted helper
+  local underline_layout = {
+    left_number_width = self.left_number_width,
+    connector_core_width = self.connector_core_width,
+    rail_spacing = 1,
+  }
+  local underline_data = paths_mod.compute_underlines(paths, active_vertical_bars, underline_layout)
+  local origin_glyph_cols = underline_data.origin_glyph_cols
+  local origin_bar_cols = underline_data.origin_bar_cols
+  local origin_has_bar = underline_data.origin_has_bar
+  local tail_underlines = underline_data.tail_underlines
 
   -- Make connector buffer as tall as the maximum of left and right buffers
   local connector_height = math.max(#left_lines, #right_lines)
@@ -534,8 +460,16 @@ function Session:render()
 
   -- Store gutter layout information for each metadata entry
   -- We'll use this for positioning line numbers and glyphs
+  -- Ensure connector_text is always padded to full connector_core_width for alignment
   for idx, meta in ipairs(self.view.line_meta) do
-    meta.connector_text = self.view.connectors[idx] or string.rep(" ", self.connector_core_width)
+    local raw_connector = self.view.connectors[idx] or ""
+    local conn_width = vim.fn.strdisplaywidth(raw_connector)
+    local padding_needed = self.connector_core_width - conn_width
+    if padding_needed > 0 then
+      meta.connector_text = raw_connector .. string.rep(" ", padding_needed)
+    else
+      meta.connector_text = raw_connector
+    end
   end
 
   -- Left and right buffers now have different line counts
@@ -555,22 +489,19 @@ function Session:render()
   self.extmark_ns = self.extmark_ns or vim.api.nvim_create_namespace("DiffBanditExtmarks" .. self.id)
   vim.api.nvim_buf_clear_namespace(self.left_buf, self.extmark_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.right_buf, self.extmark_ns, 0, -1)
+  vim.api.nvim_buf_clear_namespace(self.connector_buf, self.extmark_ns, 0, -1)
 
   -- Clear namespace for line number virtual text
   self.linenum_ns = self.linenum_ns or vim.api.nvim_create_namespace("DiffBanditLineNums" .. self.id)
   vim.api.nvim_buf_clear_namespace(self.connector_buf, self.linenum_ns, 0, -1)
 
-  -- Track chunk edge rows for separator rendering
-  local chunk_edges = {}
-
   -- Apply highlights to left and right buffers (pane-wide backgrounds)
-  for idx, meta in ipairs(self.view.line_meta) do
+  for _, meta in ipairs(self.view.line_meta) do
     local left_hl = highlight_for_left(meta)
     local right_hl = highlight_for_right(meta)
     local final_left_hl = left_hl
     local final_right_hl = right_hl
 
-    -- Filler line visual flow: match IntelliJ's subtle separator approach
     if meta.filler_left and meta.kind ~= "context" then
       final_left_hl = "DiffBanditPlaceholder"
     end
@@ -599,75 +530,139 @@ function Session:render()
     end
   end
 
-  -- Apply connector backgrounds and position line numbers; ensure numbers appear on their own rows
-  -- For add/delete, use split backgrounds (left vs right portions)
-  local core_start_col_base = self.left_number_width  -- left_num
-  local right_col_base = core_start_col_base + self.connector_core_width
+   -- Apply connector backgrounds and position line numbers; ensure numbers appear on their own rows
+   -- For add/delete, use split backgrounds (left vs right portions)
+   local core_start_col_base = self.left_number_width  -- left_num
+   local right_col_base = core_start_col_base + self.connector_core_width
 
-  for idx, meta in ipairs(self.view.line_meta) do
-    local connector_hl = highlight_for_connector(meta)
-    local connector_bg_hl = connector_hl or "DiffBanditConnectorContext"
-    local same_row = meta.left_index and meta.right_index and meta.left_index == meta.right_index
-    if same_row then
-      local row = meta.left_index - 1
+   for idx, meta in ipairs(self.view.line_meta) do
+     local connector_hl = highlight_for_connector(meta)
+     local connector_bg_hl = connector_hl or "DiffBanditConnectorContext"
+     local same_row = meta.left_index and meta.right_index and meta.left_index == meta.right_index
+     if same_row then
+       local row = meta.left_index - 1
 
-      -- Split background for add/delete to match IntelliJ's asymmetric gutter coloring
-      if meta.kind == "add" then
-        -- Normal background on left portion, green background on right portion (from right number onwards)
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorContext", row, 0, right_col_base)
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, row, right_col_base, -1)
-      elseif meta.kind == "delete" then
-        -- Delete background on left portion, normal background on right portion
-        local left_end_col = core_start_col_base + self.connector_core_width
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, row, 0, left_end_col)
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorContext", row, left_end_col, -1)
-      else
-        -- Change and context: full-line background
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, row, 0, -1)
-      end
+       local buf = self.connector_buf
+       local ctx_hl = "DiffBanditConnectorContext"
+       if meta.kind == "add" then
+         -- Green background starts at right line number column
+         vim.api.nvim_buf_add_highlight(buf, self.ns, ctx_hl, row, 0, right_col_base)
+         vim.api.nvim_buf_add_highlight(buf, self.ns, connector_bg_hl, row, right_col_base, -1)
+       elseif meta.kind == "delete" then
+         -- Delete background on left portion, normal background on right portion
+         local glyph_pos = core_start_col_base + 2
+         vim.api.nvim_buf_add_highlight(buf, self.ns, connector_bg_hl, row, 0, glyph_pos)
+         vim.api.nvim_buf_add_highlight(buf, self.ns, ctx_hl, row, glyph_pos, -1)
+       else
+         -- Change and context: full-line background
+         vim.api.nvim_buf_add_highlight(buf, self.ns, connector_bg_hl, row, 0, -1)
+       end
 
       local connector_text = meta.connector_text or string.rep(" ", self.connector_core_width)
-      local left_number = meta.left_line and format_line_number(meta.left_line, self.left_number_width) or string.rep(" ", self.left_number_width)
-      local right_number = meta.right_line and format_line_number_left(meta.right_line, self.right_number_width) or string.rep(" ", self.right_number_width)
+      local lw, rw = self.left_number_width, self.right_number_width
+      local left_number = meta.left_line and format_line_number(meta.left_line, lw)
+        or string.rep(" ", lw)
+      local right_number = meta.right_line and format_line_number_left(meta.right_line, rw)
+        or string.rep(" ", rw)
 
       -- Use background-aware highlights for same-row add/delete split backgrounds
-      local left_num_hl = (meta.kind == "delete") and "DiffBanditLineNumberLeftDelete" or "DiffBanditLineNumberLeft"
+      -- For origin rows with additions, use underlined line number highlight
+      local left_num_hl
+      if meta.origin == "add" then
+        left_num_hl = "DiffBanditLineNumberLeftUnderline"
+      elseif meta.kind == "delete" then
+        left_num_hl = "DiffBanditLineNumberLeftDelete"
+      else
+        left_num_hl = "DiffBanditLineNumberLeft"
+      end
       local right_num_hl = (meta.kind == "add") and "DiffBanditLineNumberRightAdd" or "DiffBanditLineNumberRight"
 
+      -- For origin rows, use ▁ characters for underline with correct fg color
+      -- Underline extent depends on whether triangle is adjacent or further down
       local combined_virt = {
         {left_number, left_num_hl},
-        {connector_text, "DiffBanditConnectorText"},
-        {right_number, right_num_hl},
       }
+      if meta.origin == "add" then
+        -- Underline extends to just before the vertical bar (or to glyph if no bar)
+        local underline_width
+        if origin_has_bar[idx] then
+          -- Stop just before the bar column
+          underline_width = origin_bar_cols[idx] - self.left_number_width
+        else
+          -- No bar, extend to glyph/triangle position
+          underline_width = origin_glyph_cols[idx] - self.left_number_width
+        end
+        underline_width = math.max(1, underline_width)
+        -- Pad to full connector width to keep right number aligned
+        local padding_width = self.connector_core_width - underline_width
+        table.insert(combined_virt, {string.rep("▁", underline_width), "DiffBanditAddLeftSeparatorConnector"})
+        if padding_width > 0 then
+          table.insert(combined_virt, {string.rep(" ", padding_width), "DiffBanditConnectorText"})
+        end
+      else
+        table.insert(combined_virt, {connector_text, "DiffBanditConnectorText"})
+      end
+      table.insert(combined_virt, {right_number, right_num_hl})
       vim.api.nvim_buf_set_extmark(self.connector_buf, self.linenum_ns, row, 0, {
         virt_text = combined_virt,
         virt_text_pos = "overlay",
       })
     else
       -- Separate rows for left and right numbers
-      if meta.left_index then
-        local left_row = meta.left_index - 1
+      -- Use display row (idx) for connector buffer positioning, not buffer-specific indices
+      local display_row = idx - 1  -- 0-indexed display row for connector buffer
 
+      local cbuf = self.connector_buf
+      local ctx_hl = "DiffBanditConnectorContext"
+      if meta.left_index then
         -- For deletions on separate rows, apply delete background only on left portion
         if meta.kind == "delete" then
           local left_end_col = core_start_col_base + self.connector_core_width
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, left_row, 0, left_end_col)
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorContext", left_row, left_end_col, -1)
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, connector_bg_hl, display_row, 0, left_end_col)
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, ctx_hl, display_row, left_end_col, -1)
         elseif meta.kind == "add" then
-          -- For additions, left rows get normal background (no colored portion on left side)
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorContext", left_row, 0, -1)
+          -- For additions, left rows get normal background
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, ctx_hl, display_row, 0, -1)
         else
           -- Change and context: full-line background
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, left_row, 0, -1)
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, connector_bg_hl, display_row, 0, -1)
         end
-        local left_number = meta.left_line and format_line_number(meta.left_line, self.left_number_width) or string.rep(" ", self.left_number_width)
+        local lw = self.left_number_width
+        local left_number = meta.left_line and format_line_number(meta.left_line, lw)
+          or string.rep(" ", lw)
 
         -- Use background-aware highlights for deletions to show delete background
-        local left_num_hl = (meta.kind == "delete") and "DiffBanditLineNumberLeftDelete" or "DiffBanditLineNumberLeft"
+        -- For origin rows with additions, use underlined line number highlight
+        local left_num_hl
+        if meta.origin == "add" then
+          left_num_hl = "DiffBanditLineNumberLeftUnderline"
+        elseif meta.kind == "delete" then
+          left_num_hl = "DiffBanditLineNumberLeftDelete"
+        else
+          left_num_hl = "DiffBanditLineNumberLeft"
+        end
 
         local left_virt = {
           {left_number, left_num_hl},
         }
+
+        -- For origin rows, add ▁ characters to just before the vertical bar
+        if meta.origin == "add" then
+          local underline_width
+          if origin_has_bar[idx] then
+            -- Stop just before the bar column
+            underline_width = origin_bar_cols[idx] - self.left_number_width
+          else
+            -- No bar, extend to glyph/triangle position
+            underline_width = origin_glyph_cols[idx] - self.left_number_width
+          end
+          underline_width = math.max(1, underline_width)
+          local underline_hl = "DiffBanditAddLeftSeparatorConnector"
+          table.insert(left_virt, {string.rep("▁", underline_width), underline_hl})
+        end
+
+        -- Place left number at row matching left file line number (not display row)
+        local left_row = meta.left_line - 1  -- 0-indexed row for left line number
         vim.api.nvim_buf_set_extmark(self.connector_buf, self.linenum_ns, left_row, 0, {
           virt_text = left_virt,
           virt_text_pos = "overlay",
@@ -675,30 +670,31 @@ function Session:render()
       end
 
       if meta.right_index then
-        local right_row = meta.right_index - 1
-
         -- For additions on separate rows, apply green background only on right portion
         if meta.kind == "add" then
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorContext", right_row, 0, right_col_base)
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, right_row, right_col_base, -1)
+          -- Green background starts at right line number column
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, ctx_hl, display_row, 0, right_col_base)
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, connector_bg_hl, display_row, right_col_base, -1)
         elseif meta.kind == "delete" then
-          -- For deletions, right rows get normal background (no colored portion on right side)
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorContext", right_row, 0, -1)
+          -- For deletions, right rows get normal background
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, ctx_hl, display_row, 0, -1)
         else
           -- Change and context: full-line background
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, right_row, 0, -1)
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, connector_bg_hl, display_row, 0, -1)
         end
-        local right_number = meta.right_line and format_line_number_left(meta.right_line, self.right_number_width) or string.rep(" ", self.right_number_width)
+        local rw = self.right_number_width
+        local right_number = meta.right_line and format_line_number_left(meta.right_line, rw)
+          or string.rep(" ", rw)
 
         -- Use background-aware highlights for additions to show green background
         local right_num_hl = (meta.kind == "add") and "DiffBanditLineNumberRightAdd" or "DiffBanditLineNumberRight"
 
         -- start col for right number: left_num + core
-        local right_col_base = self.left_number_width + self.connector_core_width
+        local right_start_col = self.left_number_width + self.connector_core_width
         local right_virt = {
           {right_number, right_num_hl},
         }
-        vim.api.nvim_buf_set_extmark(self.connector_buf, self.linenum_ns, right_row, right_col_base, {
+        vim.api.nvim_buf_set_extmark(self.connector_buf, self.linenum_ns, display_row, right_start_col, {
           virt_text = right_virt,
           virt_text_pos = "overlay",
         })
@@ -706,56 +702,14 @@ function Session:render()
     end
   end
 
-  -- Add full-width backgrounds using extmarks and capture separator anchors
-  for idx, meta in ipairs(self.view.line_meta) do
-    local left_hl = highlight_for_left(meta)
-    local right_hl = highlight_for_right(meta)
-    local final_left_hl = left_hl
-    local final_right_hl = right_hl
-
-    if meta.filler_left and meta.kind ~= "context" then
-      final_left_hl = "DiffBanditPlaceholder"
-    end
-
-    if meta.filler_right and meta.kind ~= "context" then
-      final_right_hl = "DiffBanditPlaceholder"
-    end
-
-    local skip_right_line_hl = (meta.kind == "change" and not meta.filler_right)
-
-    if final_left_hl and final_left_hl ~= "DiffBanditContext" and meta.left_index then
-      vim.api.nvim_buf_set_extmark(self.left_buf, self.extmark_ns, meta.left_index - 1, 0, {
-        line_hl_group = final_left_hl,
-        hl_mode = "combine",
-      })
-    end
-
-    if final_right_hl and final_right_hl ~= "DiffBanditContext" and meta.right_index and not skip_right_line_hl then
-      vim.api.nvim_buf_set_extmark(self.right_buf, self.extmark_ns, meta.right_index - 1, 0, {
-        line_hl_group = final_right_hl,
-        hl_mode = "combine",
-      })
-    end
-
-    if meta.kind == "add" then
-      chunk_edges[meta.chunk] = chunk_edges[meta.chunk] or {}
-      local edge = chunk_edges[meta.chunk]
-      if meta.left_index then
-        edge.add_left = edge.add_left or {}
-        edge.add_left[#edge.add_left + 1] = meta.left_index - 1
-      end
-    elseif meta.kind == "delete" then
-      chunk_edges[meta.chunk] = chunk_edges[meta.chunk] or {}
-      local edge = chunk_edges[meta.chunk]
-      if meta.right_index then
-        edge.delete_right = edge.delete_right or {}
-        edge.delete_right[#edge.delete_right + 1] = meta.right_index - 1
-      end
-    elseif meta.kind == "change" and meta.left_index and meta.right_index then
+  -- Apply change/add-specific highlighting with intra-line spans
+  for _, meta in ipairs(self.view.line_meta) do
+    local is_change = meta.kind == "change" and meta.left_index and meta.right_index
+    local not_filler = not meta.filler_left and not meta.filler_right
+    if is_change and not_filler then
       local left_line = self.left.lines and self.left.lines[meta.left_line] or nil
       local right_line = self.right.lines and self.right.lines[meta.right_line] or nil
       if left_line and right_line then
-        local diff_mod = require("diffbandit.diff")
         local spans = diff_mod.changed_spans(left_line, right_line)
         local row_l = meta.left_index - 1
         local row_r = meta.right_index - 1
@@ -773,77 +727,135 @@ function Session:render()
 
         local right_line_len = spans.right_len or #right_line
         local change_end = spans.change_end or spans.prefix_len
+        local has_change = spans.right_changes and #spans.right_changes > 0
+        local is_misaligned = (spans.prefix_len or 0) == 0
 
-        -- Change segment (blue): show even for pure additions, up to add_start
-        local add_start = spans.add_start and (spans.add_start - 1) or change_end
-        local blue_end = math.min(add_start, right_line_len)
-        if blue_end > 0 then
-          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
-            end_row = row_r,
-            end_col = blue_end,
-            hl_group = "DiffBanditChangeRight",
-            hl_eol = false,
-            hl_mode = "replace",
-            priority = 5000,
-          })
-        end
+        do
+          -- Change (blue) part followed by added suffix (green)
+          local add_start = spans.add_start and (spans.add_start - 1) or change_end
+          if is_misaligned then
+            add_start = 0
+          end
+          local blue_end = math.min(add_start, right_line_len)
+          if has_change and not is_misaligned and blue_end > 0 then
+            pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
+              end_row = row_r,
+              end_col = blue_end,
+              hl_group = "DiffBanditChangeRight",
+              hl_eol = false,
+              hl_mode = "replace",
+              priority = 5000,
+            })
+          end
 
-        -- Word emphasis only within the blue change span
-        for _, sp in ipairs(spans.right_changes or {}) do
-          local s = sp[1] - 1
-          local e = math.min(sp[2], blue_end)
-          if s < e then
-            pcall(vim.api.nvim_buf_add_highlight, self.right_buf, self.ns, "DiffBanditChangeEmphasis", row_r, s, e)
+          -- Word emphasis only within the blue change span
+          if has_change and not is_misaligned then
+            local emph_hl = "DiffBanditChangeEmphasis"
+            for _, sp in ipairs(spans.right_changes or {}) do
+              local s = sp[1] - 1
+              local e = math.min(sp[2], blue_end)
+              if s < e then
+                pcall(vim.api.nvim_buf_add_highlight, self.right_buf, self.ns, emph_hl, row_r, s, e)
+              end
+            end
+          end
+
+          -- Added suffix (green): from add_start to end-of-line, extend to window edge
+          if add_start < right_line_len then
+            local add_hl = "DiffBanditAdd"
+            pcall(vim.api.nvim_buf_add_highlight, self.right_buf, self.ns, add_hl, row_r, add_start, right_line_len)
+            pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, right_line_len, {
+              end_row = row_r + 1,
+              end_col = 0,
+              hl_group = "DiffBanditAdd",
+              hl_eol = true,
+              hl_mode = "combine",
+              priority = 3000,
+            })
           end
         end
-
-        -- Added suffix (green): from add_start to end-of-line, extend to window edge
-        if add_start < right_line_len then
-          -- Color the added text span itself
-          pcall(vim.api.nvim_buf_add_highlight, self.right_buf, self.ns, "DiffBanditAdd", row_r, add_start, right_line_len)
-          -- Then extend to the end of line (and to the window edge) from the last character
-          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, right_line_len, {
-            end_row = row_r + 1,
-            end_col = 0,
-            hl_group = "DiffBanditAdd",
-            hl_eol = true,
-            hl_mode = "combine",
-            priority = 3000,
-          })
-        end
       end
+    elseif meta.kind == "add" and meta.right_index and not meta.filler_right then
+      -- Ensure added right-only lines are fully green, overriding any stray change spans
+      local row_r = meta.right_index - 1
+      pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
+        end_row = row_r,
+        end_col = -1,
+        hl_group = "DiffBanditAdd",
+        hl_eol = true,
+        hl_mode = "replace",
+        priority = 7000,
+      })
     end
   end
 
-  -- Apply underline separators for additions (left side) and deletions (right side)
-  for _, edge in pairs(chunk_edges) do
-    if edge.add_left and #edge.add_left > 0 then
-      local row = edge.add_left[1]
-      pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, row, 0, {
-        hl_group = "DiffBanditAddLeftSeparator",
-        end_row = row,
-        end_col = -1,
-        hl_eol = true,
-      })
-      pcall(vim.api.nvim_buf_set_extmark, self.connector_buf, self.extmark_ns, row, 0, {
-        hl_group = "DiffBanditAddLeftSeparator",
-        end_row = row,
-        end_col = -1,
-        hl_eol = true,
-      })
-    end
-    if edge.delete_right and #edge.delete_right > 0 then
-      local row = edge.delete_right[1]
-      local function underline(buf)
-        pcall(vim.api.nvim_buf_set_extmark, buf, self.extmark_ns, row, 0, {
-          hl_group = "DiffBanditDeleteRightSeparator",
-          end_row = row,
-          end_col = -1,
-          hl_eol = true,
-        })
+  -- Apply separator lines on ORIGIN row:
+  -- 1. Native underline on text with colored sp attribute
+  -- 2. ▁ characters extending to pane edge for visual continuity
+  -- The connector's ▁ characters continue the visual line into the gutter
+  local underline_char = "▁"
+  for _, meta in ipairs(self.view.line_meta) do
+    if meta.origin == "add" then
+      -- Left buffer: underline on ORIGIN row
+      if meta.left_index then
+        local origin_row = meta.left_index - 1
+        local line_content = vim.api.nvim_buf_get_lines(self.left_buf, origin_row, origin_row + 1, false)[1] or ""
+        local text_len = #line_content
+
+        -- Native underline on text portion
+        if text_len > 0 then
+          pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, origin_row, 0, {
+            end_col = text_len,
+            hl_group = "DiffBanditAddLeftSeparator",  -- underline=true, sp=add_bg
+            hl_mode = "combine",
+            priority = 100,
+          })
+        end
+
+        -- ▁ characters extending to pane edge
+        local win_width = vim.api.nvim_win_get_width(self.left_win)
+        local padding_len = math.max(0, win_width - text_len)
+        if padding_len > 0 then
+          pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, origin_row, text_len, {
+            virt_text = {{string.rep(underline_char, padding_len), "DiffBanditAddLeftSeparatorConnector"}},
+            virt_text_pos = "overlay",
+            hl_mode = "combine",
+            priority = 100,
+          })
+        end
       end
-      underline(self.right_buf)
-      underline(self.connector_buf)
+      -- Connector underline is handled in the line numbers rendering (combined_virt)
+    elseif meta.origin == "delete" then
+      -- Right buffer: underline on ORIGIN row
+      if meta.right_index then
+        local origin_row = meta.right_index - 1
+        local line_content = vim.api.nvim_buf_get_lines(self.right_buf, origin_row, origin_row + 1, false)[1] or ""
+        local text_len = #line_content
+
+        -- Native underline on text portion
+        if text_len > 0 then
+          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, 0, {
+            end_col = text_len,
+            hl_group = "DiffBanditDeleteRightSeparator",  -- underline=true, sp=delete_bg
+            hl_mode = "combine",
+            priority = 100,
+          })
+        end
+
+        -- ▁ characters extending to pane edge
+        local win_width = vim.api.nvim_win_get_width(self.right_win)
+        local padding_len = math.max(0, win_width - text_len)
+        if padding_len > 0 then
+          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, text_len, {
+            virt_text = {{string.rep(underline_char, padding_len), "DiffBanditDeleteRightSeparatorConnector"}},
+            virt_text_pos = "overlay",
+            hl_mode = "combine",
+            priority = 100,
+          })
+        end
+      end
+
+      -- Connector underline for deletes would need similar handling in line numbers rendering
     end
   end
 
@@ -856,25 +868,55 @@ function Session:render()
 
   -- Render connector routing paths (top join, vertical, bottom exit)
   vim.api.nvim_buf_clear_namespace(self.connector_buf, self.path_ns, 0, -1)
-  local core_start_col = self.left_number_width  -- left_num
-  local core_end_col = core_start_col + self.connector_core_width - 1
-  local gutter_end_col = core_end_col + 1
-  local function lane_col(lane)
-    -- lanes are 1-indexed; columns inside core are spaced by 2: 0,2,4...
-    return core_start_col + (lane - 1) * 2 + 1
-  end
+  local core_start_col = self.left_number_width
+
+   -- Build row-centric bar collection: maps each row to the lanes with active vertical bars
+   -- This enables multiple bars from different paths to coexist on the same row (expansion zones)
+   local active_bars = {}  -- row -> { [lane] = {path, fg_group} }
+
+   -- Build per-lane glyph tracking to avoid duplicate rendering
+   -- glyph_rows_by_lane[lane][row] = true if that lane has a glyph on that row
+   -- Only mark the triangle row (start_row), not the entire block range
+   local glyph_rows_by_lane = {}
+   for _, p in ipairs(paths) do
+     if p.kind == "add" or p.kind == "delete" then
+       local lane = p.lane or 1
+       glyph_rows_by_lane[lane] = glyph_rows_by_lane[lane] or {}
+       -- Only the triangle row has a glyph, not the whole block
+       glyph_rows_by_lane[lane][p.start_row] = true
+     end
+   end
+
+   -- Create vertical bars using active_vertical_bars (already computed with proper extended ranges)
+   -- This shows visual overlap where later blocks start within earlier blocks' vertical extent
+   -- Only skip bar rendering if THIS SPECIFIC LANE has a glyph on this row
+   for row, lanes_at_row in pairs(active_vertical_bars) do
+     for lane, p in pairs(lanes_at_row) do
+       -- Only render bar if this lane doesn't have a glyph on this row
+       local lane_has_glyph = glyph_rows_by_lane[lane] and glyph_rows_by_lane[lane][row]
+       if not lane_has_glyph then
+         active_bars[row] = active_bars[row] or {}
+         active_bars[row][lane] = {
+           path = {lane = lane, kind = p.kind},
+           fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
+         }
+       end
+     end
+   end
+
+   -- Note: Middle bars for multi-line blocks are now handled by glyph rendering
+   -- to ensure proper per-row indentation. The spine bars section was removed
+   -- to prevent duplicate rendering on glyph rows.
 
   for _, p in ipairs(paths) do
     if p.kind == "add" or p.kind == "delete" then
-      local col = lane_col(math.max(1, p.lane))
+      local lane = math.max(1, p.lane)
+      local col = lane_col(lane)
       local fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
       local top_row = (p.top or p.start_row) - 1
-      local bottom_row = p.end_row - 1
 
-      -- Only render top horizontal/curve if there's no origin line (p.top not set)
-      -- Origin lines already have connector symbols in their connector_text
+      -- If there's no origin line, draw top curve
       if not p.top then
-        -- Top horizontal within connector core area (don't overlap left numbers)
         vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, top_row, core_start_col, {
           virt_text = {
             {string.rep("─", math.max(0, col - core_start_col)), fg_group},
@@ -888,29 +930,21 @@ function Session:render()
         })
       end
 
-      -- Vertical spine down the lane (skip top/bottom rows where tees will go)
-      for r = p.start_row + 1, p.end_row - 1 do
-        vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, r - 1, col, {
-          virt_text = { {"│", fg_group} },
-          virt_text_pos = "overlay",
-        })
-      end
+       -- Triangle glyph is always one column left of the right line number
+       local triangle_col = right_col_base - 1
+       local expansion_hl = (p.kind == "add")
+         and "DiffBanditConnectorExpansionAdd" or "DiffBanditConnectorExpansionDelete"
 
-      -- Top tee (first row of add/delete region) for visual transition
-      vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, p.start_row - 1, col, {
-        virt_text = {
-          {(p.kind == "add") and "├" or "┤", fg_group},
-        },
-        virt_text_pos = "overlay",
-      })
+       vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, p.start_row - 1, triangle_col, {
+         virt_text = {
+           {(p.kind == "add") and "◥" or "◤", expansion_hl},
+         },
+         virt_text_pos = "overlay",
+       })
 
-      -- Bottom tee (last row of add/delete region) for visual transition
-      vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, bottom_row, col, {
-        virt_text = {
-          {(p.kind == "add") and "├" or "┤", fg_group},
-        },
-        virt_text_pos = "overlay",
-      })
+       -- Middle rows: No glyph - lane vertical bars from active_bars rendering provide visual continuity
+
+       -- Last row: No glyph - only the top triangle marks the expansion point
     elseif p.kind == "change" then
       local fg_group = "DiffBanditConnectorChangeLine"
       local row_top = p.start_row - 1
@@ -927,21 +961,36 @@ function Session:render()
     end
   end
 
-  -- Debug: Check highlights on row 0 at the END of render()
-  print("=== AT END OF RENDER ===")
-  local final_highlights = vim.api.nvim_buf_get_extmarks(self.right_buf, self.ns, {0, 0}, {0, -1}, {details = true})
-  print("Highlights in self.ns on row 0 at END of render:")
-  for _, mark in ipairs(final_highlights) do
-    local id, row, col, details = mark[1], mark[2], mark[3], mark[4]
-    print(string.format("  id=%d, col=%d, end_col=%s, hl_group=%s", id, col, tostring(details.end_col), tostring(details.hl_group)))
-  end
+   -- Render all vertical bars from active_bars (row-centric approach)
+   -- This allows multiple bars from different paths to appear on the same row
+   for row, lanes_on_row in pairs(active_bars) do
+     for lane, bar_info in pairs(lanes_on_row) do
+       -- Each lane has a consistent column position
+       local bar_col = lane_col(lane)
 
-  -- Debug: Check actual colors of the highlight groups
-  print("\n=== HIGHLIGHT GROUP COLORS ===")
-  local change_right_hl = vim.api.nvim_get_hl(0, {name = "DiffBanditChangeRight"})
-  local add_hl = vim.api.nvim_get_hl(0, {name = "DiffBanditAdd"})
-  print(string.format("DiffBanditChangeRight: bg=%s, fg=%s", tostring(change_right_hl.bg), tostring(change_right_hl.fg)))
-  print(string.format("DiffBanditAdd: bg=%s, fg=%s", tostring(add_hl.bg), tostring(add_hl.fg)))
+       -- Primary spine rail
+       vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, bar_col, {
+         virt_text = { {"│", bar_info.fg_group} },
+         virt_text_pos = "overlay",
+       })
+     end
+   end
+
+   -- Render tail underlines (horizontal connector from bar to triangle)
+   for row, tail_info in pairs(tail_underlines) do
+     local underline_start = tail_info.bar_col + 1
+     local underline_end = tail_info.triangle_col
+     local underline_width = underline_end - underline_start
+     if underline_width > 0 then
+       local fg_group = (tail_info.kind == "add")
+         and "DiffBanditAddLeftSeparatorConnector" or "DiffBanditDeleteLeftSeparatorConnector"
+       local extmark_opts = {
+         virt_text = { {string.rep("▁", underline_width), fg_group} },
+         virt_text_pos = "overlay",
+       }
+       vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, underline_start, extmark_opts)
+     end
+   end
 end
 
 function Session:highlight_active_chunk(chunk)
@@ -949,26 +998,29 @@ function Session:highlight_active_chunk(chunk)
   vim.api.nvim_buf_clear_namespace(self.right_buf, self.active_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.connector_buf, self.active_ns, 0, -1)
 
+  local active_hl = "DiffBanditActiveChunk"
+  local add_hl = vim.api.nvim_buf_add_highlight
+
   -- Highlight using buffer-specific indices from metadata
   for meta_idx = chunk.display_start, chunk.display_end do
     local meta = self.view.line_meta[meta_idx]
     if meta then
-      -- Skip active chunk highlighting for change lines - they have special blue/green backgrounds
-      local is_change_line = (meta.kind == "change" and not meta.filler_left and not meta.filler_right)
+      -- Skip for diff lines with strong backgrounds to avoid washing out colors
+      local has_strong_bg = meta.kind ~= "context" and not meta.filler_left and not meta.filler_right
 
       -- Highlight left buffer if this metadata has a left line
-      if meta.left_index and not is_change_line then
-        vim.api.nvim_buf_add_highlight(self.left_buf, self.active_ns, "DiffBanditActiveChunk", meta.left_index - 1, 0, -1)
-        -- Also highlight connector at the same vertical position
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.active_ns, "DiffBanditActiveChunk", meta.left_index - 1, 0, -1)
+      if meta.left_index and not has_strong_bg then
+        local row = meta.left_index - 1
+        add_hl(self.left_buf, self.active_ns, active_hl, row, 0, -1)
+        add_hl(self.connector_buf, self.active_ns, active_hl, row, 0, -1)
       end
 
       -- Highlight right buffer if this metadata has a right line
-      if meta.right_index and not is_change_line then
-        vim.api.nvim_buf_add_highlight(self.right_buf, self.active_ns, "DiffBanditActiveChunk", meta.right_index - 1, 0, -1)
-        -- Also highlight connector at the same vertical position if no left index
+      if meta.right_index and not has_strong_bg then
+        local row = meta.right_index - 1
+        add_hl(self.right_buf, self.active_ns, active_hl, row, 0, -1)
         if not meta.left_index then
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.active_ns, "DiffBanditActiveChunk", meta.right_index - 1, 0, -1)
+          add_hl(self.connector_buf, self.active_ns, active_hl, row, 0, -1)
         end
       end
     end

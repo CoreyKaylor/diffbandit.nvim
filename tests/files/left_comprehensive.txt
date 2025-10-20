@@ -1,0 +1,35 @@
+// Header comment
+package main
+
+import "fmt"
+
+func main() {
+	// Initialize variables
+	x := 10
+	y := 20
+
+	// Old calculation
+	result := x + y
+
+	// Print old result
+	fmt.Println("Result:", result)
+
+	// This section will be deleted
+	temp := x * 2
+	fmt.Println("Temp:", temp)
+
+	// Middle section
+	z := 30
+
+	// Old logic here
+	if x > 5 {
+		fmt.Println("X is large")
+	}
+
+	// This line will change
+	message := "Old message"
+	fmt.Println(message)
+
+	// End section
+	fmt.Println("Done")
+}

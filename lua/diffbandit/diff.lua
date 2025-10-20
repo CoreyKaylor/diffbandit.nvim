@@ -65,7 +65,6 @@ function M.changed_spans(left_line, right_line)
     return {
       left = {},
       right_changes = {},
-      right_additions = {},
       prefix_len = 0,
       right_len = #right_line,
       change_end = 0,
@@ -103,7 +102,6 @@ function M.changed_spans(left_line, right_line)
 
   local spans_left = {}
   local spans_right_changes = {}
-  local spans_right_additions = {}
 
   local change_len = math.min(left_mid_len, right_mid_len)
   local addition_len = math.max(0, right_mid_len - change_len)
@@ -120,17 +118,12 @@ function M.changed_spans(left_line, right_line)
     table.insert(spans_right_changes, { right_change_start, right_change_start + change_len - 1 })
   end
 
-  if addition_len > 0 then
-    table.insert(spans_right_additions, { right_add_start, right_add_start + addition_len - 1 })
-  end
-
   local has_change = change_len > 0
   local has_addition = addition_len > 0
 
   return {
     left = spans_left,
     right_changes = spans_right_changes,
-    right_additions = spans_right_additions,
     prefix_len = prefix,
     right_len = right_len,
     change_end = has_change and (right_change_start + change_len - 1) or prefix,

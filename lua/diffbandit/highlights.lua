@@ -1,12 +1,10 @@
 local M = {}
 
 local base_defaults = {
-  DiffBanditContext = { link = "Normal" },
+  DiffBanditContext = {},  -- Will be set dynamically with sp color
   DiffBanditLineNumberLeft = { link = "LineNr" },
   DiffBanditLineNumberRight = { link = "LineNr" },
   DiffBanditActiveChunk = {},
-  DiffBanditConnectorGlyph = { link = "LineNr" },
-  DiffBanditConnectorSeparator = { link = "Normal" },
   DiffBanditConnectorText = { link = "Normal" },
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
@@ -35,23 +33,17 @@ local function get_foreground_color(hl_group, fallback)
 end
 
 local function apply_diff_variants()
-  local add_base = adopt_diff_colors("DiffAdd")
   local delete_base = adopt_diff_colors("DiffDelete")
-  local change_base = adopt_diff_colors("DiffChange")
-  local text_base = adopt_diff_colors("DiffText")
   local normal_base = adopt_diff_colors("Normal")
 
   -- Extract or use fallback colors for backgrounds
-  -- Use light but visible colors to match IntelliJ's subtle but clear aesthetic
-  local add_bg = get_background_color("DiffAdd", "#E7F6EA")
-  local delete_bg = get_background_color("DiffDelete", "#FBE9E7")
+  local add_bg = get_background_color("DiffAdd", "#C8E6C9")
+  local delete_bg = get_background_color("DiffDelete", "#F5E6E6")
   local change_bg = get_background_color("DiffChange", "#E3F2FD")
   local text_bg = get_background_color("DiffText", "#D6EBFF")
 
   -- Get foreground colors
-  local add_fg = add_base.fg or normal_base.fg
   local delete_fg = delete_base.fg or normal_base.fg
-  local change_fg = change_base.fg or normal_base.fg
   local connector_fg = normal_base.fg
 
   -- Full-line background highlights for additions (use normal text color, only background is colored)
@@ -65,7 +57,7 @@ local function apply_diff_variants()
 
   -- Add background only; keep foreground as NONE so default text color is preserved
   apply_group("DiffBanditAdd", {
-    bg = ensure_contrast(add_bg, "#2e7d32"),
+    bg = ensure_contrast(add_bg, "#C8E6C9"),
     fg = "NONE",
   })
 
@@ -74,20 +66,14 @@ local function apply_diff_variants()
     fg = delete_fg,
   })
 
-  apply_group("DiffBanditChange", {
-    bg = change_bg,
-    fg = change_fg,
-  })
-
-  -- Unified highlights for changes: both sides show the same blue background (matching IntelliJ)
   apply_group("DiffBanditChangeLeft", {
-    bg = ensure_contrast(change_bg, "#1565c0"),
+    bg = ensure_contrast(change_bg, "#E3F2FD"),
     fg = "NONE",
     underline = false,
   })
 
   apply_group("DiffBanditChangeRight", {
-    bg = ensure_contrast(change_bg, "#1565c0"),
+    bg = ensure_contrast(change_bg, "#E3F2FD"),
     fg = "NONE",
     underline = false,
   })
@@ -107,18 +93,35 @@ local function apply_diff_variants()
     sp = add_bg,
   })
 
-  -- Separator line for left filler on additions (only underline, no background)
-  -- Use the subtle green background color to match the right side visual flow
-  apply_group("DiffBanditAddLeftSeparator", {
-    underline = true,
-    sp = add_bg,  -- Matches the green background on the right side
+  -- Context highlight with sp set so underlines combine properly
+  apply_group("DiffBanditContext", {
+    bg = normal_base.bg,
+    fg = normal_base.fg,
+    sp = add_bg,  -- Default sp for underline combining
   })
 
-  -- Separator line for right filler on deletions (only underline, no background)
-  -- Use a visible red/beige color for the underline, not the light background
+  -- Separator line highlights for text buffers (use underline attribute)
+  apply_group("DiffBanditAddLeftSeparator", {
+    underline = true,
+    sp = add_bg,
+  })
+
   apply_group("DiffBanditDeleteRightSeparator", {
     underline = true,
-    sp = "#ef4444",  -- Visible red (equivalent to red-500)
+    sp = delete_bg,
+  })
+
+  -- Separator line highlights for connector buffer (use fg for overlay)
+  apply_group("DiffBanditAddLeftSeparatorConnector", {
+    fg = add_bg,
+  })
+
+  apply_group("DiffBanditDeleteLeftSeparatorConnector", {
+    fg = delete_bg,
+  })
+
+  apply_group("DiffBanditDeleteRightSeparatorConnector", {
+    fg = delete_bg,
   })
 
   -- Filler/placeholder highlights
@@ -148,27 +151,24 @@ local function apply_diff_variants()
     fg = connector_fg,
   })
 
-  -- Stroke colors for connector routing (use foreground colors for better visibility)
-  apply_group("DiffBanditConnectorAddLine", { fg = add_fg })
-  apply_group("DiffBanditConnectorDeleteLine", { fg = delete_fg })
-  apply_group("DiffBanditConnectorChangeLine", { fg = change_fg })
+  -- Stroke colors for connector routing (use background colors for visual continuity with diff regions)
+  apply_group("DiffBanditConnectorAddLine", { fg = add_bg })
+  apply_group("DiffBanditConnectorDeleteLine", { fg = delete_bg })
+  apply_group("DiffBanditConnectorChangeLine", { fg = change_bg })
+
+  -- Expansion glyphs: foreground matches the background color for seamless visual bridging
+  -- The ◥/◤ triangles appear with fg color matching the add/delete background, creating
+  -- a visual connection from the underline to the colored background region
+  apply_group("DiffBanditConnectorExpansionAdd", { fg = add_bg })
+  apply_group("DiffBanditConnectorExpansionDelete", { fg = delete_bg })
 
   apply_group("DiffBanditConnectorContext", {
     bg = normal_base.bg,
     fg = get_foreground_color("Comment", "#808080"),
   })
 
-  apply_group("DiffBanditConnectorBackground", {
-    bg = normal_base.bg,
-  })
-
-  -- Variants for line numbers and glyphs with diff backgrounds (for visual text overlay)
+  -- Variants for line numbers with diff backgrounds (for visual text overlay)
   apply_group("DiffBanditLineNumberRightAdd", {
-    fg = get_foreground_color("LineNr", "#808080"),
-    bg = add_bg,
-  })
-
-  apply_group("DiffBanditConnectorGlyphAdd", {
     fg = get_foreground_color("LineNr", "#808080"),
     bg = add_bg,
   })
@@ -178,9 +178,11 @@ local function apply_diff_variants()
     bg = delete_bg,
   })
 
-  apply_group("DiffBanditConnectorGlyphDelete", {
+  -- Underlined variant for origin rows
+  apply_group("DiffBanditLineNumberLeftUnderline", {
     fg = get_foreground_color("LineNr", "#808080"),
-    bg = delete_bg,
+    underline = true,
+    sp = add_bg,
   })
 end
 

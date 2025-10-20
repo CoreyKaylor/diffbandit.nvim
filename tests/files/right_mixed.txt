@@ -1,0 +1,11 @@
+Context line 1
+Context line 2
+New value A
+New value B
+Context line 3
+Context line 4
+Modified text here with extra content
+Added line 1
+Added line 2
+Context line 5
+Context line 6

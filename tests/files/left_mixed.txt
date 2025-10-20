@@ -1,0 +1,10 @@
+Context line 1
+Context line 2
+Old value A
+Old value B
+Context line 3
+Delete this line
+Context line 4
+Original text here
+Context line 5
+Context line 6
