@@ -1,0 +1,74 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Neovim
+*.swp
+*.swo
+*~
+
+# Lua/luvit
+luvi-*
+luvit
+luvi
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.backup
+*.bak
+
+# Build artifacts
+build/
+dist/
+*.rock
+*.rockspec
+
+# Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Test coverage
+coverage/
+*.lcov
+
+# Node.js (if using for testing/building)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Documentation build
+docs/build/
+
+# Local configuration
+.env
+.env.local
+.env.*.local
+
+# Cache directories
+.cache/
+.parcel-cache/
+
+# Runtime files
+*.pid
+*.seed
+*.pid.lock
+
+# Plugin management (if using packer/lazy)
+pack/
+lazy-lock.json
+
+# profiling
+*.prof
+
+# compare files
+*compare/
