@@ -38,12 +38,11 @@ local function apply_diff_variants()
 
   -- Extract or use fallback colors for backgrounds
   local add_bg = get_background_color("DiffAdd", "#C8E6C9")
-  local delete_bg = get_background_color("DiffDelete", "#F5E6E6")
+  local delete_bg = get_background_color("DiffDelete", "#D3D3D3")  -- light gray
   local change_bg = get_background_color("DiffChange", "#E3F2FD")
   local text_bg = get_background_color("DiffText", "#D6EBFF")
 
-  -- Get foreground colors
-  local delete_fg = delete_base.fg or normal_base.fg
+  -- Get foreground colors - connector uses normal text
   local connector_fg = normal_base.fg
 
   -- Full-line background highlights for additions (use normal text color, only background is colored)
@@ -61,9 +60,10 @@ local function apply_diff_variants()
     fg = "NONE",
   })
 
+  -- Delete background with normal text color (not red)
   apply_group("DiffBanditDelete", {
-    bg = delete_bg,
-    fg = delete_fg,
+    bg = ensure_contrast(delete_bg, "#F5F5DC"),
+    fg = "NONE",
   })
 
   apply_group("DiffBanditChangeLeft", {
@@ -93,11 +93,10 @@ local function apply_diff_variants()
     sp = add_bg,
   })
 
-  -- Context highlight with sp set so underlines combine properly
+  -- Context highlight - no sp set to avoid conflicts with separator underlines
   apply_group("DiffBanditContext", {
     bg = normal_base.bg,
     fg = normal_base.fg,
-    sp = add_bg,  -- Default sp for underline combining
   })
 
   -- Separator line highlights for text buffers (use underline attribute)
@@ -178,11 +177,18 @@ local function apply_diff_variants()
     bg = delete_bg,
   })
 
-  -- Underlined variant for origin rows
+  -- Underlined variant for origin rows (additions - left pane)
   apply_group("DiffBanditLineNumberLeftUnderline", {
     fg = get_foreground_color("LineNr", "#808080"),
     underline = true,
     sp = add_bg,
+  })
+
+  -- Underlined variant for origin rows (deletions - right pane)
+  apply_group("DiffBanditLineNumberRightUnderline", {
+    fg = get_foreground_color("LineNr", "#808080"),
+    underline = true,
+    sp = delete_bg,
   })
 end
 

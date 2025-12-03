@@ -449,6 +449,7 @@ function Session:render()
   local origin_bar_cols = underline_data.origin_bar_cols
   local origin_has_bar = underline_data.origin_has_bar
   local tail_underlines = underline_data.tail_underlines
+  local delete_origin_right_lines = underline_data.delete_origin_right_lines or {}
 
   -- Make connector buffer as tall as the maximum of left and right buffers
   local connector_height = math.max(#left_lines, #right_lines)
@@ -549,10 +550,10 @@ function Session:render()
          vim.api.nvim_buf_add_highlight(buf, self.ns, ctx_hl, row, 0, right_col_base)
          vim.api.nvim_buf_add_highlight(buf, self.ns, connector_bg_hl, row, right_col_base, -1)
        elseif meta.kind == "delete" then
-         -- Delete background on left portion, normal background on right portion
-         local glyph_pos = core_start_col_base + 2
-         vim.api.nvim_buf_add_highlight(buf, self.ns, connector_bg_hl, row, 0, glyph_pos)
-         vim.api.nvim_buf_add_highlight(buf, self.ns, ctx_hl, row, glyph_pos, -1)
+         -- Delete background ONLY on left line number portion
+         -- Stops at right edge of left line numbers, doesn't extend into connector
+         vim.api.nvim_buf_add_highlight(buf, self.ns, connector_bg_hl, row, 0, core_start_col_base)
+         vim.api.nvim_buf_add_highlight(buf, self.ns, ctx_hl, row, core_start_col_base, -1)
        else
          -- Change and context: full-line background
          vim.api.nvim_buf_add_highlight(buf, self.ns, connector_bg_hl, row, 0, -1)
@@ -567,6 +568,7 @@ function Session:render()
 
       -- Use background-aware highlights for same-row add/delete split backgrounds
       -- For origin rows with additions, use underlined line number highlight
+      -- For origin rows with deletions, use underlined right line number highlight
       local left_num_hl
       if meta.origin == "add" then
         left_num_hl = "DiffBanditLineNumberLeftUnderline"
@@ -575,7 +577,17 @@ function Session:render()
       else
         left_num_hl = "DiffBanditLineNumberLeft"
       end
-      local right_num_hl = (meta.kind == "add") and "DiffBanditLineNumberRightAdd" or "DiffBanditLineNumberRight"
+      -- Check if this right line number is a delete origin
+      local combined_is_delete_origin = meta.right_line and delete_origin_right_lines[meta.right_line] ~= nil
+
+      local right_num_hl
+      if combined_is_delete_origin then
+        right_num_hl = "DiffBanditLineNumberRightUnderline"
+      elseif meta.kind == "add" then
+        right_num_hl = "DiffBanditLineNumberRightAdd"
+      else
+        right_num_hl = "DiffBanditLineNumberRight"
+      end
 
       -- For origin rows, use ▁ characters for underline with correct fg color
       -- Underline extent depends on whether triangle is adjacent or further down
@@ -583,7 +595,7 @@ function Session:render()
         {left_number, left_num_hl},
       }
       if meta.origin == "add" then
-        -- Underline extends to just before the vertical bar (or to glyph if no bar)
+        -- Additions: Underline extends rightward from left number toward triangle on right
         local underline_width
         if origin_has_bar[idx] then
           -- Stop just before the bar column
@@ -599,6 +611,21 @@ function Session:render()
         if padding_width > 0 then
           table.insert(combined_virt, {string.rep(" ", padding_width), "DiffBanditConnectorText"})
         end
+      elseif combined_is_delete_origin then
+        -- Deletions: Underline extends from AFTER bar position toward right edge
+        -- Must account for: (1) active bars from other deletions, (2) this deletion's own bar
+        local del_info = delete_origin_right_lines[meta.right_line]
+        local underline_start_offset = 1  -- Default: start after triangle (no bars)
+        if del_info and del_info.underline_start_after ~= nil then
+          -- Start after the rightmost bar position
+          underline_start_offset = del_info.underline_start_after - self.left_number_width + 1
+        end
+        underline_start_offset = math.max(1, underline_start_offset)
+        local underline_width = self.connector_core_width - underline_start_offset
+        underline_width = math.max(1, underline_width)
+        -- Add spacing before underline (for triangle/bar area)
+        table.insert(combined_virt, {string.rep(" ", underline_start_offset), "DiffBanditConnectorText"})
+        table.insert(combined_virt, {string.rep("▁", underline_width), "DiffBanditDeleteRightSeparatorConnector"})
       else
         table.insert(combined_virt, {connector_text, "DiffBanditConnectorText"})
       end
@@ -615,11 +642,11 @@ function Session:render()
       local cbuf = self.connector_buf
       local ctx_hl = "DiffBanditConnectorContext"
       if meta.left_index then
-        -- For deletions on separate rows, apply delete background only on left portion
+        -- For deletions on separate rows, apply delete background only on left line number portion
         if meta.kind == "delete" then
-          local left_end_col = core_start_col_base + self.connector_core_width
-          vim.api.nvim_buf_add_highlight(cbuf, self.ns, connector_bg_hl, display_row, 0, left_end_col)
-          vim.api.nvim_buf_add_highlight(cbuf, self.ns, ctx_hl, display_row, left_end_col, -1)
+          -- Delete background ONLY on left line number
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, connector_bg_hl, display_row, 0, core_start_col_base)
+          vim.api.nvim_buf_add_highlight(cbuf, self.ns, ctx_hl, display_row, core_start_col_base, -1)
         elseif meta.kind == "add" then
           -- For additions, left rows get normal background
           vim.api.nvim_buf_add_highlight(cbuf, self.ns, ctx_hl, display_row, 0, -1)
@@ -669,6 +696,10 @@ function Session:render()
         })
       end
 
+      -- Handle right side - always show right line number if right buffer has content at this position
+      -- This ensures display where right file lines appear sequentially
+      local right_buf_has_content = (idx <= #right_lines)
+
       if meta.right_index then
         -- For additions on separate rows, apply green background only on right portion
         if meta.kind == "add" then
@@ -682,14 +713,49 @@ function Session:render()
           -- Change and context: full-line background
           vim.api.nvim_buf_add_highlight(cbuf, self.ns, connector_bg_hl, display_row, 0, -1)
         end
+      end
+
+      -- Always render right line number if right buffer has content at this display row
+      if right_buf_has_content then
         local rw = self.right_number_width
-        local right_number = meta.right_line and format_line_number_left(meta.right_line, rw)
-          or string.rep(" ", rw)
+        -- Use actual right buffer position (idx) as line number
+        local right_line_num = idx
+        local right_number = format_line_number_left(right_line_num, rw)
 
-        -- Use background-aware highlights for additions to show green background
-        local right_num_hl = (meta.kind == "add") and "DiffBanditLineNumberRightAdd" or "DiffBanditLineNumberRight"
+        -- Check if this right line number is a delete origin
+        local is_delete_origin = delete_origin_right_lines[right_line_num] ~= nil
 
-        -- start col for right number: left_num + core
+        -- Use background-aware highlights for additions/deletions
+        local right_num_hl
+        if is_delete_origin then
+          right_num_hl = "DiffBanditLineNumberRightUnderline"
+        elseif meta.kind == "add" then
+          right_num_hl = "DiffBanditLineNumberRightAdd"
+        else
+          right_num_hl = "DiffBanditLineNumberRight"
+        end
+
+        -- For delete origin rows, add underline characters in the connector area
+        -- Use the delete_origin_right_lines map to find which right lines need underlines
+        if is_delete_origin then
+          -- Deletions: Underline extends from AFTER bar position toward right edge
+          local del_info = delete_origin_right_lines[right_line_num]
+          local underline_start_col = self.left_number_width + 1  -- Default: start after triangle
+          if del_info and del_info.underline_start_after ~= nil then
+            -- Start after the rightmost bar position
+            underline_start_col = del_info.underline_start_after + 1
+          end
+          underline_start_col = math.max(self.left_number_width + 1, underline_start_col)
+          local underline_width = self.left_number_width + self.connector_core_width - underline_start_col
+          underline_width = math.max(1, underline_width)
+          local underline_hl = "DiffBanditDeleteRightSeparatorConnector"
+          vim.api.nvim_buf_set_extmark(self.connector_buf, self.linenum_ns, display_row, underline_start_col, {
+            virt_text = {{string.rep("▁", underline_width), underline_hl}},
+            virt_text_pos = "overlay",
+          })
+        end
+
+        -- Place right number
         local right_start_col = self.left_number_width + self.connector_core_width
         local right_virt = {
           {right_number, right_num_hl},
@@ -825,37 +891,39 @@ function Session:render()
         end
       end
       -- Connector underline is handled in the line numbers rendering (combined_virt)
-    elseif meta.origin == "delete" then
-      -- Right buffer: underline on ORIGIN row
-      if meta.right_index then
-        local origin_row = meta.right_index - 1
-        local line_content = vim.api.nvim_buf_get_lines(self.right_buf, origin_row, origin_row + 1, false)[1] or ""
-        local text_len = #line_content
+    end
+  end
 
-        -- Native underline on text portion
-        if text_len > 0 then
-          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, 0, {
-            end_col = text_len,
-            hl_group = "DiffBanditDeleteRightSeparator",  -- underline=true, sp=delete_bg
-            hl_mode = "combine",
-            priority = 100,
-          })
-        end
+  -- Render delete origin underlines in right buffer using delete_origin_right_lines map
+  -- This ensures underlines appear at the correct right line numbers
+  for right_line_num, _ in pairs(delete_origin_right_lines) do
+    -- Right buffer row is right_line_num - 1 (0-indexed)
+    local origin_row = right_line_num - 1
+    if origin_row >= 0 and origin_row < #right_lines then
+      local line_content = vim.api.nvim_buf_get_lines(self.right_buf, origin_row, origin_row + 1, false)[1] or ""
+      local text_len = #line_content
 
-        -- ▁ characters extending to pane edge
-        local win_width = vim.api.nvim_win_get_width(self.right_win)
-        local padding_len = math.max(0, win_width - text_len)
-        if padding_len > 0 then
-          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, text_len, {
-            virt_text = {{string.rep(underline_char, padding_len), "DiffBanditDeleteRightSeparatorConnector"}},
-            virt_text_pos = "overlay",
-            hl_mode = "combine",
-            priority = 100,
-          })
-        end
+      -- Native underline on text portion
+      if text_len > 0 then
+        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, 0, {
+          end_col = text_len,
+          hl_group = "DiffBanditDeleteRightSeparator",  -- underline=true, sp=delete_bg
+          hl_mode = "replace",  -- Use replace to ensure correct sp color
+          priority = 150,  -- Higher priority to override any existing highlights
+        })
       end
 
-      -- Connector underline for deletes would need similar handling in line numbers rendering
+      -- ▁ characters extending to pane edge
+      local win_width = vim.api.nvim_win_get_width(self.right_win)
+      local padding_len = math.max(0, win_width - text_len)
+      if padding_len > 0 then
+        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, text_len, {
+          virt_text = {{string.rep(underline_char, padding_len), "DiffBanditDeleteRightSeparatorConnector"}},
+          virt_text_pos = "overlay",
+          hl_mode = "combine",
+          priority = 100,
+        })
+      end
     end
   end
 
@@ -930,8 +998,15 @@ function Session:render()
         })
       end
 
-       -- Triangle glyph is always one column left of the right line number
-       local triangle_col = right_col_base - 1
+       -- Triangle glyph position depends on kind:
+       -- Additions: dock to RIGHT (one column left of right line number)
+       -- Deletions: dock to LEFT (at start of connector core, after left line number)
+       local triangle_col
+       if p.kind == "add" then
+         triangle_col = right_col_base - 1
+       else
+         triangle_col = core_start_col
+       end
        local expansion_hl = (p.kind == "add")
          and "DiffBanditConnectorExpansionAdd" or "DiffBanditConnectorExpansionDelete"
 
@@ -966,7 +1041,18 @@ function Session:render()
    for row, lanes_on_row in pairs(active_bars) do
      for lane, bar_info in pairs(lanes_on_row) do
        -- Each lane has a consistent column position
-       local bar_col = lane_col(lane)
+       -- For additions: bars are on the RIGHT side (near triangle that docks right)
+       -- For deletions: bars are on the LEFT side (near triangle that docks left)
+       local bar_col
+       local kind = bar_info.path and bar_info.path.kind or "add"
+       if kind == "delete" then
+         -- Deletions: bars near LEFT side of connector, but 1 position right of triangle
+         -- Lane 1 at core_start_col + 1, additional lanes move right
+         bar_col = core_start_col + 1 + (lane - 1) * (rail_spacing + 1)
+       else
+         -- Additions: bars near RIGHT side of connector
+         bar_col = lane_col(lane)
+       end
 
        -- Primary spine rail
        vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, bar_col, {
@@ -978,12 +1064,22 @@ function Session:render()
 
    -- Render tail underlines (horizontal connector from bar to triangle)
    for row, tail_info in pairs(tail_underlines) do
-     local underline_start = tail_info.bar_col + 1
-     local underline_end = tail_info.triangle_col
+     -- For additions: bar is LEFT of triangle (bar_col < triangle_col)
+     -- For deletions: bar is RIGHT of triangle (bar_col > triangle_col)
+     local underline_start, underline_end
+     if tail_info.kind == "delete" then
+       -- Deletions: triangle is left, bar is right
+       underline_start = tail_info.triangle_col + 1
+       underline_end = tail_info.bar_col
+     else
+       -- Additions: bar is left, triangle is right
+       underline_start = tail_info.bar_col + 1
+       underline_end = tail_info.triangle_col
+     end
      local underline_width = underline_end - underline_start
      if underline_width > 0 then
        local fg_group = (tail_info.kind == "add")
-         and "DiffBanditAddLeftSeparatorConnector" or "DiffBanditDeleteLeftSeparatorConnector"
+         and "DiffBanditAddLeftSeparatorConnector" or "DiffBanditDeleteRightSeparatorConnector"
        local extmark_opts = {
          virt_text = { {string.rep("▁", underline_width), fg_group} },
          virt_text_pos = "overlay",

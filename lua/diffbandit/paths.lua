@@ -63,6 +63,14 @@ local function build_paths(chunks, line_meta)
       local origin_meta = line_meta[chunk.display_start - 1]
       local top_row = origin_meta and (chunk.display_start - 1)
       local origin_left_line = origin_meta and origin_meta.left_line
+      -- For deletions, origin_right_line is the right line AFTER which the deletion occurs
+      -- In vim.diff with result_type='indices', for delete hunks:
+      -- right.start is the line number in the right file after which the deletion would appear
+      -- So origin_right_line = chunk.right.start (the line where underline should appear)
+      local origin_right_line = chunk.right and chunk.right.start or nil
+      if origin_right_line and origin_right_line < 1 then
+        origin_right_line = nil
+      end
       local s, e = nil, nil
       for i = chunk.display_start, chunk.display_end do
         local m = line_meta[i]
@@ -78,7 +86,8 @@ local function build_paths(chunks, line_meta)
           start_row = s,
           end_row = e,
           lane = 0,
-          origin_left_line = origin_left_line
+          origin_left_line = origin_left_line,
+          origin_right_line = origin_right_line
         }
       end
     elseif chunk.type == "change" then
@@ -112,11 +121,17 @@ local function assign_lanes(paths)
   local lanes = {}
   local max_lane = 0
 
-  -- Assign lanes so later paths go to OUTER lanes (further left)
+  -- Assign lanes so later paths go to OUTER lanes (further from triangle)
   for _, p in ipairs(paths) do
     if p.kind == "add" or p.kind == "delete" then
       local occupy_start, occupy_end = occupancy_range(p)
-      local origin_row = p.origin_left_line or occupy_start
+      -- For additions, origin is on LEFT pane; for deletions, origin is on RIGHT pane
+      local origin_row
+      if p.kind == "delete" then
+        origin_row = p.origin_right_line or occupy_start
+      else
+        origin_row = p.origin_left_line or occupy_start
+      end
 
       -- Find the highest lane number that is still active at this origin row
       local highest_active_lane = 0
@@ -168,9 +183,18 @@ function M.compute_active_bars(paths)
   table.sort(sorted_origins, function(a, b) return a.row < b.row end)
 
   -- For each path, create bars from origin+1 to triangle-1
+  -- For additions: origin is on LEFT pane (use origin_left_line)
+  -- For deletions: origin is on RIGHT pane (use origin_right_line)
   for _, origin in ipairs(sorted_origins) do
     local p = origin.path
-    local origin_row = p.origin_left_line or p.top or p.start_row
+    local origin_row
+    if p.kind == "delete" then
+      -- For deletions, the underline is on the RIGHT pane at origin_right_line position
+      origin_row = p.origin_right_line or p.top or p.start_row
+    else
+      -- For additions, the underline is on the LEFT pane at origin_left_line position
+      origin_row = p.origin_left_line or p.top or p.start_row
+    end
     local triangle_row = p.start_row
 
     local bar_start = origin_row + 1
@@ -230,6 +254,8 @@ function M.compute_underlines(paths, active_bars, layout)
   local origin_bar_cols = {}
   local origin_has_bar = {}
   local tail_underlines = {}
+  -- Map right line numbers to delete origin info (for rendering underlines at correct display rows)
+  local delete_origin_right_lines = {}
 
   for _, p in ipairs(paths) do
     if p.kind == "add" or p.kind == "delete" then
@@ -237,7 +263,13 @@ function M.compute_underlines(paths, active_bars, layout)
       if p.top then
         origin_glyph_cols[p.top] = compute_glyph_col_for_row(p, p.start_row)
 
-        local origin_row = p.origin_left_line or p.top
+        -- For deletions, origin is on RIGHT pane; for additions, origin is on LEFT pane
+        local origin_row
+        if p.kind == "delete" then
+          origin_row = p.origin_right_line or p.top
+        else
+          origin_row = p.origin_left_line or p.top
+        end
         local triangle_row = p.start_row
         local has_bar = (triangle_row - origin_row) > 1
         origin_has_bar[p.top] = has_bar
@@ -264,11 +296,61 @@ function M.compute_underlines(paths, active_bars, layout)
 
         if has_bar then
           local tail_row = triangle_row - 1
-          local tri_col = left_number_width + connector_core_width - 1
+          -- Triangle position depends on kind:
+          -- Additions: dock to RIGHT side
+          -- Deletions: dock to LEFT side (at start of connector core)
+          local tri_col, bar_col_for_tail
+          if p.kind == "delete" then
+            tri_col = left_number_width
+            -- Bar is 1 position right of triangle, so add 1
+            bar_col_for_tail = left_number_width + 1 + (lane - 1) * (rail_spacing + 1)
+          else
+            tri_col = left_number_width + connector_core_width - 1
+            bar_col_for_tail = lane_col(lane)
+          end
           tail_underlines[tail_row] = {
-            bar_col = lane_col(lane),
+            bar_col = bar_col_for_tail,
             triangle_col = tri_col,
             kind = p.kind,
+          }
+        end
+
+        -- For deletions, track which right line number is the origin
+        -- This allows session.lua to render underlines at the correct display row
+        if p.kind == "delete" and p.origin_right_line then
+          -- For deletions, bar is on LEFT side of connector, 1 position right of triangle
+          local delete_bar_col = left_number_width + 1 + (lane - 1) * (rail_spacing + 1)
+
+          -- Find where underline should start for this delete origin
+          -- Must account for: (1) any active bars from other deletions, (2) this deletion's own bar
+          -- The underline should start AFTER the rightmost bar position
+          local underline_start_after = nil
+
+          -- Check active bars from other deletions
+          if active_bars[origin_row] then
+            for bar_lane, _ in pairs(active_bars[origin_row]) do
+              -- Bar positions are 1 right of triangle
+              local bar_col = left_number_width + 1 + (bar_lane - 1) * (rail_spacing + 1)
+              if not underline_start_after or bar_col > underline_start_after then
+                underline_start_after = bar_col
+              end
+            end
+          end
+
+          -- Also account for THIS deletion's bar column (even though bar starts at origin+1,
+          -- the underline at origin should leave space for where the bar connects)
+          if has_bar then
+            if not underline_start_after or delete_bar_col > underline_start_after then
+              underline_start_after = delete_bar_col
+            end
+          end
+
+          delete_origin_right_lines[p.origin_right_line] = {
+            has_bar = has_bar,
+            bar_col = delete_bar_col,
+            glyph_col = origin_glyph_cols[p.top],
+            lane = lane,
+            underline_start_after = underline_start_after,  -- Column after which underline starts
           }
         end
       end
@@ -280,6 +362,7 @@ function M.compute_underlines(paths, active_bars, layout)
     origin_bar_cols = origin_bar_cols,
     origin_has_bar = origin_has_bar,
     tail_underlines = tail_underlines,
+    delete_origin_right_lines = delete_origin_right_lines,
   }
 end
 
