@@ -312,10 +312,10 @@ do
     "Second delete origin should be tracked by right line")
   assert_eq(underlines.tail_underlines[7] ~= nil, true,
     "Second deletion should have a tail underline before its triangle")
-  assert_eq(underlines.tail_underlines[7].triangle_col, 13,
-    "Delete tail should target the inward-shifted right delete wedge")
+  assert_eq(underlines.tail_underlines[7].triangle_col, 7,
+    "Delete tail should target the midpoint delete wedge")
   assert_eq(underlines.tail_underlines[7].bar_col < underlines.tail_underlines[7].triangle_col, true,
-    "Delete tail should connect from left rail toward right-docked wedge")
+    "Delete tail should connect from left rail toward midpoint wedge")
   assert_eq(by_start[8].origin_display_row, 4,
     "Second deletion should originate from compact right row 4")
   assert_eq(by_start[8].display_start_row, 8,

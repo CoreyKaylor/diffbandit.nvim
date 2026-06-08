@@ -550,16 +550,17 @@ function Session:render()
       final_right_hl = "DiffBanditPlaceholder"
     end
 
-    -- Apply full-line highlights using line_hl_group to ensure fill to window edge
-    if final_left_hl and meta.left_index then
+    -- IMPORTANT: do NOT apply a full-line background on change lines.
+    -- Range extmarks below own those rows so intra-line emphasis can override
+    -- the base change background on both panes.
+    local skip_left_line_hl = (meta.kind == "change" and not meta.filler_left)
+    if final_left_hl and meta.left_index and not skip_left_line_hl then
       local left_row = meta.left_index - 1
       vim.api.nvim_buf_set_extmark(self.left_buf, self.extmark_ns, left_row, 0, {
         line_hl_group = final_left_hl,
         hl_mode = "combine",
       })
     end
-    -- IMPORTANT: do NOT apply a full-line background on the right for change lines
-    -- We render right change/add backgrounds with precise ranges later
     local skip_right_line_hl = (meta.kind == "change" and not meta.filler_right)
     if final_right_hl and meta.right_index and not skip_right_line_hl then
       local right_row = meta.right_index - 1
@@ -602,11 +603,13 @@ function Session:render()
       return
     end
     local underline_start_col = self.left_number_width + 1
-    if del_info.underline_start_after ~= nil then
+    if del_info.glyph_col ~= nil then
+      underline_start_col = del_info.glyph_col + 1
+    elseif del_info.underline_start_after ~= nil then
       underline_start_col = del_info.underline_start_after + 1
     end
     underline_start_col = math.max(self.left_number_width + 1, underline_start_col)
-    local underline_width = self.left_number_width + self.connector_core_width - underline_start_col
+    local underline_width = self.gutter_width - underline_start_col
     underline_width = math.max(1, underline_width)
 
     vim.api.nvim_buf_set_extmark(self.connector_buf, self.linenum_ns, row, underline_start_col, {
@@ -689,7 +692,7 @@ function Session:render()
         vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorAdd", row - 1, triangle_col, -1)
       end
     elseif p.kind == "delete" then
-      local triangle_col = math.max(core_start_col_base, right_col_base - 2)
+      local triangle_col = math.max(core_start_col_base, core_start_col_base + math.floor(self.connector_core_width / 2) - 2)
       for row = p.block_display_start or p.display_start_row, p.block_display_end or p.display_end_row do
         vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorDelete", row - 1, 0, triangle_col + 1)
       end
@@ -742,6 +745,7 @@ function Session:render()
           hl_group = "DiffBanditChangeLeft",
           end_row = row_l,
           end_col = #left_line,
+          hl_mode = "combine",
           priority = 2500,
         })
         pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, row_l, #left_line, {
@@ -749,6 +753,7 @@ function Session:render()
           end_row = row_l + 1,
           end_col = 0,
           hl_eol = true,
+          hl_mode = "combine",
           priority = 2500,
         })
         for _, sp in ipairs(spans.left or {}) do
@@ -1015,7 +1020,7 @@ function Session:render()
        if p.kind == "add" then
          triangle_col = right_col_base - 1
        else
-         triangle_col = math.max(core_start_col, right_col_base - 2)
+         triangle_col = math.max(core_start_col, core_start_col + math.floor(self.connector_core_width / 2) - 2)
        end
        local expansion_hl
        if p.kind == "add" then

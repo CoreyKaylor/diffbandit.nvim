@@ -342,7 +342,7 @@ function M.compute_underlines(paths, active_bars, layout)
   end
 
   local function delete_glyph_col_for_lane(_)
-    return math.max(left_number_width, glyph_base_col - 1)
+    return math.max(left_number_width, left_number_width + math.floor(connector_core_width / 2) - 2)
   end
 
   local function compute_glyph_col_for_row(path, row)
@@ -420,12 +420,11 @@ function M.compute_underlines(paths, active_bars, layout)
         if has_bar then
           local tail_row = triangle_row - 1
           -- Triangle position depends on kind:
-          -- Additions and deletions both dock to the target-side edge in the
-          -- compact terminal gutter. Delete wedges are cutouts in the delete
-          -- background at the right edge.
+          -- Additions dock to the target edge. Deletions stop at the midpoint
+          -- cutout so they do not collide with adjacent mixed change routes.
           local tri_col, bar_col_for_tail
           if p.kind == "delete" then
-            tri_col = math.max(left_number_width, left_number_width + connector_core_width - 2)
+            tri_col = delete_glyph_col_for_lane(lane)
             bar_col_for_tail = delete_lane_col(lane)
           else
             tri_col = left_number_width + connector_core_width - 1
