@@ -6,6 +6,7 @@ local base_defaults = {
   DiffBanditLineNumberRight = { link = "LineNr" },
   DiffBanditActiveChunk = {},
   DiffBanditConnectorText = { link = "Normal" },
+  DiffBanditSplit = { link = "WinSeparator" },
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
 }
@@ -99,6 +100,11 @@ local function apply_diff_variants()
     fg = normal_base.fg,
   })
 
+  apply_group("DiffBanditSplit", {
+    fg = get_foreground_color("LineNr", "#808080"),
+    bg = normal_base.bg,
+  })
+
   -- Separator line highlights for text buffers (use underline attribute)
   apply_group("DiffBanditAddLeftSeparator", {
     underline = true,
@@ -113,14 +119,20 @@ local function apply_diff_variants()
   -- Separator line highlights for connector buffer (use fg for overlay)
   apply_group("DiffBanditAddLeftSeparatorConnector", {
     fg = add_bg,
+    underline = true,
+    sp = add_bg,
   })
 
   apply_group("DiffBanditDeleteLeftSeparatorConnector", {
     fg = delete_bg,
+    underline = true,
+    sp = delete_bg,
   })
 
   apply_group("DiffBanditDeleteRightSeparatorConnector", {
     fg = delete_bg,
+    underline = true,
+    sp = delete_bg,
   })
 
   -- Filler/placeholder highlights
@@ -158,8 +170,22 @@ local function apply_diff_variants()
   -- Expansion glyphs: foreground matches the background color for seamless visual bridging
   -- The ◥/◤ triangles appear with fg color matching the add/delete background, creating
   -- a visual connection from the underline to the colored background region
-  apply_group("DiffBanditConnectorExpansionAdd", { fg = add_bg })
-  apply_group("DiffBanditConnectorExpansionDelete", { fg = delete_bg })
+  apply_group("DiffBanditConnectorExpansionAdd", {
+    fg = add_bg,
+    bg = normal_base.bg,
+  })
+  apply_group("DiffBanditConnectorExpansionDelete", {
+    fg = delete_bg,
+    bg = normal_base.bg,
+  })
+  apply_group("DiffBanditConnectorExpansionChange", {
+    fg = change_bg,
+    bg = normal_base.bg,
+  })
+  apply_group("DiffBanditConnectorDeleteCutout", {
+    fg = normal_base.bg,
+    bg = delete_bg,
+  })
 
   apply_group("DiffBanditConnectorContext", {
     bg = normal_base.bg,
@@ -175,6 +201,16 @@ local function apply_diff_variants()
   apply_group("DiffBanditLineNumberLeftDelete", {
     fg = get_foreground_color("LineNr", "#808080"),
     bg = delete_bg,
+  })
+
+  apply_group("DiffBanditLineNumberLeftChange", {
+    fg = get_foreground_color("LineNr", "#808080"),
+    bg = change_bg,
+  })
+
+  apply_group("DiffBanditLineNumberRightChange", {
+    fg = get_foreground_color("LineNr", "#808080"),
+    bg = change_bg,
   })
 
   -- Underlined variant for origin rows (additions - left pane)

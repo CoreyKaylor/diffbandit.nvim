@@ -61,10 +61,10 @@ indicate where content aligns logically:
 
 The visual indicators (underlines, triangles) tell the alignment story without filler rows.
 
-**IMPORTANT** Visual output `^` represents underline characters rendered via extmarks (actual glyph: `▁`).
+**IMPORTANT** Diagrams use `^`/`▁` as notation for separator underlines. The implementation renders these as native underlined spaces via extmarks, not literal buffer text.
 
 **Legend:**
-- `^` (▁) = Beige underline extending from right pane LEFTWARD into gutter (connects to vertical bar or triangle)
+- `^` (▁) = Beige native underline extending from right pane LEFTWARD into gutter (connects to vertical bar or triangle)
 - `<` (◤) = Triangle glyph pointing left, marking start of deletion block (docks to LEFT side of gutter)
 - `|` (│) = Vertical bar glyph (flow continuation between origin and triangle)
 - `[TAN]` = Full-line beige/tan background on deleted lines in left pane
@@ -82,7 +82,7 @@ The visual indicators (underlines, triangles) tell the alignment story without f
 ### Right Pane (6 buffer lines)
 - Contains 6 lines from the right file
 - Buffer lines 1-6 contain real content, display rows 7-11 show `~` (empty buffer indicator)
-- Beige underlines (`▁`) appear on origin rows where deletions follow:
+- Beige native underlines appear on origin rows where deletions follow:
   - Buffer row 2 (Second line) - underline before first deletion block
   - Buffer row 4 (Fourth line) - underline before second deletion block
 
@@ -95,7 +95,7 @@ The visual indicators (underlines, triangles) tell the alignment story without f
 **Visual Connectors:**
 - Triangles (◤) appear at: display rows 3, 8 (first line of each deletion block)
 - Triangles dock to LEFT side of gutter (near left line numbers)
-- Underlines (▁) appear on origin rows in gutter extending toward triangles
+- Native underlines appear on origin rows in gutter extending toward triangles
 
 **Beige Background:**
 - Appears to the LEFT of triangles on deletion rows (3,4,5,8,9)

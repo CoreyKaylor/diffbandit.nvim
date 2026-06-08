@@ -19,7 +19,7 @@ Pure Additions Expected Visual Output
 └─────────────────────────┴────────────────────────┴─────────────────────┘
 
 Legend:
-- ▁ = Underline character (rendered via extmarks) on origin rows
+- ▁ = Diagram notation for native underline spans on origin rows
 - ◥ = Triangle glyph marking the start of an addition block
 - │ = Vertical bar connecting distant origins to their triangles
 - [Grn BG] = Green background on added lines

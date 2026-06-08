@@ -110,12 +110,27 @@ function M.changed_spans(left_line, right_line)
   local right_change_start = prefix + 1
   local right_add_start = right_change_start + change_len
 
-  if left_mid_len > 0 then
-    table.insert(spans_left, { left_span_start, left_span_start + left_mid_len - 1 })
+  local shared_change_suffix = 0
+  if change_len > 0 then
+    while shared_change_suffix < change_len do
+      local left_pos = left_span_start + left_mid_len - shared_change_suffix - 1
+      local right_pos = right_change_start + change_len - shared_change_suffix - 1
+      if left_line:sub(left_pos, left_pos) ~= right_line:sub(right_pos, right_pos) then
+        break
+      end
+      shared_change_suffix = shared_change_suffix + 1
+    end
   end
 
-  if change_len > 0 then
-    table.insert(spans_right_changes, { right_change_start, right_change_start + change_len - 1 })
+  local left_emphasis_len = math.max(0, left_mid_len - shared_change_suffix)
+  local right_emphasis_len = math.max(0, change_len - shared_change_suffix)
+
+  if left_emphasis_len > 0 then
+    table.insert(spans_left, { left_span_start, left_span_start + left_emphasis_len - 1 })
+  end
+
+  if right_emphasis_len > 0 then
+    table.insert(spans_right_changes, { right_change_start, right_change_start + right_emphasis_len - 1 })
   end
 
   local has_change = change_len > 0

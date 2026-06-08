@@ -1,4 +1,6 @@
-local root = "/Users/CoreyK/Projects/oss/diffbandit.nvim"
+local source = debug.getinfo(1, "S").source:gsub("^@", "")
+local test_dir = vim.fn.fnamemodify(source, ":p:h")
+local root = vim.fn.fnamemodify(test_dir .. "/..", ":p")
 package.path = package.path .. ";" .. root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua"
 
 local config = require("diffbandit.config").defaults()
@@ -250,6 +252,195 @@ do
     end
   end
   assert_eq(origin_count >= 1, true, "Should have at least 1 origin row marked")
+
+  local by_right_start = {}
+  for _, p in ipairs(paths) do
+    if p.kind == "add" then
+      by_right_start[p.start_right_line] = p
+    end
+  end
+  assert_eq(by_right_start[3].origin_display_row, 2,
+    "First addition should originate from compact left row 2")
+  assert_eq(by_right_start[7].origin_display_row, 4,
+    "Second addition should originate from compact left row 4")
+  assert_eq(by_right_start[11].origin_display_row, 5,
+    "Third addition should originate from compact left row 5")
+  assert_eq(by_right_start[11].display_start_row, 11,
+    "Addition triangle should use compact right target row")
+end
+
+-- Test Suite 8: Simple deletions (pure_deletions case)
+do
+  local left = read_file(root .. "/tests/files/left_deletions.txt")
+  local right = read_file(root .. "/tests/files/right_deletions.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (simple deletions)")
+
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+  local active_bars = paths_mod.compute_active_bars(paths)
+  local underlines = paths_mod.compute_underlines(paths, active_bars, {
+    left_number_width = 3,
+    connector_core_width = 12,
+    rail_spacing = 1,
+  })
+
+  local by_start = {}
+  for _, p in ipairs(paths) do
+    if p.kind == "delete" then
+      by_start[p.start_row] = p
+    end
+  end
+
+  assert_eq(by_start[3] ~= nil, true, "First deletion path should start at left line 3")
+  assert_eq(by_start[3].end_row, 5, "First deletion path should end at left line 5")
+  assert_eq(by_start[3].origin_right_line, 2, "First deletion origin should be right line 2")
+
+  assert_eq(by_start[8] ~= nil, true, "Second deletion path should start at left line 8")
+  assert_eq(by_start[8].end_row, 9, "Second deletion path should end at left line 9")
+  assert_eq(by_start[8].origin_right_line, 4, "Second deletion origin should be right line 4")
+
+  for row = 5, 7 do
+    assert_eq(active_bars[row] ~= nil, true, "Second deletion should have a bar at row " .. row)
+    assert_eq(active_bars[row][by_start[8].lane] ~= nil, true,
+      "Second deletion bar should use its assigned lane at row " .. row)
+  end
+
+  assert_eq(underlines.delete_origin_right_lines[2] ~= nil, true,
+    "First delete origin should be tracked by right line")
+  assert_eq(underlines.delete_origin_right_lines[4] ~= nil, true,
+    "Second delete origin should be tracked by right line")
+  assert_eq(underlines.tail_underlines[7] ~= nil, true,
+    "Second deletion should have a tail underline before its triangle")
+  assert_eq(underlines.tail_underlines[7].triangle_col, 13,
+    "Delete tail should target the inward-shifted right delete wedge")
+  assert_eq(underlines.tail_underlines[7].bar_col < underlines.tail_underlines[7].triangle_col, true,
+    "Delete tail should connect from left rail toward right-docked wedge")
+  assert_eq(by_start[8].origin_display_row, 4,
+    "Second deletion should originate from compact right row 4")
+  assert_eq(by_start[8].display_start_row, 8,
+    "Second deletion triangle should use compact left target row 8")
+end
+
+-- Test Suite 9: Mixed changes + deletions + additions in one file
+do
+  local left = read_file(root .. "/tests/files/left_mixed.txt")
+  local right = read_file(root .. "/tests/files/right_mixed.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (mixed)")
+
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+
+  local function find_meta(predicate)
+    for idx, m in ipairs(v.line_meta) do
+      if predicate(m) then
+        return idx, m
+      end
+    end
+    return nil, nil
+  end
+
+  -- Change block 1: left 3/4 vs right 3/4 should be change
+  do
+    local _, m3 = find_meta(function(m) return m.left_line == 3 and m.right_line == 3 end)
+    local _, m4 = find_meta(function(m) return m.left_line == 4 and m.right_line == 4 end)
+    assert_eq(m3 and m3.kind or nil, "change", "Expected line 3 to be a change")
+    assert_eq(m4 and m4.kind or nil, "change", "Expected line 4 to be a change")
+  end
+
+  -- Deletion: left line 6 is deleted
+  do
+    local _, md = find_meta(function(m) return m.left_line == 6 end)
+    assert_eq(md and md.kind or nil, "delete", "Expected left line 6 to be delete")
+  end
+
+  -- Additions: right lines 8/9 are added (Added line 1/2)
+  local idx_a8, ma8 = find_meta(function(m) return m.right_line == 8 end)
+  local idx_a9, ma9 = find_meta(function(m) return m.right_line == 9 end)
+  assert_eq(ma8 and ma8.kind or nil, "add", "Expected right line 8 to be add")
+  assert_eq(ma9 and ma9.kind or nil, "add", "Expected right line 9 to be add")
+
+  -- Add rows produced inside change hunks must not carry change connector glyphs
+  do
+    local c8 = idx_a8 and v.connectors[idx_a8] or nil
+    local c9 = idx_a9 and v.connectors[idx_a9] or nil
+    assert_eq(c8 and c8:match("^%s*$") ~= nil or false, true, "Expected connector for added line 1 to be spaces")
+    assert_eq(c9 and c9:match("^%s*$") ~= nil or false, true, "Expected connector for added line 2 to be spaces")
+  end
+
+  -- Mixed replacement row should remain a change with a separate added suffix.
+  do
+    local spans = diff.changed_spans("Original text here", "Modified text here with extra content")
+    assert_eq(spans.add_start, 19, "Mixed replacement should split added suffix after replacement text")
+    assert_eq(#spans.right_changes, 1, "Mixed replacement should keep a right-side change span")
+    assert_eq(spans.right_changes[1][1], 1, "Mixed replacement change span should start at first column")
+    assert_eq(spans.right_changes[1][2], 8, "Mixed replacement emphasis should cover only the changed word")
+  end
+
+  -- Paths should include both an add path (for Added line 1/2) and a delete path
+  do
+    local found_add = false
+    local found_delete = false
+    local found_mixed_change = false
+    for _, p in ipairs(paths) do
+      if p.kind == "add" and p.start_row == 8 and p.end_row == 9 then
+        found_add = true
+        assert_eq(p.origin_left_line, 8, "Expected add origin to be left line 8")
+        assert_eq(p.embedded_in_change, true, "Expected adjacent add path to be embedded in change envelope")
+      end
+      if p.kind == "delete" and p.start_row == 6 and p.end_row == 6 then
+        found_delete = true
+        assert_eq(p.origin_right_line, 5, "Expected delete origin to be right line 5")
+      end
+      if p.kind == "change" and p.mixed_add then
+        found_mixed_change = true
+        assert_eq(p.start_left_index, 8, "Mixed change envelope should start at compact left row 8")
+        assert_eq(p.start_right_index, 7, "Mixed change envelope should start at compact right row 7")
+        assert_eq(p.end_right_index, 9, "Mixed change envelope should include adjacent right add rows")
+      end
+    end
+    assert_eq(found_add, true, "Expected to find an add path for right lines 8-9")
+    assert_eq(found_delete, true, "Expected to find a delete path for left line 6")
+    assert_eq(found_mixed_change, true, "Expected mixed change envelope for adjacent change+add hunks")
+  end
+end
+
+-- Test Suite 10: Comprehensive routes include compact-row offset changes
+do
+  local left = read_file(root .. "/tests/files/left_comprehensive.txt")
+  local right = read_file(root .. "/tests/files/right_comprehensive.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (comprehensive)")
+
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+
+  local saw_offset_change = false
+  local saw_add_with_different_meta_and_visual_rows = false
+  local saw_delete_with_right_origin = false
+
+  for _, p in ipairs(paths) do
+    if p.kind == "change" and p.offset then
+      saw_offset_change = true
+      assert_eq(p.display_start_row ~= nil, true, "Offset change should have display_start_row")
+      assert_eq(p.display_end_row ~= nil, true, "Offset change should have display_end_row")
+    elseif p.kind == "add" and p.meta_start_row ~= p.display_start_row then
+      saw_add_with_different_meta_and_visual_rows = true
+      assert_eq(p.origin_side, "left", "Add route origin side")
+      assert_eq(p.target_side, "right", "Add route target side")
+    elseif p.kind == "delete" and p.origin_right_line then
+      saw_delete_with_right_origin = true
+      assert_eq(p.origin_side, "right", "Delete route origin side")
+      assert_eq(p.target_side, "left", "Delete route target side")
+    end
+  end
+
+  assert_eq(saw_offset_change, true, "Comprehensive case should include an offset change route")
+  assert_eq(saw_add_with_different_meta_and_visual_rows, true,
+    "Comprehensive case should prove routes use compact visual rows, not metadata rows")
+  assert_eq(saw_delete_with_right_origin, true,
+    "Comprehensive case should include a delete route with right-side origin")
 end
 
 vim.api.nvim_out_write("OK\n")

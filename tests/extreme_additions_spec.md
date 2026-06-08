@@ -61,9 +61,9 @@ Row  │ Left#  Connector        Right# │ Notes
 - **Tests**: 5-level deep nesting, long vertical bars
 
 ## Visual Requirements
-- Underlines (`▁`) on origin rows extend to their lane's vertical bar position
+- Native underlines on origin rows extend to their lane's vertical bar position
 - Vertical bars (`│`) maintain consistent column per lane across all rows
-- Tail underlines appear on rows just before triangles (connecting bar to triangle)
+- Native tail underlines appear on rows just before triangles (connecting bar to triangle)
 - Triangles (`◥`) mark the first line of each addition block
 - No visual collisions between bars in different lanes
 

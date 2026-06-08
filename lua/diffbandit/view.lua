@@ -133,43 +133,6 @@ function M.build(left_lines, right_lines, hunks, config)
     local left_line_idx = h.left.start
     local right_line_idx = h.right.start
 
-    -- Heuristic realignment inside change hunks when counts differ: match most-similar
-    -- right line to the (single) left line to avoid blue highlighting on unrelated added lines.
-    local right_order = nil
-    if h.type == "change" and h.left.count == 1 and h.right.count > 1 then
-      local function common_prefix_len(a, b)
-        if not a or not b then return 0 end
-        local maxp = math.min(#a, #b)
-        local p = 0
-        while p < maxp do
-          local ca = a:sub(p + 1, p + 1)
-          local cb = b:sub(p + 1, p + 1)
-          if ca ~= cb then break end
-          p = p + 1
-        end
-        return p
-      end
-      local left_val = left_lines[h.left.start] or ""
-      local best_j = nil
-      local best_score = -1
-      for j = h.right.start, h.right.start + h.right.count - 1 do
-        local r = right_lines[j] or ""
-        local score = common_prefix_len(left_val, r)
-        if score > best_score then
-          best_score = score
-          best_j = j
-        end
-      end
-      if best_j then
-        right_order = { best_j }
-        for j = h.right.start, h.right.start + h.right.count - 1 do
-          if j ~= best_j then
-            right_order[#right_order + 1] = j
-          end
-        end
-      end
-    end
-
     for i = 1, max_lines do
       local left_text
       local right_text
@@ -188,27 +151,12 @@ function M.build(left_lines, right_lines, hunks, config)
       end
 
       if i <= h.right.count then
-        if right_order then
-          local rj = right_order[i]
-          right_text = right_lines[rj] or ""
-          right_line_num = rj
-        else
-          right_text = right_lines[right_line_idx] or ""
-          right_line_num = right_line_idx
-          right_line_idx = right_line_idx + 1
-        end
+        right_text = right_lines[right_line_idx] or ""
+        right_line_num = right_line_idx
+        right_line_idx = right_line_idx + 1
         filler_right = false
       else
         right_text = ""
-      end
-
-      -- For add/delete, let session.lua path rendering handle connector symbols
-      -- Only use connector_for for change hunks
-      local connector_text
-      if h.type == "add" or h.type == "delete" then
-        connector_text = string.rep(" ", connector_width)
-      else
-        connector_text = connector_for(h.type, i, max_lines, connectors_cfg, connector_width)
       end
 
       -- Reclassify extra rows inside change hunks as add/delete so
@@ -220,6 +168,22 @@ function M.build(left_lines, right_lines, hunks, config)
         elseif i > h.right.count and i <= h.left.count then
           kind = "delete"
         end
+      end
+
+      -- Connector text is driven by per-row kind, not hunk type.
+      -- Add/delete rows (including those produced inside change hunks) are rendered
+      -- via session.lua path rendering (triangles/bars/underlines).
+      local connector_text
+      if kind == "add" or kind == "delete" then
+        connector_text = string.rep(" ", connector_width)
+      elseif kind == "change" then
+        local change_total = math.min(h.left.count, h.right.count)
+        if change_total <= 0 then
+          change_total = 1
+        end
+        connector_text = connector_for("change", math.min(i, change_total), change_total, connectors_cfg, connector_width)
+      else
+        connector_text = connectors_cfg.context or ""
       end
 
       -- Keep change classification at the line level; intra-line coloring decides blue/green mix.
@@ -236,17 +200,29 @@ function M.build(left_lines, right_lines, hunks, config)
 
     chunk.display_end = #line_meta
 
-    -- Mark origin rows for session.lua to render underlines
-    -- Don't set connector symbols here - let session.lua path rendering handle it
-    if chunk.type == "add" and chunk.display_start > 1 then
-      local meta = line_meta[chunk.display_start - 1]
-      if meta then
-        meta.origin = "add"
-      end
-    elseif chunk.type == "delete" and chunk.display_start > 1 then
-      local meta = line_meta[chunk.display_start - 1]
-      if meta then
-        meta.origin = "delete"
+    -- Mark origin rows for session.lua to render underlines.
+    -- For mixed hunks (change hunks that contain add/delete rows), mark origins
+    -- for each contiguous add/delete segment.
+    if chunk.display_start > 1 then
+      local i = chunk.display_start
+      while i <= chunk.display_end do
+        local m = line_meta[i]
+        local k = m and m.kind
+        if k == "add" or k == "delete" then
+          if i > 1 then
+            local origin_meta = line_meta[i - 1]
+            if origin_meta and not origin_meta.origin then
+              origin_meta.origin = k
+            end
+          end
+          local j = i + 1
+          while j <= chunk.display_end and line_meta[j] and line_meta[j].kind == k do
+            j = j + 1
+          end
+          i = j
+        else
+          i = i + 1
+        end
       end
     end
 

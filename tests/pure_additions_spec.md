@@ -52,10 +52,10 @@
 │ ~                       │               12       │                     │
 └─────────────────────────┴────────────────────────┴─────────────────────┘
 ```
-**IMPORTANT** Visual output `▁` represents underline characters rendered via extmarks.
+**IMPORTANT** Diagrams use `▁` as notation for separator underlines. The implementation renders these as native underlined spaces via extmarks, not literal buffer text.
 
 **Legend:**
-- `▁` = Green underline extending from left pane into gutter (connects to vertical bar or triangle)
+- `▁` = Green native underline extending from left pane into gutter (connects to vertical bar or triangle)
 - `◥` = Triangle glyph marking start of addition block
 - `│` = Vertical bar glyph (flow continuation between origin and triangle)
 - `[GRN BG]` = Full-line green background on added lines
@@ -67,7 +67,7 @@
 - Contains exactly 6 lines from the original file
 - Display rows 1-6 show actual content (Alpha, Beta, Gamma, Delta, Epsilon, blank)
 - Display rows 7-12 show `~` (empty buffer indicator)
-- Green underlines (`▁`) appear on origin rows where additions follow:
+- Green native underlines appear on origin rows where additions follow:
   - Row 2 (Beta) - underline connects to triangle at row 3
   - Row 4 (Delta) - underline connects to vertical bar leading to triangle at row 7
   - Row 5 (Epsilon) - underline connects to vertical bar leading to triangle at row 11
@@ -83,7 +83,7 @@
 - Vertical bars (│) connect origin underlines to distant triangles:
   - From row 4 origin → bar on rows 5-6 → triangle at row 7
   - From row 5 origin → bar on rows 6-10 → triangle at row 11
-- Underlines (▁) appear on origin rows and as "tail" underlines before triangles
+- Native underlines appear on origin rows and as tail underlines before triangles
 
 **Green Background:**
 - Appears to the RIGHT of triangles on addition rows (3,4,7,8,9,11)
