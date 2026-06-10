@@ -723,11 +723,13 @@ function Session:render()
       end
     elseif p.kind == "change" then
       if p.mixed_add and p.start_left_index and p.start_right_index then
-        local mid_col = core_start_col_base + math.floor(self.connector_core_width / 2)
+        -- Mixed change/add envelopes dock their wedges against the right line
+        -- numbers; the connector core remains available for lanes and rails.
+        local wedge_col = right_col_base - 1
         local right_start = p.start_right_index
         local right_end = p.end_right_index or p.start_right_index
         for row = right_start, right_end do
-          local start_col = mid_col
+          local start_col = wedge_col + 1
           if row >= p.start_left_index and row <= (p.end_left_index or p.start_left_index) then
             start_col = 0
           end
@@ -1071,8 +1073,9 @@ function Session:render()
       -- terminal shape reads closer to IntelliJ's softened route.
       if p.mixed_add and p.start_left_index and p.end_left_index
           and p.start_right_index and p.end_right_index then
-        local mid_col = core_start_col + math.floor(self.connector_core_width / 2)
-        local wedge_col = math.max(core_start_col, mid_col - 1)
+        -- Keep mixed wedges edge-docked instead of floating in the connector
+        -- core so future scroll clipping only needs to flip orientation.
+        local wedge_col = right_col_base - 1
 
         if p.start_right_index < p.start_left_index then
           vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, p.start_right_index - 1, wedge_col, {

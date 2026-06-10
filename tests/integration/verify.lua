@@ -142,6 +142,38 @@ local function ansi_bg_for_text(line, label)
   return nil
 end
 
+local function ansi_bg_for_text_after(line, label, after_label)
+  local current_bg = nil
+  local seen_after = false
+  local pos = 1
+  while pos <= #line do
+    local esc_start, esc_end, codes = line:find("\27%[([%d;]*)m", pos)
+    local chunk_end = (esc_start or (#line + 1)) - 1
+    if chunk_end >= pos then
+      local chunk = line:sub(pos, chunk_end)
+      if seen_after and chunk:find(label, 1, true) then
+        return current_bg
+      end
+      if chunk:find(after_label, 1, true) then
+        seen_after = true
+      end
+    end
+    if not esc_start then
+      break
+    end
+
+    if sgr_has(codes, "0") or sgr_has(codes, "49") then
+      current_bg = nil
+    end
+    local r, g, b = codes:match("48;2;(%d+);(%d+);(%d+)")
+    if r then
+      current_bg = table.concat({ r, g, b }, ";")
+    end
+    pos = esc_end + 1
+  end
+  return nil
+end
+
 local function ansi_bg_at_plain_byte(line, plain_byte_pos)
   local current_bg = nil
   local plain_pos = 1
@@ -225,6 +257,83 @@ local function ansi_underline_at_plain_byte(line, plain_byte_pos)
   return false
 end
 
+local function ansi_glyph_transition_bgs(line, glyph)
+  local stripped = strip_ansi(line)
+  local glyph_pos = stripped:find(glyph, 1, true)
+  if not glyph_pos then
+    return nil
+  end
+
+  return {
+    before = glyph_pos > 1 and ansi_bg_at_plain_byte(line, glyph_pos - 1) or nil,
+    glyph = ansi_bg_at_plain_byte(line, glyph_pos),
+    after = ansi_bg_at_plain_byte(line, glyph_pos + #glyph),
+  }
+end
+
+local function add_delete_triangle_transition_check(errors, ansi_lines, label, glyph, description)
+  if not ansi_lines then
+    table.insert(errors, "ANSI capture missing; cannot verify delete triangle transition for " .. description)
+    return
+  end
+
+  local found = false
+  local transition
+  for _, line in ipairs(ansi_lines) do
+    local stripped = strip_ansi(line)
+    if stripped:find(label, 1, true) and stripped:find(glyph, 1, true) then
+      found = true
+      transition = ansi_glyph_transition_bgs(line, glyph)
+      break
+    end
+  end
+
+  if not found then
+    table.insert(errors, "Expected delete triangle row for " .. description)
+    return
+  end
+  if not transition or not transition.before then
+    table.insert(errors, "Expected delete gutter background before the triangle for " .. description)
+    return
+  end
+  if transition.glyph == transition.before then
+    table.insert(errors, "Delete triangle cell should not share the left delete gutter background for " .. description)
+  end
+  if transition.after == transition.before then
+    table.insert(errors, "Delete gutter background should not continue broadly after the triangle for " .. description)
+  end
+end
+
+local function add_add_triangle_transition_check(errors, ansi_lines, label, glyph, description)
+  if not ansi_lines then
+    table.insert(errors, "ANSI capture missing; cannot verify add triangle transition for " .. description)
+    return
+  end
+
+  local found = false
+  local transition
+  for _, line in ipairs(ansi_lines) do
+    local stripped = strip_ansi(line)
+    if stripped:find(label, 1, true) and stripped:find(glyph, 1, true) then
+      found = true
+      transition = ansi_glyph_transition_bgs(line, glyph)
+      break
+    end
+  end
+
+  if not found then
+    table.insert(errors, "Expected add triangle row for " .. description)
+    return
+  end
+  if not transition or not transition.after then
+    table.insert(errors, "Expected add gutter background immediately after the triangle for " .. description)
+    return
+  end
+  if transition.glyph == transition.after then
+    table.insert(errors, "Add gutter background should start after the triangle cell for " .. description)
+  end
+end
+
 local function verify_extreme_additions(lines, ansi_lines)
   local errors = {}
 
@@ -262,6 +371,7 @@ local function verify_extreme_additions(lines, ansi_lines)
   end
 
   add_ansi_underline_check(errors, ansi_lines, 3, "extreme addition origins")
+  add_add_triangle_transition_check(errors, ansi_lines, "New after Bravo 1", triangle, "extreme additions")
 
   return errors
 end
@@ -315,6 +425,7 @@ local function verify_pure_additions(lines, ansi_lines)
   elseif add_triangle_bg == add_after_triangle_bg then
     table.insert(errors, "Add gutter background should start after the add triangle cell")
   end
+  add_add_triangle_transition_check(errors, ansi_lines, "New line 6", triangle, "pure additions tail block")
 
   return errors
 end
@@ -330,7 +441,9 @@ local function verify_deletions(lines, ansi_lines)
   local triangle_count = 0
   local saw_deleted_text = false
   local pure_delete_triangle_after_left_number = false
+  local second_delete_triangle_after_left_number = false
   local pure_delete_rail_after_left_number = false
+  local delete_origin_underline_reaches_edge = false
   for _, line in ipairs(lines) do
     local stripped = strip_ansi(line)
     for _, triangle in ipairs(delete_triangles) do
@@ -344,9 +457,26 @@ local function verify_deletions(lines, ansi_lines)
       if stripped:find("3\226\151\164", 1, true) then
         pure_delete_triangle_after_left_number = true
       end
+    elseif stripped:find("Line to delete 4", 1, true) then
+      if stripped:find("8\226\151\164", 1, true) then
+        second_delete_triangle_after_left_number = true
+      end
     elseif stripped:find("Third line", 1, true) and stripped:find("Sixth line", 1, true) then
       if stripped:find("6%s+│%s+6%s+│Sixth line") then
         pure_delete_rail_after_left_number = true
+      end
+    end
+  end
+
+  if ansi_lines then
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Second line", 1, true) then
+        local right_sep_pos = stripped:find("│Second line", 1, true)
+        if right_sep_pos then
+          delete_origin_underline_reaches_edge =
+            delete_origin_underline_reaches_edge or ansi_underline_at_plain_byte(line, right_sep_pos - 1)
+        end
       end
     end
   end
@@ -360,10 +490,18 @@ local function verify_deletions(lines, ansi_lines)
   if not pure_delete_triangle_after_left_number then
     table.insert(errors, "Pure deletion wedge should sit immediately after the left line number")
   end
+  if not second_delete_triangle_after_left_number then
+    table.insert(errors, "Second pure deletion wedge should sit immediately after the left line number")
+  end
   if not pure_delete_rail_after_left_number then
     table.insert(errors, "Pure deletion continuation rail should stay immediately after the left line number")
   end
   add_ansi_underline_check(errors, ansi_lines, 2, "deletion origins")
+  if not delete_origin_underline_reaches_edge then
+    table.insert(errors, "Pure deletion origin underline should reach the right edge of the gutter")
+  end
+  add_delete_triangle_transition_check(errors, ansi_lines, "Line to delete 1", "\226\151\164", "first pure deletion")
+  add_delete_triangle_transition_check(errors, ansi_lines, "Line to delete 4", "\226\151\164", "second pure deletion")
 
   return errors
 end
@@ -416,9 +554,11 @@ local function verify_mixed(lines, ansi_lines)
     table.insert(errors, "Expected deleted left text in mixed diff")
   end
 
-  local old_word_bg, old_tail_bg
-  local modified_word_bg, modified_tail_bg, added_suffix_bg, right_number_bg, adjacent_route_bg
+  local old_word_bg, old_tail_bg, new_word_bg, new_tail_bg, original_word_bg, original_tail_bg
+  local modified_word_bg, modified_tail_bg, added_suffix_bg, right_number_bg
+  local delete_before_bg, delete_glyph_bg, delete_after_bg
   local before_top_wedge_bg, after_top_wedge_bg
+  local top_wedge_docked_to_right_number
   local delete_origin_underline_reaches_edge, delete_origin_underline_at_triangle
   local delete_origin_underline_after_triangle
   local added_line2_bg, added_line2_after_bg
@@ -428,6 +568,8 @@ local function verify_mixed(lines, ansi_lines)
       if stripped:find("Old value A", 1, true) then
         old_word_bg = ansi_bg_for_text(line, "Old")
         old_tail_bg = ansi_bg_for_text(line, "value A")
+        new_word_bg = ansi_bg_for_text(line, "New")
+        new_tail_bg = ansi_bg_for_text_after(line, "value A", "New")
       elseif stripped:find("Context line 3", 1, true) then
         local right_sep_pos = stripped:find("│Context line 3", 1, true)
         if right_sep_pos then
@@ -440,6 +582,12 @@ local function verify_mixed(lines, ansi_lines)
           delete_origin_underline_after_triangle = ansi_underline_at_plain_byte(line, delete_wedge_col + 1)
         end
       elseif stripped:find("Delete this line", 1, true) then
+        local transition = ansi_glyph_transition_bgs(line, "\226\151\164")
+        if transition then
+          delete_before_bg = transition.before
+          delete_glyph_bg = transition.glyph
+          delete_after_bg = transition.after
+        end
       elseif stripped:find("Modified text here with extra content", 1, true) then
         modified_word_bg = ansi_bg_for_text(line, "Modified")
         modified_tail_bg = ansi_bg_for_text(line, "text here")
@@ -447,13 +595,16 @@ local function verify_mixed(lines, ansi_lines)
         local number_pos = stripped:find("7%s+│Modified text here")
         if number_pos then
           right_number_bg = ansi_bg_at_plain_byte(line, number_pos)
-          adjacent_route_bg = ansi_bg_at_plain_byte(line, number_pos - 1)
         end
         local wedge_pos = stripped:find(change_wedge_top, 1, true)
         if wedge_pos then
           before_top_wedge_bg = ansi_bg_at_plain_byte(line, wedge_pos - 1)
           after_top_wedge_bg = ansi_bg_at_plain_byte(line, wedge_pos + #change_wedge_top)
+          top_wedge_docked_to_right_number = number_pos and (wedge_pos + #change_wedge_top == number_pos)
         end
+      elseif stripped:find("Original text here", 1, true) then
+        original_word_bg = ansi_bg_for_text(line, "Original")
+        original_tail_bg = ansi_bg_for_text(line, "text here")
       elseif stripped:find("Added line 2", 1, true) then
         local start_pos = stripped:find("Added line 2", 1, true)
         added_line2_bg = ansi_bg_for_text(line, "Added line 2")
@@ -465,6 +616,16 @@ local function verify_mixed(lines, ansi_lines)
     table.insert(errors, "Expected ANSI backgrounds for left-side changed word emphasis")
   elseif old_word_bg == old_tail_bg then
     table.insert(errors, "Left replacement row should emphasize only the changed word")
+  end
+  if not original_word_bg or not original_tail_bg then
+    table.insert(errors, "Expected ANSI backgrounds for mixed left replacement emphasis")
+  elseif original_word_bg == original_tail_bg then
+    table.insert(errors, "Mixed left replacement should emphasize only the changed word")
+  end
+  if not new_word_bg or not new_tail_bg then
+    table.insert(errors, "Expected ANSI backgrounds for right-side changed word emphasis")
+  elseif new_word_bg == new_tail_bg then
+    table.insert(errors, "Right replacement row should emphasize only the changed word")
   end
   if not modified_word_bg or not modified_tail_bg or not added_suffix_bg then
     table.insert(errors, "Expected ANSI backgrounds for mixed replacement emphasis and added suffix")
@@ -478,10 +639,8 @@ local function verify_mixed(lines, ansi_lines)
   end
   if not right_number_bg then
     table.insert(errors, "Expected mixed replacement right line number to have an ANSI background")
-  elseif not adjacent_route_bg then
-    table.insert(errors, "Expected mixed replacement route background adjacent to right line number")
-  elseif right_number_bg ~= adjacent_route_bg then
-    table.insert(errors, "Mixed replacement right line number should participate in the change route background")
+  elseif not top_wedge_docked_to_right_number then
+    table.insert(errors, "Mixed replacement wedge should dock directly against the right line number")
   end
   if not after_top_wedge_bg then
     table.insert(errors, "Expected mixed route background after the top expansion wedge")
@@ -498,6 +657,13 @@ local function verify_mixed(lines, ansi_lines)
   end
   if not delete_origin_underline_after_triangle then
     table.insert(errors, "Delete origin underline should begin immediately after the delete triangle")
+  end
+  if not delete_before_bg then
+    table.insert(errors, "Expected mixed delete gutter background before the triangle")
+  elseif delete_glyph_bg == delete_before_bg then
+    table.insert(errors, "Mixed delete triangle cell should not share the left delete gutter background")
+  elseif delete_after_bg == delete_before_bg then
+    table.insert(errors, "Mixed delete gutter background should not continue broadly after the triangle")
   end
   if not added_line2_bg or not added_line2_after_bg then
     table.insert(errors, "Expected ANSI backgrounds for terminal embedded added row")

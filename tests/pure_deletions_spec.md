@@ -42,12 +42,12 @@ Visual alignment is communicated through underlines, triangles, and gutter line 
 +--------------------------+----------------------+-------------------------+
 | First line               |  1          1        | First line              |
 | Second line              |  2     ^^^^ 2        | Second line^^^^^^^^^^^^^|
-| Line to delete 1 [TAN]   |  3<                  | Third line              |
+| Line to delete 1 [TAN]   |  3◤          3       | Third line              |
 | Line to delete 2 [TAN]   |  4                   | Fourth line^^^^^^^^^^^^^|
-| Line to delete 3 [TAN]   |  5                   | Fifth line              |
-| Third line               |  6          3        | Sixth line              |
+| Line to delete 3 [TAN]   |  5 │         5       | Fifth line              |
+| Third line               |  6 │         6       | Sixth line              |
 | Fourth line              |  7     ^^^^ 4        | ~                       |
-| Line to delete 4 [TAN]   |  8<                  | ~                       |
+| Line to delete 4 [TAN]   |  8◤                 | ~                       |
 | Line to delete 5 [TAN]   |  9                   | ~                       |
 | Fifth line               | 10          5        | ~                       |
 | Sixth line               | 11          6        | ~                       |
@@ -65,7 +65,7 @@ The visual indicators (underlines, triangles) tell the alignment story without f
 
 **Legend:**
 - `^` (▁) = Beige native underline extending from right pane LEFTWARD into gutter (connects to vertical bar or triangle)
-- `<` (◤) = Triangle glyph pointing left, marking start of deletion block (docks to LEFT side of gutter)
+- `◤` = Triangle glyph marking start of deletion block; it docks immediately after the left line number
 - `|` (│) = Vertical bar glyph (flow continuation between origin and triangle)
 - `[TAN]` = Full-line beige/tan background on deleted lines in left pane
 - `~` = Empty line indicator (right buffer has fewer lines than display rows)
@@ -94,12 +94,15 @@ The visual indicators (underlines, triangles) tell the alignment story without f
 
 **Visual Connectors:**
 - Triangles (◤) appear at: display rows 3, 8 (first line of each deletion block)
-- Triangles dock to LEFT side of gutter (near left line numbers)
-- Native underlines appear on origin rows in gutter extending toward triangles
+- Triangles dock immediately after the left line number (`3◤`, `8◤`)
+- `◤` is the expected orientation for this fixture because the visible routes approach these delete targets from above. Future scroll-clipped or from-below routes may use the mirrored orientation as long as the rail/underline touches the transition glyph cleanly.
+- Rails (`│`) stay compact near the left line number and route deletion paths across the gutter without broad background fill
+- Native underlines appear on right-side origin rows, extend through the gutter, and begin after the triangle/rail cell when a delete path is present
 
 **Beige Background:**
-- Appears to the LEFT of triangles on deletion rows (3,4,5,8,9)
-- Creates visual flow from left pane backgrounds into gutter
+- Appears on the left pane deleted rows and the left line-number side of the gutter
+- Stops before the triangle cell so the triangle remains the transitional connector
+- Does not fill the connector core. Pipes and underlines, not broad background, connect to the right-side origin.
 
 ## Lane Assignment Logic
 
@@ -107,9 +110,10 @@ The visual indicators (underlines, triangles) tell the alignment story without f
 When multiple deletion regions overlap (their vertical bars would collide), each path is assigned to a different "lane" - a distinct column position for its vertical bar.
 
 ### Rules (Mirror of Additions)
-1. **Lane 1**: Leftmost position (closest to left line numbers) - for deletions
-2. **Higher lanes**: Move progressively right as nesting increases
+1. **Lane 1**: Compact position immediately after the left line number
+2. **Higher lanes**: Move right only as needed for overlap
 3. **Lane reuse**: When a path's bar ends (reaches its triangle), that lane becomes available
+4. **No touching regions**: Delete lanes must remain narrow enough that nearby change/add routes do not touch or overlap them
 
 ### Example from Test Case
 
@@ -119,7 +123,7 @@ When multiple deletion regions overlap (their vertical bars would collide), each
 
 **Second Deletion Block (rows 8-9, from Fourth line origin):**
 - Origin at row 7 (display), triangle at row 8
-- Need to check if bar is needed based on distance
+- Uses the same compact left-docked triangle rule
 
 ## Color Specifications
 
@@ -135,12 +139,23 @@ When multiple deletion regions overlap (their vertical bars would collide), each
 - Extends to full window width
 
 ### Beige Gutter Flow (Gutter Pane)
-- Background color to the LEFT of glyphs on deletion rows
-- Creates seamless color flow from left pane to gutter
+- Background color starts at the left side of the gutter and stops before the delete triangle
+- Creates visual flow from the left pane into the left line-number cells
 - Should match the same beige as left pane backgrounds
+- The triangle/pipe/underline route carries the visual connection from that compact left-side fill toward the right-side origin.
 
 ## Visual Flow Interpretation
-The deletion visual tells a story: "content on the left was removed, leaving a gap on the right. The underline shows where the gap is, and the triangle/connector points back to where the deleted content exists."
+The deletion visual tells a story: "content on the left was removed, leaving a gap on the right. The right-side underline marks where the deletion belongs, while the compact left-docked triangle/rail path points back to the deleted content without occupying unrelated gutter space."
+
+## Integration Regression Checks
+
+The tmux integration verifier should protect these visual details:
+
+- Plain capture contains delete triangles immediately after left line numbers (`3◤`, `8◤`).
+- ANSI capture shows delete background before the triangle but not under the triangle cell.
+- Delete background does not continue broadly after the triangle into the connector core.
+- Continuation rails remain compact near the left line number.
+- Native delete underlines are present on right-side origin rows and reach the right edge of the gutter.
 
 ## Testing
 

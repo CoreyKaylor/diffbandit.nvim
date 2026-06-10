@@ -64,8 +64,20 @@ Row  │ Left#  Connector        Right# │ Notes
 - Native underlines on origin rows extend to their lane's vertical bar position
 - Vertical bars (`│`) maintain consistent column per lane across all rows
 - Native tail underlines appear on rows just before triangles (connecting bar to triangle)
-- Triangles (`◥`) mark the first line of each addition block
+- Triangles (`◥`) mark the first line of each addition block and remain transition cells
+- `◥` is the expected orientation for this fixture's visible from-above routes. Future scroll-clipped or from-below routes may use mirrored orientations when needed to keep rails connected.
+- Add background starts immediately after each triangle and must not paint the triangle cell itself
 - No visual collisions between bars in different lanes
+
+## Integration Regression Checks
+
+The tmux integration verifier should protect these visual details:
+
+- At least six add triangles appear for the six addition blocks.
+- Multiple vertical bar rows appear, proving long paths are rendered.
+- Native underline rows appear for the addition origins.
+- Add background starts after representative triangle cells.
+- Left line numbers remain present even when nested lanes are active.
 
 ## Run Test
 ```vim
