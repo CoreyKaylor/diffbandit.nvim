@@ -296,6 +296,26 @@ local function verify_pure_additions(lines, ansi_lines)
 
   add_ansi_underline_check(errors, ansi_lines, 3, "pure addition origins")
 
+  local add_triangle_bg, add_after_triangle_bg
+  if ansi_lines then
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("New line 1", 1, true) then
+        local triangle_pos = stripped:find(triangle, 1, true)
+        if triangle_pos then
+          add_triangle_bg = ansi_bg_at_plain_byte(line, triangle_pos)
+          add_after_triangle_bg = ansi_bg_at_plain_byte(line, triangle_pos + #triangle)
+          break
+        end
+      end
+    end
+  end
+  if not add_after_triangle_bg then
+    table.insert(errors, "Expected add gutter background immediately after the add triangle")
+  elseif add_triangle_bg == add_after_triangle_bg then
+    table.insert(errors, "Add gutter background should start after the add triangle cell")
+  end
+
   return errors
 end
 
@@ -304,12 +324,13 @@ local function verify_deletions(lines, ansi_lines)
 
   local delete_triangles = {
     "\226\151\164",  -- ◤
-    "\226\151\163",  -- ◣
-    "\226\151\162",  -- ◢
+    "\226\151\165",  -- ◥
   }
 
   local triangle_count = 0
   local saw_deleted_text = false
+  local pure_delete_triangle_after_left_number = false
+  local pure_delete_rail_after_left_number = false
   for _, line in ipairs(lines) do
     local stripped = strip_ansi(line)
     for _, triangle in ipairs(delete_triangles) do
@@ -320,6 +341,13 @@ local function verify_deletions(lines, ansi_lines)
     end
     if stripped:find("Line to delete 1", 1, true) and stripped:find("Third line", 1, true) then
       saw_deleted_text = true
+      if stripped:find("3\226\151\164", 1, true) then
+        pure_delete_triangle_after_left_number = true
+      end
+    elseif stripped:find("Third line", 1, true) and stripped:find("Sixth line", 1, true) then
+      if stripped:find("6%s+│%s+6%s+│Sixth line") then
+        pure_delete_rail_after_left_number = true
+      end
     end
   end
 
@@ -328,6 +356,12 @@ local function verify_deletions(lines, ansi_lines)
   end
   if not saw_deleted_text then
     table.insert(errors, "Expected deleted left text and compact right text to appear in the capture")
+  end
+  if not pure_delete_triangle_after_left_number then
+    table.insert(errors, "Pure deletion wedge should sit immediately after the left line number")
+  end
+  if not pure_delete_rail_after_left_number then
+    table.insert(errors, "Pure deletion continuation rail should stay immediately after the left line number")
   end
   add_ansi_underline_check(errors, ansi_lines, 2, "deletion origins")
 
@@ -339,8 +373,7 @@ local function verify_mixed(lines, ansi_lines)
 
   local delete_triangles = {
     "\226\151\164",  -- ◤
-    "\226\151\163",  -- ◣
-    "\226\151\162",  -- ◢
+    "\226\151\165",  -- ◥
   }
   local change_wedge_top = "\226\151\162"  -- ◢
   local change_wedge_bottom = "\226\151\165"  -- ◥
@@ -386,7 +419,6 @@ local function verify_mixed(lines, ansi_lines)
   local old_word_bg, old_tail_bg
   local modified_word_bg, modified_tail_bg, added_suffix_bg, right_number_bg, adjacent_route_bg
   local before_top_wedge_bg, after_top_wedge_bg
-  local delete_triangle_bg, delete_after_triangle_bg
   local delete_origin_underline_reaches_edge, delete_origin_underline_at_triangle
   local delete_origin_underline_after_triangle
   local added_line2_bg, added_line2_after_bg
@@ -403,16 +435,11 @@ local function verify_mixed(lines, ansi_lines)
         end
         local left_num_pos = stripped:find("5", 1, true)
         if left_num_pos then
-          local delete_wedge_col = left_num_pos + 5
+          local delete_wedge_col = left_num_pos + 1
           delete_origin_underline_at_triangle = ansi_underline_at_plain_byte(line, delete_wedge_col)
           delete_origin_underline_after_triangle = ansi_underline_at_plain_byte(line, delete_wedge_col + 1)
         end
       elseif stripped:find("Delete this line", 1, true) then
-        local delete_wedge_pos = stripped:find(change_wedge_top, 1, true)
-        if delete_wedge_pos then
-          delete_triangle_bg = ansi_bg_at_plain_byte(line, delete_wedge_pos)
-          delete_after_triangle_bg = ansi_bg_at_plain_byte(line, delete_wedge_pos + #change_wedge_top)
-        end
       elseif stripped:find("Modified text here with extra content", 1, true) then
         modified_word_bg = ansi_bg_for_text(line, "Modified")
         modified_tail_bg = ansi_bg_for_text(line, "text here")
@@ -463,11 +490,6 @@ local function verify_mixed(lines, ansi_lines)
   elseif before_top_wedge_bg == after_top_wedge_bg then
     table.insert(errors, "Top mixed expansion route should not paint change background before the wedge")
   end
-  if not delete_triangle_bg or not delete_after_triangle_bg then
-    table.insert(errors, "Expected ANSI backgrounds around the mixed delete wedge")
-  elseif delete_triangle_bg == delete_after_triangle_bg then
-    table.insert(errors, "Mixed delete gutter background should stop after the delete wedge")
-  end
   if not delete_origin_underline_reaches_edge then
     table.insert(errors, "Delete origin underline should reach the right edge of the gutter")
   end
@@ -493,8 +515,8 @@ local function verify_comprehensive(lines, ansi_lines)
 
   local add_triangle = "\226\151\165"  -- ◥
   local delete_triangle = "\226\151\164"  -- ◤
-  local delete_triangle_from_below = "\226\151\163"  -- ◣
-  local delete_triangle_from_above = "\226\151\162"  -- ◢
+  local delete_triangle_from_below = "\226\151\165"  -- ◥
+  local legacy_delete_triangle = "\226\151\162"  -- ◢
   local vertical_bar = "\226\148\130"  -- │
 
   if count_occurrences(lines, add_triangle) < 3 then
@@ -502,7 +524,7 @@ local function verify_comprehensive(lines, ansi_lines)
   end
   if (count_occurrences(lines, delete_triangle)
       + count_occurrences(lines, delete_triangle_from_below)
-      + count_occurrences(lines, delete_triangle_from_above)) < 1 then
+      + count_occurrences(lines, legacy_delete_triangle)) < 1 then
     table.insert(errors, "Expected at least 1 delete triangle in comprehensive diff")
   end
   add_ansi_underline_check(errors, ansi_lines, 3, "comprehensive separator routes")

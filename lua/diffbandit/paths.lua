@@ -39,7 +39,7 @@ local function lane_col_base(lane, glyph_base_col, rail_spacing)
   return glyph_base_col - (idx * (rail_spacing + 1)) - 1
 end
 
-local function delete_lane_col_base(lane, left_number_width, rail_spacing)
+local function delete_lane_col_base(lane, left_number_width, connector_core_width, rail_spacing)
   local idx = math.max(0, lane - 1)
   return left_number_width + 1 + (idx * (rail_spacing + 1))
 end
@@ -124,7 +124,7 @@ local function build_paths(chunks, line_meta)
           block_display_end = visual_end,
           triangle_display_row = visual_start,
           approach = approach,
-          triangle_glyph = approach == "from_below" and "◣" or "◢",
+          triangle_glyph = approach == "from_below" and "◥" or "◤",
           fill_side = "left",
           start_row = start_row,
           end_row = end_row,
@@ -334,20 +334,20 @@ function M.compute_underlines(paths, active_bars, layout)
   end
 
   local function delete_lane_col(lane)
-    return delete_lane_col_base(lane, left_number_width, rail_spacing)
+    return delete_lane_col_base(lane, left_number_width, connector_core_width, rail_spacing)
   end
 
   local function glyph_col_for_lane(lane)
     return lane_col(lane) + 1
   end
 
-  local function delete_glyph_col_for_lane(_)
-    return math.max(left_number_width, left_number_width + math.floor(connector_core_width / 2) - 2)
+  local function delete_glyph_col_for_lane(path)
+    return left_number_width
   end
 
   local function compute_glyph_col_for_row(path, row)
     if path.kind == "delete" then
-      return delete_glyph_col_for_lane(path.lane)
+      return delete_glyph_col_for_lane(path)
     end
 
     if not active_bars[row] then
@@ -420,11 +420,12 @@ function M.compute_underlines(paths, active_bars, layout)
         if has_bar then
           local tail_row = triangle_row - 1
           -- Triangle position depends on kind:
-          -- Additions dock to the target edge. Deletions stop at the midpoint
-          -- cutout so they do not collide with adjacent mixed change routes.
+          -- Additions dock to the target edge. Deletions start immediately
+          -- after the left line number and use compact rails/underlines to
+          -- reach the right side without occupying the whole gutter.
           local tri_col, bar_col_for_tail
           if p.kind == "delete" then
-            tri_col = delete_glyph_col_for_lane(lane)
+            tri_col = delete_glyph_col_for_lane(p)
             bar_col_for_tail = delete_lane_col(lane)
           else
             tri_col = left_number_width + connector_core_width - 1

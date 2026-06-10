@@ -312,10 +312,10 @@ do
     "Second delete origin should be tracked by right line")
   assert_eq(underlines.tail_underlines[7] ~= nil, true,
     "Second deletion should have a tail underline before its triangle")
-  assert_eq(underlines.tail_underlines[7].triangle_col, 7,
-    "Delete tail should target the midpoint delete wedge")
-  assert_eq(underlines.tail_underlines[7].bar_col < underlines.tail_underlines[7].triangle_col, true,
-    "Delete tail should connect from left rail toward midpoint wedge")
+  assert_eq(underlines.tail_underlines[7].triangle_col, 3,
+    "Pure delete tail should start at the compact left-side delete wedge")
+  assert_eq(underlines.tail_underlines[7].bar_col > underlines.tail_underlines[7].triangle_col, true,
+    "Delete tail should connect from the left-side wedge toward the route rail")
   assert_eq(by_start[8].origin_display_row, 4,
     "Second deletion should originate from compact right row 4")
   assert_eq(by_start[8].display_start_row, 8,
@@ -331,6 +331,12 @@ do
 
   local v = view.build(left, right, hunks, config)
   local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+  local active_bars = paths_mod.compute_active_bars(paths)
+  local underlines = paths_mod.compute_underlines(paths, active_bars, {
+    left_number_width = 3,
+    connector_core_width = 12,
+    rail_spacing = 1,
+  })
 
   local function find_meta(predicate)
     for idx, m in ipairs(v.line_meta) do
@@ -403,6 +409,8 @@ do
     assert_eq(found_add, true, "Expected to find an add path for right lines 8-9")
     assert_eq(found_delete, true, "Expected to find a delete path for left line 6")
     assert_eq(found_mixed_change, true, "Expected mixed change envelope for adjacent change+add hunks")
+    assert_eq(underlines.delete_origin_right_lines[5].glyph_col, 3,
+      "Mixed delete wedge should stay compact after the left line number")
   end
 end
 

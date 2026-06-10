@@ -439,6 +439,10 @@ function Session:render()
   local function lane_col(lane)
     return rail_col_for_lane(lane)
   end
+  local function delete_lane_col(lane)
+    local idx = math.max(0, lane - 1)
+    return self.left_number_width + 1 + (idx * (rail_spacing + 1))
+  end
 
   -- Compute underline data using extracted helper
   local underline_layout = {
@@ -459,6 +463,7 @@ function Session:render()
   local mixed_envelope_left_indexes = {}
   local mixed_envelope_right_indexes = {}
   local mixed_envelope_connector_rows = {}
+  local change_connector_rows = {}
   for _, p in ipairs(paths) do
     if p.kind == "add" and p.embedded_in_change then
       if p.origin_left_index then
@@ -471,6 +476,13 @@ function Session:render()
         embedded_add_terminal_right_indexes[p.target_end_index] = true
       end
     elseif p.kind == "change" and p.mixed_add then
+      local start_row = p.display_start_row or p.start_row
+      local end_row = p.display_end_row or p.end_row or start_row
+      if start_row and end_row then
+        for row = start_row, end_row do
+          change_connector_rows[row] = true
+        end
+      end
       if p.start_left_index and p.end_left_index then
         for row = p.start_left_index, p.end_left_index do
           mixed_envelope_left_indexes[row] = true
@@ -487,7 +499,19 @@ function Session:render()
           mixed_envelope_connector_rows[row] = true
         end
       end
+    elseif p.kind == "change" then
+      local start_row = p.display_start_row or p.start_row
+      local end_row = p.display_end_row or p.end_row or start_row
+      if start_row and end_row then
+        for row = start_row, end_row do
+          change_connector_rows[row] = true
+        end
+      end
     end
+  end
+
+  local function delete_triangle_col(_, core_start_col, _)
+    return core_start_col
   end
 
   -- The connector buffer owns the aligned display model.
@@ -688,13 +712,14 @@ function Session:render()
   for _, p in ipairs(paths) do
     if p.kind == "add" and not p.embedded_in_change then
       local triangle_col = right_col_base - 1
+      local fill_start_col = triangle_col + 1
       for row = p.block_display_start or p.display_start_row, p.block_display_end or p.display_end_row do
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorAdd", row - 1, triangle_col, -1)
+        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorAdd", row - 1, fill_start_col, -1)
       end
     elseif p.kind == "delete" then
-      local triangle_col = math.max(core_start_col_base, core_start_col_base + math.floor(self.connector_core_width / 2) - 2)
+      local triangle_col = delete_triangle_col(p, core_start_col_base, right_col_base)
       for row = p.block_display_start or p.display_start_row, p.block_display_end or p.display_end_row do
-        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorDelete", row - 1, 0, triangle_col + 1)
+        vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorDelete", row - 1, 0, triangle_col)
       end
     elseif p.kind == "change" then
       if p.mixed_add and p.start_left_index and p.start_right_index then
@@ -979,7 +1004,7 @@ function Session:render()
        if not lane_has_glyph then
          active_bars[row] = active_bars[row] or {}
          active_bars[row][lane] = {
-           path = {lane = lane, kind = p.kind},
+           path = p,
            fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
          }
        end
@@ -1014,19 +1039,19 @@ function Session:render()
       end
 
        -- Triangle glyph position depends on kind:
-       -- Additions: dock to RIGHT (one column left of right line number)
-       -- Deletions: dock to LEFT (at start of connector core, after left line number)
+       -- Additions dock to the right edge. Deletions start immediately after
+       -- the left line number, then use compact rails/underlines to route.
        local triangle_col
        if p.kind == "add" then
          triangle_col = right_col_base - 1
        else
-         triangle_col = math.max(core_start_col, core_start_col + math.floor(self.connector_core_width / 2) - 2)
+         triangle_col = delete_triangle_col(p, core_start_col, right_col_base)
        end
        local expansion_hl
        if p.kind == "add" then
          expansion_hl = "DiffBanditConnectorExpansionAdd"
        else
-         expansion_hl = "DiffBanditConnectorDeleteCutout"
+         expansion_hl = "DiffBanditConnectorExpansionDelete"
        end
        local glyph = p.triangle_glyph or ((p.kind == "add") and "◥" or "◤")
 
@@ -1070,17 +1095,11 @@ function Session:render()
    -- This allows multiple bars from different paths to appear on the same row
    for row, lanes_on_row in pairs(active_bars) do
      for lane, bar_info in pairs(lanes_on_row) do
-       -- Each lane has a consistent column position
-       -- For additions: bars are on the RIGHT side (near triangle that docks right)
-       -- For deletions: bars are on the LEFT side (near triangle that docks left)
        local bar_col
        local kind = bar_info.path and bar_info.path.kind or "add"
        if kind == "delete" then
-         -- Deletions: bars near LEFT side of connector, but 1 position right of triangle
-         -- Lane 1 at core_start_col + 1, additional lanes move right
-         bar_col = core_start_col + 1 + (lane - 1) * (rail_spacing + 1)
+         bar_col = delete_lane_col(lane)
        else
-         -- Additions: bars near RIGHT side of connector
          bar_col = lane_col(lane)
        end
 
