@@ -7,16 +7,17 @@ local M = {}
 
 local highlights_ready = false
 
-local function ensure_highlights()
+local function ensure_highlights(config)
   if not highlights_ready then
-    highlights.apply()
+    highlights.apply(config or state.get_config())
     highlights_ready = true
   end
 end
 
 function M.setup(opts)
   local config = state.set_config(opts)
-  ensure_highlights()
+  highlights.apply(config)
+  highlights_ready = true
   return config
 end
 
@@ -58,8 +59,8 @@ local function make_source_from_buffer(bufnr, label)
 end
 
 local function start_session(left_source, right_source)
-  ensure_highlights()
   local config = state.get_config()
+  ensure_highlights(config)
   local session, err = Session.start({ left = left_source, right = right_source }, config)
   if not session then
     return nil, err

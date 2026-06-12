@@ -327,6 +327,7 @@ function M.compute_underlines(paths, active_bars, layout)
   local left_number_width = layout.left_number_width
   local connector_core_width = layout.connector_core_width
   local rail_spacing = layout.rail_spacing or 1
+  local sidecar_numbers = layout.sidecar_numbers or false
   local glyph_base_col = left_number_width + connector_core_width - 1
 
   local function lane_col(lane)
@@ -334,6 +335,10 @@ function M.compute_underlines(paths, active_bars, layout)
   end
 
   local function delete_lane_col(lane)
+    if sidecar_numbers then
+      local idx = math.max(0, lane - 1)
+      return 1 + (idx * (rail_spacing + 1))
+    end
     return delete_lane_col_base(lane, left_number_width, connector_core_width, rail_spacing)
   end
 

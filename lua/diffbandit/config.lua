@@ -10,6 +10,7 @@ local defaults = {
   ui = {
     connector_width = 12,
     right_number_padding = 2,
+    split_blend = 0.3,
     connectors = {
       context = "   ",
       change = {

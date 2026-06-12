@@ -2,18 +2,19 @@
 
 ## Purpose
 
-DiffBandit uses compact source buffers and a full aligned connector buffer. Scrolling must stay tied to the compact visual row model, not raw original line numbers and not Neovim's native `scrollbind`.
+DiffBandit uses compact source buffers, sidecar line-number panes, and a connector-core pane. Each source pane scrolls independently with its own line-number pane; the connector core renders route continuity between the current visual projections.
 
 ## Shared Scroll Rules
 
-- Scrolling the left pane, right pane, or connector pane updates the other panes to the same compact screen row when possible.
-- If the requested screen row is beyond a side's compact buffer near EOF, that side clamps to its final row while the connector can continue through its aligned route rows.
-- Native `scrollbind`, `cursorbind`, folds, and inherited scroll offsets must not change the layout; DiffBandit owns synchronization.
+- Scrolling the left content pane updates only the left line-number pane. Scrolling the right content pane updates only the right line-number pane.
+- Source panes are allowed to diverge. If one side is near EOF, only that side clamps to its final compact row.
+- Gutter panes are visual-only: window navigation and mouse interaction should not leave focus in the line-number or connector panes.
+- Native `scrollbind`, `cursorbind`, folds, and inherited scroll offsets must not change the source layout; DiffBandit owns gutter synchronization.
 - Gutter routes are viewport-aware. Scrolled-through middle rows show rails/background continuity; they do not invent transition glyphs just because a route crosses the viewport boundary.
 - Transition-cell rules do not change while scrolling:
-  - Addition and mixed change/add backgrounds begin after the right-docked triangle/wedge.
-  - Deletion background stops before the left-docked triangle.
-  - Triangles and wedges never float in the middle of the gutter.
+  - Addition and mixed change/add backgrounds begin after the triangle/wedge in the right number pane.
+  - Deletion background stops before the triangle in the left number pane.
+  - Triangles and wedges never float in the connector core.
 - Triangles and wedges appear only on real connection rows close to the underline, origin, or destination they are connecting. If that connection row is off-screen, only the rail/background continuity is shown.
 
 ## Scroll Addition Fixture
@@ -27,7 +28,7 @@ Expected behavior:
 
 - Long right-side addition blocks remain green in the right pane.
 - Left origin rows keep native green underlines when visible.
-- If the origin/transition row is above the viewport and the addition block is visible, the gutter shows the rail/background continuity without a synthetic triangle.
+- If the origin/transition row is above the viewport and the addition block is visible, the gutter shows rail/background continuity without a synthetic triangle.
 - Add background starts after the transition cell only on rows where the real transition glyph is visible.
 
 ## Scroll Deletion Fixture
@@ -42,7 +43,7 @@ Expected behavior:
 - Long left-side deletion blocks remain grey/delete colored in the left pane.
 - Right origin rows keep native delete underlines when visible.
 - If the origin/transition row is above the viewport and the deletion block is visible, the gutter shows the rail/background continuity without a synthetic triangle.
-- Delete gutter background stays compact on the left side and stops before the transition cell.
+- Delete gutter background stays compact in the left number pane and stops before the transition cell.
 
 ## Scroll Mixed Fixture
 

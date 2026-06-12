@@ -7,6 +7,7 @@ local base_defaults = {
   DiffBanditActiveChunk = {},
   DiffBanditConnectorText = { link = "Normal" },
   DiffBanditSplit = { link = "WinSeparator" },
+  DiffBanditHiddenSplit = {},
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
 }
@@ -33,9 +34,33 @@ local function get_foreground_color(hl_group, fallback)
   return colors.fg or fallback
 end
 
-local function apply_diff_variants()
+local function color_to_rgb(color)
+  if type(color) == "number" then
+    return math.floor(color / 65536) % 256, math.floor(color / 256) % 256, color % 256
+  end
+  if type(color) == "string" and color:match("^#%x%x%x%x%x%x$") then
+    return tonumber(color:sub(2, 3), 16), tonumber(color:sub(4, 5), 16), tonumber(color:sub(6, 7), 16)
+  end
+  return nil
+end
+
+local function blend_color(base, target, amount)
+  amount = math.max(0, math.min(1, tonumber(amount) or 0))
+  local br, bg, bb = color_to_rgb(base)
+  local tr, tg, tb = color_to_rgb(target)
+  if not br or not tr then
+    return target
+  end
+  local function mix(a, b)
+    return math.floor(a + ((b - a) * amount) + 0.5)
+  end
+  return (mix(br, tr) * 65536) + (mix(bg, tg) * 256) + mix(bb, tb)
+end
+
+local function apply_diff_variants(config)
   local delete_base = adopt_diff_colors("DiffDelete")
   local normal_base = adopt_diff_colors("Normal")
+  local ui = (config and config.ui) or {}
 
   -- Extract or use fallback colors for backgrounds
   local add_bg = get_background_color("DiffAdd", "#C8E6C9")
@@ -100,8 +125,14 @@ local function apply_diff_variants()
     fg = normal_base.fg,
   })
 
+  local soft_split_fg = blend_color(normal_base.bg or "#000000", get_foreground_color("LineNr", "#808080"), ui.split_blend or 0.3)
   apply_group("DiffBanditSplit", {
-    fg = get_foreground_color("LineNr", "#808080"),
+    fg = soft_split_fg,
+    bg = normal_base.bg,
+  })
+
+  apply_group("DiffBanditHiddenSplit", {
+    fg = soft_split_fg,
     bg = normal_base.bg,
   })
 
@@ -228,11 +259,11 @@ local function apply_diff_variants()
   })
 end
 
-function M.apply()
+function M.apply(config)
   for group, opts in pairs(base_defaults) do
     apply_group(group, opts)
   end
-  apply_diff_variants()
+  apply_diff_variants(config)
 end
 
 return M

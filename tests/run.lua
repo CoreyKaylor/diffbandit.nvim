@@ -316,6 +316,18 @@ do
     "Pure delete tail should start at the compact left-side delete wedge")
   assert_eq(underlines.tail_underlines[7].bar_col > underlines.tail_underlines[7].triangle_col, true,
     "Delete tail should connect from the left-side wedge toward the route rail")
+  local sidecar_underlines = paths_mod.compute_underlines(paths, active_bars, {
+    left_number_width = 0,
+    connector_core_width = 12,
+    rail_spacing = 1,
+    sidecar_numbers = true,
+  })
+  assert_eq(sidecar_underlines.tail_underlines[7].triangle_col, 0,
+    "Sidecar delete tail should start at connector-pane column 0 adjacent to the left number pane")
+  assert_eq(sidecar_underlines.tail_underlines[7].bar_col, 1,
+    "Sidecar delete rail should leave one connector cell for the underscore before the pipe")
+  assert_eq(sidecar_underlines.delete_origin_right_lines[4].underline_start_after, 1,
+    "Sidecar delete origin underline should start after the rail column")
   assert_eq(by_start[8].origin_display_row, 4,
     "Second deletion should originate from compact right row 4")
   assert_eq(by_start[8].display_start_row, 8,

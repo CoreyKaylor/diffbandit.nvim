@@ -22,8 +22,8 @@ Verify a single file can contain **changes**, **deletions**, and **additions** s
 ### Deletion: `Delete this line`
 - Left pane: delete background on the deleted line.
 - Gutter:
-  - Delete background appears on the left line-number side and stops before the triangle.
-  - The delete triangle (`◤`) sits immediately after the left line number (`6◤` in this fixture).
+  - Delete background appears in the left number pane and stops before the triangle.
+  - The delete triangle (`◤`) sits in the rightmost cell of the left number pane (`6◤` in this fixture).
   - `◤` is the expected orientation for this fixture's visible route. Scroll-clipped or from-below routes may flip the glyph if needed to keep the rail/underline connected to the transition cell.
   - The triangle cell is a transition cell, not part of the delete background fill.
 - Right side: native delete underline on the origin line immediately before the deletion. It must reach the right edge of the gutter and start after the triangle/rail cell in the connector area.
@@ -38,7 +38,7 @@ Verify a single file can contain **changes**, **deletions**, and **additions** s
 - Gutter:
   - One blue mixed change/add envelope covers the replacement row and adjacent added-only rows.
   - Top/bottom blue wedge glyphs approximate IntelliJ's softened route edge.
-  - Wedges dock directly against the right-side line numbers (`◢7`, `◥9` in this fixture). They must not float in the middle of the gutter.
+  - Wedges render in the leftmost cell of the right number pane (`◢7`, `◥9` in this fixture). They must not float in the connector core.
   - Wedge orientation is part of the route shape. Scrolled-through middle rows must not invent synthetic wedges; wedges appear only when the real envelope edge row is visible.
   - Blue route background begins after the top wedge, not before it.
   - The right line numbers inside the mixed envelope participate in the blue route background.
@@ -62,4 +62,4 @@ The tmux integration verifier should protect these visual details:
 - ANSI capture distinguishes the replacement tail (`text here`) from the appended suffix (`with extra content`).
 - ANSI capture shows `Added line 2` returning to the blue mixed envelope after the text.
 - ANSI capture shows no route background before the top mixed wedge and matching blue background after it.
-- Plain/ANSI capture shows mixed wedges docked directly to the right-side line numbers, not centered in the connector core.
+- Plain/ANSI capture shows mixed wedges in the right number pane, not centered in the connector core.

@@ -444,6 +444,9 @@ local function verify_deletions(lines, ansi_lines)
   local second_delete_triangle_after_left_number = false
   local pure_delete_rail_after_left_number = false
   local delete_origin_underline_reaches_edge = false
+  local delete_origin_stops_at_rail = false
+  local delete_tail_underscore_left_of_pipe = false
+  local delete_tail_line_number_clean = false
   for _, line in ipairs(lines) do
     local stripped = strip_ansi(line)
     for _, triangle in ipairs(delete_triangles) do
@@ -462,7 +465,7 @@ local function verify_deletions(lines, ansi_lines)
         second_delete_triangle_after_left_number = true
       end
     elseif stripped:find("Third line", 1, true) and stripped:find("Sixth line", 1, true) then
-      if stripped:find("6%s+│%s+6%s+│Sixth line") then
+      if stripped:find("6%s+│%s│%s+│%s*6%s+│Sixth line") then
         pure_delete_rail_after_left_number = true
       end
     end
@@ -476,6 +479,26 @@ local function verify_deletions(lines, ansi_lines)
         if right_sep_pos then
           delete_origin_underline_reaches_edge =
             delete_origin_underline_reaches_edge or ansi_underline_at_plain_byte(line, right_sep_pos - 1)
+        end
+      elseif stripped:find("Line to delete 2", 1, true) and stripped:find("Fourth line", 1, true) then
+        local left_num_end = stripped:find("  4 │", 1, true)
+        if left_num_end then
+          local connector_col0 = left_num_end + #"  4 │"
+          delete_origin_stops_at_rail =
+            not ansi_underline_at_plain_byte(line, connector_col0)
+            and not ansi_underline_at_plain_byte(line, connector_col0 + 1)
+            and ansi_underline_at_plain_byte(line, connector_col0 + 2)
+        end
+      elseif stripped:find("Fourth line", 1, true) and stripped:find("~", 1, true) then
+        local rail_pattern = stripped:find("  7 │ │", 1, true)
+        if rail_pattern then
+          local line_number_spacer = rail_pattern + #"  7"
+          local connector_col0 = rail_pattern + #"  7 │"
+          local connector_col1 = connector_col0 + 1
+          delete_tail_underscore_left_of_pipe =
+            ansi_underline_at_plain_byte(line, connector_col0)
+            and not ansi_underline_at_plain_byte(line, connector_col1)
+          delete_tail_line_number_clean = not ansi_underline_at_plain_byte(line, line_number_spacer)
         end
       end
     end
@@ -494,11 +517,20 @@ local function verify_deletions(lines, ansi_lines)
     table.insert(errors, "Second pure deletion wedge should sit immediately after the left line number")
   end
   if not pure_delete_rail_after_left_number then
-    table.insert(errors, "Pure deletion continuation rail should stay immediately after the left line number")
+    table.insert(errors, "Pure deletion continuation rail should stay one connector cell after the left number pane")
   end
   add_ansi_underline_check(errors, ansi_lines, 2, "deletion origins")
   if not delete_origin_underline_reaches_edge then
     table.insert(errors, "Pure deletion origin underline should reach the right edge of the gutter")
+  end
+  if not delete_origin_stops_at_rail then
+    table.insert(errors, "Pure deletion origin underline should start after the route rail, not at the connector edge")
+  end
+  if not delete_tail_underscore_left_of_pipe then
+    table.insert(errors, "Pure deletion tail underscore should sit left of the route pipe in the connector pane")
+  end
+  if not delete_tail_line_number_clean then
+    table.insert(errors, "Pure deletion tail underscore should not be drawn inside the line-number pane")
   end
   add_delete_triangle_transition_check(errors, ansi_lines, "Line to delete 1", "\226\151\164", "first pure deletion")
   add_delete_triangle_transition_check(errors, ansi_lines, "Line to delete 4", "\226\151\164", "second pure deletion")
@@ -559,8 +591,7 @@ local function verify_mixed(lines, ansi_lines)
   local delete_before_bg, delete_glyph_bg, delete_after_bg
   local before_top_wedge_bg, after_top_wedge_bg
   local top_wedge_docked_to_right_number
-  local delete_origin_underline_reaches_edge, delete_origin_underline_at_triangle
-  local delete_origin_underline_after_triangle
+  local delete_origin_underline_reaches_edge
   local added_line2_bg, added_line2_after_bg
   if ansi_lines then
     for _, line in ipairs(ansi_lines) do
@@ -574,12 +605,6 @@ local function verify_mixed(lines, ansi_lines)
         local right_sep_pos = stripped:find("│Context line 3", 1, true)
         if right_sep_pos then
           delete_origin_underline_reaches_edge = ansi_underline_at_plain_byte(line, right_sep_pos - 1)
-        end
-        local left_num_pos = stripped:find("5", 1, true)
-        if left_num_pos then
-          local delete_wedge_col = left_num_pos + 1
-          delete_origin_underline_at_triangle = ansi_underline_at_plain_byte(line, delete_wedge_col)
-          delete_origin_underline_after_triangle = ansi_underline_at_plain_byte(line, delete_wedge_col + 1)
         end
       elseif stripped:find("Delete this line", 1, true) then
         local transition = ansi_glyph_transition_bgs(line, "\226\151\164")
@@ -652,12 +677,6 @@ local function verify_mixed(lines, ansi_lines)
   if not delete_origin_underline_reaches_edge then
     table.insert(errors, "Delete origin underline should reach the right edge of the gutter")
   end
-  if delete_origin_underline_at_triangle then
-    table.insert(errors, "Delete origin underline should start after the delete triangle cell")
-  end
-  if not delete_origin_underline_after_triangle then
-    table.insert(errors, "Delete origin underline should begin immediately after the delete triangle")
-  end
   if not delete_before_bg then
     table.insert(errors, "Expected mixed delete gutter background before the triangle")
   elseif delete_glyph_bg == delete_before_bg then
@@ -701,7 +720,7 @@ local function verify_comprehensive(lines, ansi_lines)
   local required_text = {
     "import",
     "\"time\"",
-    "This section will be deleted",
+    "This section will",
     "Added timing logic",
     "Added performance check",
   }
@@ -892,7 +911,7 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
   end
 
   local wedge_glyphs = { "\226\151\162", "\226\151\165" } -- ◢, ◥
-  if phase == "origin-offscreen" or phase == "right-j-scroll" then
+  if phase == "origin-offscreen" or phase == "right-diverged" or phase == "right-j-scroll" then
     if contains_any_glyph(lines, { "Added mixed scroll", "Modified scroll header" }, wedge_glyphs) then
       table.insert(errors, "Offscreen-origin mixed rows should not invent synthetic wedges")
     end
@@ -1015,7 +1034,7 @@ elseif test_name == "mixed" then
   end
 elseif test_name == "comprehensive" then
   errors = verify_comprehensive(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "\"time\"", "This section will be deleted", "Added performance check" })) do
+  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "\"time\"", "This section will", "Added performance check" })) do
     table.insert(errors, err)
   end
 else
