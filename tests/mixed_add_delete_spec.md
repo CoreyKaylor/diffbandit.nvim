@@ -39,7 +39,7 @@ Verify a single file can contain **changes**, **deletions**, and **additions** s
   - One blue mixed change/add envelope covers the replacement row and adjacent added-only rows.
   - Top/bottom blue wedge glyphs approximate IntelliJ's softened route edge.
   - Wedges dock directly against the right-side line numbers (`◢7`, `◥9` in this fixture). They must not float in the middle of the gutter.
-  - Wedge orientation is part of the route shape. Future scroll-clipped mixed routes may need paired or flipped wedges when the visible connector enters the middle of a clipped region.
+  - Wedge orientation is part of the route shape. Scrolled-through middle rows must not invent synthetic wedges; wedges appear only when the real envelope edge row is visible.
   - Blue route background begins after the top wedge, not before it.
   - The right line numbers inside the mixed envelope participate in the blue route background.
   - No separate green add triangle or add-origin underline is rendered for the embedded added-only rows.

@@ -65,7 +65,7 @@ Row  │ Left#  Connector        Right# │ Notes
 - Vertical bars (`│`) maintain consistent column per lane across all rows
 - Native tail underlines appear on rows just before triangles (connecting bar to triangle)
 - Triangles (`◥`) mark the first line of each addition block and remain transition cells
-- `◥` is the expected orientation for this fixture's visible from-above routes. Future scroll-clipped or from-below routes may use mirrored orientations when needed to keep rails connected.
+- `◥` is the expected orientation for this fixture's visible from-above routes. From-below routes may use mirrored orientations when needed to keep rails connected to real transition rows.
 - Add background starts immediately after each triangle and must not paint the triangle cell itself
 - No visual collisions between bars in different lanes
 

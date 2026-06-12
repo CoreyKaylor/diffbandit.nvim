@@ -95,7 +95,7 @@ The visual indicators (underlines, triangles) tell the alignment story without f
 **Visual Connectors:**
 - Triangles (◤) appear at: display rows 3, 8 (first line of each deletion block)
 - Triangles dock immediately after the left line number (`3◤`, `8◤`)
-- `◤` is the expected orientation for this fixture because the visible routes approach these delete targets from above. Future scroll-clipped or from-below routes may use the mirrored orientation as long as the rail/underline touches the transition glyph cleanly.
+- `◤` is the expected orientation for this fixture because the visible routes approach these delete targets from above. From-below routes may use the mirrored orientation as long as the rail/underline touches the real transition glyph cleanly.
 - Rails (`│`) stay compact near the left line number and route deletion paths across the gutter without broad background fill
 - Native underlines appear on right-side origin rows, extend through the gutter, and begin after the triangle/rail cell when a delete path is present
 

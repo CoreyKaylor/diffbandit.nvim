@@ -47,11 +47,15 @@ This contract records the IntelliJ-inspired behavior that the focused specs and 
 
 ## Scroll-Clipped Routes
 
-These cases are not covered by the current fixtures yet, but future scroll behavior must preserve the same visual grammar:
+Scroll behavior uses the compact visual row model shared by the connector, not raw original line numbers or native Neovim `scrollbind`:
 
-- Triangle orientation may be viewport-relative. If scrolling hides the true origin or target and the visible rail now approaches from the opposite direction, the visible triangle should flip to keep the path connected.
-- A route may need two adjacent triangle rows when the visible connection enters the middle of a larger clipped region. In that case each row may use a different orientation so the underline/rail appears to meet the middle of the composite wedge instead of only the top or bottom.
+- Scrolling the left pane, right pane, or connector pane updates the others to the same compact screen row when possible.
+- If a side has fewer compact rows near EOF, that side clamps to its final row while the connector can continue through its aligned route rows.
+- DiffBandit windows must disable native `scrollbind`, `cursorbind`, folds, and inherited scroll offsets that would fight custom synchronization.
+- Triangles and wedges are connection glyphs, not viewport-edge markers. They appear only when their real underline/origin/destination connection row is visible or immediately adjacent.
+- Scrolled-through middle rows show rails/background continuity without synthetic triangles or wedges at the viewport boundary.
 - Scroll clipping must not change the transition-cell rules: add background starts after the add transition cell, delete background stops before the delete transition cell, and unrelated gutter regions must still not touch.
+- Mixed change/add envelopes keep right-docked wedges only at the real envelope edge rows.
 
 ## Future Spec Checklist
 

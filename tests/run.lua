@@ -451,5 +451,105 @@ do
     "Comprehensive case should include a delete route with right-side origin")
 end
 
+-- Test Suite 11: Independent viewport projection uses each side's topline
+do
+  local left = read_file(root .. "/tests/files/left_mixed.txt")
+  local right = read_file(root .. "/tests/files/right_mixed.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (viewport projection mixed)")
+
+  local v = view.build(left, right, hunks, config)
+
+  assert_eq(#v.line_meta, 12, "Mixed aligned connector model should have 12 visual rows")
+  assert_eq(#v.left, 10, "Mixed left compact buffer should have 10 real rows")
+  assert_eq(#v.right, 11, "Mixed right compact buffer should have 11 real rows")
+
+  local left_by_index = {}
+  local right_by_index = {}
+  for _, meta in ipairs(v.line_meta) do
+    if meta.left_index then
+      left_by_index[meta.left_index] = meta
+    end
+    if meta.right_index then
+      right_by_index[meta.right_index] = meta
+    end
+  end
+
+  local left_topline = 3
+  local right_topline = 7
+  local screen_row = 2
+  local left_meta = left_by_index[left_topline + screen_row - 1]
+  local right_meta = right_by_index[right_topline + screen_row - 1]
+
+  assert_eq(left_meta.left_line, 4, "Left number projection follows left topline")
+  assert_eq(right_meta.right_line, 8, "Right number projection follows right topline")
+  assert_eq(left_meta.left_line ~= right_meta.right_line, true,
+    "Independent projection must not force matching line numbers on a screen row")
+end
+
+-- Test Suite 12: Scroll fixtures expose long add/delete/mixed regions
+do
+  local fixtures = {
+    {
+      name = "scroll additions",
+      left = root .. "/tests/files/left_scroll_additions.txt",
+      right = root .. "/tests/files/right_scroll_additions.txt",
+      expected_kind = "add",
+    },
+    {
+      name = "scroll deletions",
+      left = root .. "/tests/files/left_scroll_deletions.txt",
+      right = root .. "/tests/files/right_scroll_deletions.txt",
+      expected_kind = "delete",
+    },
+    {
+      name = "scroll mixed",
+      left = root .. "/tests/files/left_scroll_mixed.txt",
+      right = root .. "/tests/files/right_scroll_mixed.txt",
+      expected_kind = "mixed",
+    },
+    {
+      name = "scroll changes",
+      left = root .. "/tests/files/left_scroll_changes.txt",
+      right = root .. "/tests/files/right_scroll_changes.txt",
+      expected_kind = "change",
+    },
+  }
+
+  for _, fixture in ipairs(fixtures) do
+    local left = read_file(fixture.left)
+    local right = read_file(fixture.right)
+    local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+    assert_eq(err, nil, "diff error (" .. fixture.name .. ")")
+
+    local v = view.build(left, right, hunks, config)
+    local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+    local longest = 0
+    local found = false
+    for _, p in ipairs(paths) do
+      if fixture.expected_kind == "mixed" then
+        if p.kind == "change" and p.mixed_add then
+          found = true
+          longest = math.max(longest, (p.end_right_index or 0) - (p.start_right_index or 0) + 1)
+        end
+      elseif fixture.expected_kind == "change" then
+        if p.kind == "change" then
+          found = true
+          longest = math.max(longest, (p.end_left_index or 0) - (p.start_left_index or 0) + 1)
+        end
+      elseif p.kind == fixture.expected_kind and not p.embedded_in_change then
+        found = true
+        longest = math.max(longest, (p.block_display_end or 0) - (p.block_display_start or 0) + 1)
+      end
+    end
+    assert_eq(found, true, fixture.name .. " should produce the expected route type")
+    if fixture.expected_kind == "change" then
+      assert_eq(longest >= 3, true, fixture.name .. " should include multiple changed rows")
+    else
+      assert_eq(longest >= 6, true, fixture.name .. " should include a scrollable route")
+    end
+  end
+end
+
 vim.api.nvim_out_write("OK\n")
 vim.cmd("qa")

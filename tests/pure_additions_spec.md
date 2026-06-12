@@ -80,7 +80,7 @@
 
 **Visual Connectors:**
 - Triangles (◥) appear at: rows 3, 7, 11 (first line of each addition block)
-- `◥` is the expected orientation for this fixture because the visible routes approach these add targets from above. Future scroll-clipped or from-below routes may use the mirrored orientation as long as the rail/underline touches the transition glyph cleanly.
+- `◥` is the expected orientation for this fixture because the visible routes approach these add targets from above. From-below routes may use the mirrored orientation as long as the rail/underline touches the real transition glyph cleanly.
 - Vertical bars (│) connect origin underlines to distant triangles:
   - From row 4 origin → bar on rows 5-6 → triangle at row 7
   - From row 5 origin → bar on rows 6-10 → triangle at row 11

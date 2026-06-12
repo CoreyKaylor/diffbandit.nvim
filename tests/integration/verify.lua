@@ -721,6 +721,254 @@ local function verify_comprehensive(lines, ansi_lines)
   return errors
 end
 
+local function line_contains_any(line, labels)
+  for _, label in ipairs(labels) do
+    if line:find(label, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+local function find_plain_line(lines, labels, glyphs)
+  for _, line in ipairs(lines) do
+    local stripped = strip_ansi(line)
+    if line_contains_any(stripped, labels) then
+      if not glyphs then
+        return line, stripped
+      end
+      for _, glyph in ipairs(glyphs) do
+        if stripped:find(glyph, 1, true) then
+          return line, stripped, glyph
+        end
+      end
+    end
+  end
+  return nil, nil, nil
+end
+
+local function glyph_docked_to_right_number(stripped, glyph)
+  local pos = stripped:find(glyph, 1, true)
+  if not pos then
+    return false
+  end
+  local next_char = stripped:sub(pos + #glyph, pos + #glyph)
+  return next_char:match("%d") ~= nil
+end
+
+local function contains_any_glyph(lines, labels, glyphs)
+  local _, _, glyph = find_plain_line(lines, labels, glyphs)
+  return glyph ~= nil
+end
+
+local function verify_scroll_additions(lines, ansi_lines, phase)
+  local errors = {}
+  if phase == "clamped-end" then
+    if not find_plain_line(lines, { "Scroll add context 18" }) then
+      table.insert(errors, "Expected additions clamped-end capture to include final context")
+    end
+    return errors
+  end
+
+  local add_glyphs = { "\226\151\165", "\226\151\162" } -- ◥, ◢
+  if phase == "origin-offscreen" or phase == "right-j-scroll" then
+    if not find_plain_line(lines, { "Added scroll" }) then
+      table.insert(errors, "Expected scroll addition viewport to include added content")
+    end
+    if contains_any_glyph(lines, { "Added scroll" }, add_glyphs) then
+      table.insert(errors, "Offscreen-origin addition rows should show rails/background, not synthetic triangles")
+    end
+    if phase == "right-j-scroll" and not find_plain_line(lines, { "Scroll add context 01" }) then
+      table.insert(errors, "Right-pane scroll should leave left pane stationary at the top context")
+    end
+    return errors
+  end
+
+  if phase == "target-above" or phase == "target-spanning" then
+    local _, _, glyph = find_plain_line(lines, { "Added scroll" }, add_glyphs)
+    if not glyph then
+      table.insert(errors, "Expected independent addition viewport to show a directional transition glyph")
+    end
+    return errors
+  end
+
+  local _, _, glyph = find_plain_line(lines, { "Added scroll" }, add_glyphs)
+  if not glyph then
+    table.insert(errors, "Expected initial scroll addition viewport to show the real transition glyph")
+  end
+
+  if ansi_lines and glyph then
+    local found_transition = false
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Added scroll", 1, true) and stripped:find(glyph, 1, true) then
+        local transition = ansi_glyph_transition_bgs(line, glyph)
+        found_transition = transition and transition.after and transition.glyph ~= transition.after
+        break
+      end
+    end
+    if not found_transition then
+      table.insert(errors, "Expected scroll addition background to start after the transition glyph")
+    end
+  end
+
+  return errors
+end
+
+local function verify_scroll_deletions(lines, ansi_lines, phase)
+  local errors = {}
+  if phase == "clamped-end" then
+    if not find_plain_line(lines, { "Scroll delete context 18" }) then
+      table.insert(errors, "Expected deletions clamped-end capture to include final context")
+    end
+    return errors
+  end
+
+  local delete_glyphs = { "\226\151\164", "\226\151\165" } -- ◤, ◥
+  if phase == "origin-offscreen" or phase == "left-j-scroll" then
+    if not find_plain_line(lines, { "Deleted scroll" }) then
+      table.insert(errors, "Expected scroll deletion viewport to include deleted content")
+    end
+    if contains_any_glyph(lines, { "Deleted scroll" }, delete_glyphs) then
+      table.insert(errors, "Offscreen-origin deletion rows should show rails/background, not synthetic triangles")
+    end
+    if phase == "left-j-scroll" and not find_plain_line(lines, { "Scroll delete context 01" }) then
+      table.insert(errors, "Left-pane scroll should leave right pane stationary at the top context")
+    end
+    return errors
+  end
+
+  if phase == "target-above" or phase == "target-spanning" then
+    local _, _, glyph = find_plain_line(lines, { "Deleted scroll" }, delete_glyphs)
+    if not glyph then
+      table.insert(errors, "Expected independent deletion viewport to show a directional transition glyph")
+    end
+    return errors
+  end
+
+  local _, _, glyph = find_plain_line(lines, { "Deleted scroll" }, delete_glyphs)
+  if not glyph then
+    table.insert(errors, "Expected initial scroll deletion viewport to show the real transition glyph")
+  end
+
+  if ansi_lines and glyph then
+    local found_transition = false
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Deleted scroll", 1, true) and stripped:find(glyph, 1, true) then
+        local transition = ansi_glyph_transition_bgs(line, glyph)
+        found_transition = transition and transition.before
+          and transition.glyph ~= transition.before
+          and transition.after ~= transition.before
+        break
+      end
+    end
+    if not found_transition then
+      table.insert(errors, "Expected scroll deletion background to stop before the transition glyph")
+    end
+  end
+
+  return errors
+end
+
+local function verify_scroll_mixed(lines, ansi_lines, phase)
+  local errors = {}
+  if phase == "clamped-end" then
+    if not find_plain_line(lines, { "Scroll mixed context 15" }) then
+      table.insert(errors, "Expected mixed clamped-end capture to include final context")
+    end
+    return errors
+  end
+
+  if phase == "initial" then
+    if not find_plain_line(lines, { "Old scroll value A" }) then
+      table.insert(errors, "Expected initial mixed scroll capture to include changed text")
+    end
+    return errors
+  else
+    if not find_plain_line(lines, { "Added mixed scroll", "Modified scroll header" }) then
+      table.insert(errors, "Expected clipped mixed scroll capture to include the mixed envelope")
+    end
+  end
+
+  local wedge_glyphs = { "\226\151\162", "\226\151\165" } -- ◢, ◥
+  if phase == "origin-offscreen" or phase == "right-j-scroll" then
+    if contains_any_glyph(lines, { "Added mixed scroll", "Modified scroll header" }, wedge_glyphs) then
+      table.insert(errors, "Offscreen-origin mixed rows should not invent synthetic wedges")
+    end
+    if phase == "right-j-scroll" and not find_plain_line(lines, { "Scroll mixed context 01" }) then
+      table.insert(errors, "Right-pane mixed scroll should leave left pane stationary at the top context")
+    end
+    return errors
+  end
+
+  local _, stripped, glyph = find_plain_line(lines, { "Modified scroll header", "Added mixed scroll" }, wedge_glyphs)
+  if not glyph then
+    table.insert(errors, "Expected scroll mixed viewport to show a real mixed wedge near the connection row")
+  elseif not glyph_docked_to_right_number(stripped, glyph) then
+    table.insert(errors, "Expected scroll mixed wedge to dock directly against the right line number")
+  end
+
+  if ansi_lines and glyph then
+    local found_transition = false
+    for _, line in ipairs(ansi_lines) do
+      local stripped_line = strip_ansi(line)
+      if (stripped_line:find("Modified scroll header", 1, true)
+          or stripped_line:find("Added mixed scroll", 1, true))
+          and stripped_line:find(glyph, 1, true) then
+        local transition = ansi_glyph_transition_bgs(line, glyph)
+        found_transition = transition and transition.after and transition.glyph ~= transition.after
+        break
+      end
+    end
+    if not found_transition then
+      table.insert(errors, "Expected scroll mixed background to start after the wedge")
+    end
+  end
+
+  return errors
+end
+
+local function verify_scroll_changes(lines, ansi_lines, phase)
+  local errors = {}
+  if phase == "clamped-end" then
+    if not find_plain_line(lines, { "Scroll change context 22" }) then
+      table.insert(errors, "Expected changes clamped-end capture to include final context")
+    end
+    return errors
+  end
+
+  if phase == "initial" then
+    if not find_plain_line(lines, { "Old routed change A" }) then
+      table.insert(errors, "Expected initial change capture to include old changed text")
+    end
+    if not find_plain_line(lines, { "New routed change A" }) then
+      table.insert(errors, "Expected initial change capture to include new changed text")
+    end
+    return errors
+  end
+
+  local change_glyphs = { "\226\151\164", "\226\151\165", "\226\151\162" } -- ◤, ◥, ◢
+  if not find_plain_line(lines, { "Old routed change", "New routed change" }) then
+    table.insert(errors, "Expected diverged change capture to include changed content")
+  end
+  if not contains_any_glyph(lines, { "Old routed change", "New routed change" }, change_glyphs) then
+    table.insert(errors, "Expected diverged changed rows to use routed transition glyphs")
+  end
+  if phase == "right-j-scroll" and not find_plain_line(lines, { "Scroll change context 01" }) then
+    table.insert(errors, "Right-pane change scroll should leave left pane stationary at the top context")
+  end
+  if phase == "left-j-scroll" and not find_plain_line(lines, { "Scroll change context 01" }) then
+    table.insert(errors, "Left-pane change scroll should leave right pane stationary at the top context")
+  end
+
+  if ansi_lines and not contains_any_glyph(lines, { "Old routed change", "New routed change" }, change_glyphs) then
+    table.insert(errors, "Expected ANSI-backed change route to include a transition glyph")
+  end
+
+  return errors
+end
+
 -- Main
 local capture_file = arg[1]
 local test_name = arg[2] or "extreme"
@@ -741,7 +989,16 @@ if #lines == 0 then
 end
 
 local errors
-if test_name == "pure" then
+local scroll_base, scroll_phase = test_name:match("^([^:]+):(.+)$")
+if scroll_base == "scroll-additions" then
+  errors = verify_scroll_additions(lines, ansi_lines, scroll_phase)
+elseif scroll_base == "scroll-deletions" then
+  errors = verify_scroll_deletions(lines, ansi_lines, scroll_phase)
+elseif scroll_base == "scroll-mixed" then
+  errors = verify_scroll_mixed(lines, ansi_lines, scroll_phase)
+elseif scroll_base == "scroll-changes" then
+  errors = verify_scroll_changes(lines, ansi_lines, scroll_phase)
+elseif test_name == "pure" then
   errors = verify_pure_additions(lines, ansi_lines)
   for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New line 1", "New line 6" })) do
     table.insert(errors, err)

@@ -1,7 +1,9 @@
 #!/bin/bash
 # Integration tests for diffbandit.nvim using tmux
 # Usage: ./run.sh [test_name]
-#   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'comprehensive', or 'all' (default: all)
+#   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'comprehensive',
+#              'scroll-additions', 'scroll-deletions', 'scroll-mixed',
+#              'scroll-changes', or 'all' (default: stable non-scroll suite)
 
 set -e
 
@@ -57,6 +59,125 @@ run_test() {
     echo "  Captures: $case_dir"
 }
 
+run_scroll_test() {
+    local test_name="$1"
+    local left_file="$2"
+    local right_file="$3"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+
+    echo "Running integration test: $test_name"
+    mkdir -p "$case_dir"
+
+    start_phase_session() {
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 14
+        tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
+        sleep 1
+        tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" Enter
+        sleep 2
+    }
+
+    capture_scroll_phase() {
+        local phase="$1"
+        local left_top="$2"
+        local right_top="$3"
+        local plain_capture="$case_dir/${phase}.txt"
+        local ansi_capture="$case_dir/${phase}.ansi"
+
+        echo "  phase: $phase ($left_top,$right_top)"
+        start_phase_session
+        tmux send-keys -t "$TMUX_SESSION" Escape
+        sleep 0.2
+        tmux send-keys -t "$TMUX_SESSION" ":DBViewport $left_top $right_top" C-m
+        sleep 1
+
+        tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+        tmux capture-pane -t "$TMUX_SESSION" -e -p > "$ansi_capture"
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "$test_name:$phase" "$ansi_capture"
+    }
+
+    case "$test_name" in
+        scroll-additions)
+            capture_scroll_phase "initial" 1 1
+            capture_scroll_phase "target-above" 1 58
+            capture_scroll_phase "target-spanning" 1 4
+            capture_scroll_phase "origin-offscreen" 10 25
+            capture_scroll_phase "clamped-end" 13 69
+            ;;
+        scroll-deletions)
+            capture_scroll_phase "initial" 1 1
+            capture_scroll_phase "target-above" 58 1
+            capture_scroll_phase "target-spanning" 4 1
+            capture_scroll_phase "origin-offscreen" 25 10
+            capture_scroll_phase "clamped-end" 69 13
+            ;;
+        scroll-mixed)
+            capture_scroll_phase "initial" 1 1
+            capture_scroll_phase "right-diverged" 1 22
+            capture_scroll_phase "left-diverged" 7 1
+            capture_scroll_phase "origin-offscreen" 12 25
+            capture_scroll_phase "clamped-end" 13 56
+            ;;
+        scroll-changes)
+            capture_scroll_phase "initial" 1 1
+            capture_scroll_phase "right-diverged" 1 5
+            capture_scroll_phase "left-diverged" 5 1
+            capture_scroll_phase "both-diverged" 4 6
+            capture_scroll_phase "clamped-end" 20 20
+            ;;
+    esac
+
+    capture_key_scroll_phase() {
+        local phase="$1"
+        local side="$2"
+        local count="$3"
+        local plain_capture="$case_dir/${phase}.txt"
+        local ansi_capture="$case_dir/${phase}.ansi"
+
+        echo "  phase: $phase ($side j x$count)"
+        start_phase_session
+        tmux send-keys -t "$TMUX_SESSION" Escape
+        sleep 0.2
+        tmux send-keys -t "$TMUX_SESSION" ":DBViewport 1 1" C-m
+        sleep 0.2
+        tmux send-keys -t "$TMUX_SESSION" ":DBFocus $side" C-m
+        sleep 1
+
+        for _ in $(seq 1 "$count"); do
+            tmux send-keys -t "$TMUX_SESSION" j
+        done
+        sleep 1
+
+        tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+        tmux capture-pane -t "$TMUX_SESSION" -e -p > "$ansi_capture"
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "$test_name:$phase" "$ansi_capture"
+    }
+
+    case "$test_name" in
+        scroll-additions)
+            capture_key_scroll_phase "right-j-scroll" "right" 25
+            ;;
+        scroll-deletions)
+            capture_key_scroll_phase "left-j-scroll" "left" 25
+            ;;
+        scroll-mixed)
+            capture_key_scroll_phase "right-j-scroll" "right" 25
+            capture_key_scroll_phase "left-j-scroll" "left" 8
+            ;;
+        scroll-changes)
+            capture_key_scroll_phase "right-j-scroll" "right" 12
+            capture_key_scroll_phase "left-j-scroll" "left" 12
+            ;;
+    esac
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    echo "  PASSED: $test_name"
+    echo "  Captures: $case_dir"
+}
+
 # Parse arguments
 TEST_TO_RUN="${1:-all}"
 
@@ -86,6 +207,26 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
             "$PROJECT_ROOT/tests/files/right_comprehensive.txt"
         ;;
+    scroll-additions)
+        run_scroll_test "scroll-additions" \
+            "$PROJECT_ROOT/tests/files/left_scroll_additions.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_additions.txt"
+        ;;
+    scroll-deletions)
+        run_scroll_test "scroll-deletions" \
+            "$PROJECT_ROOT/tests/files/left_scroll_deletions.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_deletions.txt"
+        ;;
+    scroll-mixed)
+        run_scroll_test "scroll-mixed" \
+            "$PROJECT_ROOT/tests/files/left_scroll_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_mixed.txt"
+        ;;
+    scroll-changes)
+        run_scroll_test "scroll-changes" \
+            "$PROJECT_ROOT/tests/files/left_scroll_changes.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_changes.txt"
+        ;;
     all)
         run_test "extreme" \
             "$PROJECT_ROOT/tests/files/left_extreme.txt" \
@@ -106,10 +247,11 @@ case "$TEST_TO_RUN" in
         run_test "comprehensive" \
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
             "$PROJECT_ROOT/tests/files/right_comprehensive.txt"
+
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|comprehensive|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|comprehensive|scroll-additions|scroll-deletions|scroll-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac
