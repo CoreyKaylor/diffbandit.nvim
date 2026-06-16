@@ -121,8 +121,20 @@ run_scroll_test() {
             ;;
         scroll-deletions)
             capture_scroll_phase "initial" 1 1
-            capture_scroll_phase "target-above" 58 1
+            capture_scroll_phase "target-aligned" 2 1
+            capture_scroll_phase "target-flipped" 3 1
             capture_scroll_phase "target-spanning" 4 1
+            capture_scroll_phase "lower-target-below" 50 1
+            capture_scroll_phase "lower-target-approach" 52 1
+            capture_scroll_phase "same-row-upper" 53 1
+            capture_scroll_phase "upper-target-exiting" 54 1
+            capture_scroll_phase "lower-target-entering" 55 1
+            capture_scroll_phase "pre-overlap-inner" 56 1
+            capture_scroll_phase "pre-collision-inner" 57 1
+            capture_scroll_phase "target-above" 58 1
+            capture_scroll_phase "upper-target-clipped" 59 1
+            capture_scroll_phase "overlap-stepped" 60 1
+            capture_scroll_phase "hidden-overlap-inner" 63 1
             capture_scroll_phase "origin-offscreen" 25 10
             capture_scroll_phase "clamped-end" 69 13
             ;;
@@ -177,6 +189,8 @@ run_scroll_test() {
             ;;
         scroll-deletions)
             capture_key_scroll_phase "left-j-scroll" "left" 25
+            capture_key_scroll_phase "left-j-scroll-line39" "left" 38
+            capture_key_scroll_phase "left-j-scroll-line41" "left" 40
             ;;
         scroll-mixed)
             capture_key_scroll_phase "right-j-scroll" "right" 25

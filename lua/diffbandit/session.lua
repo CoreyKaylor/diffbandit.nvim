@@ -674,6 +674,10 @@ function Session:project_paths_for_viewport(paths)
     return left_topline + (right_index - right_topline)
   end
 
+  local function delete_glyph_for_target(origin_row, target_row)
+    return origin_row > target_row and "◣" or "◤"
+  end
+
   local function add_projected_path(path, target_index, glyph, show_triangle, suppress_tail)
     local projected_target = right_to_connector_row(target_index)
     local q = shallow_copy(path)
@@ -688,6 +692,24 @@ function Session:project_paths_for_viewport(paths)
     q.approach = glyph == "◢" and "from_below" or "from_above"
     q.triangle_glyph = glyph
     q.connect_tail_on_triangle_row = path.kind == "add" and glyph == "◢" and show_triangle ~= false
+    q.hide_triangle = show_triangle == false
+    q.suppress_tail = suppress_tail == true
+    projected[#projected + 1] = q
+  end
+
+  local function add_projected_delete_path(path, origin_row, target_index, glyph, show_triangle, suppress_tail)
+    local q = shallow_copy(path)
+    q.route_group = path.route_group or path
+    q.top = origin_row
+    q.origin_display_row = origin_row
+    q.display_start_row = target_index
+    q.display_end_row = target_index
+    q.triangle_display_row = target_index
+    q.target_start_index = target_index
+    q.target_end_index = target_index
+    q.approach = (glyph == "◣" or glyph == "◥") and "from_below" or "from_above"
+    q.triangle_glyph = glyph
+    q.connect_tail_on_triangle_row = (glyph == "◣" or glyph == "◥") and show_triangle ~= false
     q.hide_triangle = show_triangle == false
     q.suppress_tail = suppress_tail == true
     projected[#projected + 1] = q
@@ -748,20 +770,54 @@ function Session:project_paths_for_viewport(paths)
         end
       end
     elseif p.kind == "delete" then
-      local q = shallow_copy(p)
-      q.route_group = p.route_group or p
       local origin_row = p.origin_right_index and right_to_connector_row(p.origin_right_index) or p.origin_display_row
-      local target_row = p.target_start_index or p.triangle_display_row or p.display_start_row
-      if origin_row and target_row then
-        q.top = origin_row
-        q.origin_display_row = origin_row
-        q.display_start_row = target_row
-        q.display_end_row = target_row
-        q.triangle_display_row = target_row
-        q.approach = origin_row > target_row and "from_below" or "from_above"
-        q.triangle_glyph = q.approach == "from_below" and "◥" or "◤"
+      local block_start = p.target_start_index or p.triangle_display_row or p.display_start_row
+      local block_end = p.target_end_index or block_start
+      if origin_row and block_start and block_end then
+        local origin_visible = origin_row >= left_topline and origin_row <= (left_topline + left_height - 1)
+        local visible_start = math.max(block_start, left_topline)
+        local visible_end = math.min(block_end, left_topline + left_height - 1)
+        if visible_start > visible_end then
+          if origin_visible then
+            if block_start > left_topline + left_height - 1 then
+              local target = left_topline + left_height
+              add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false, true)
+            elseif block_end < left_topline then
+              local target = left_topline - 1
+              add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false, true)
+            end
+          end
+        elseif not origin_visible then
+          local target = block_start
+          if visible_end < origin_row then
+            target = visible_end
+          elseif visible_start > origin_row then
+            target = visible_start
+          end
+          add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false)
+        elseif visible_start > origin_row then
+          add_projected_delete_path(p, origin_row, visible_start, "◤", true)
+        elseif visible_end < origin_row then
+          add_projected_delete_path(p, origin_row, visible_end, "◣", true)
+        else
+          local target_above
+          local target_below
+          if visible_start == origin_row then
+            target_above = visible_start
+            target_below = visible_start + 1
+          else
+            target_above = origin_row
+            target_below = origin_row + 1
+          end
+
+          if target_above >= visible_start and target_above <= visible_end then
+            add_projected_delete_path(p, origin_row, target_above, "◣", true)
+          end
+          if target_below >= visible_start and target_below <= visible_end then
+            add_projected_delete_path(p, origin_row, target_below, "◤", true)
+          end
+        end
       end
-      projected[#projected + 1] = q
     else
       local q = shallow_copy(p)
       q.route_group = p.route_group or p

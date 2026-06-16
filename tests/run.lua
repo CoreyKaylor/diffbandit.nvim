@@ -401,6 +401,87 @@ do
     "Same-row add transition should not create a separate tail underline")
 end
 
+-- Test Suite 4i: Adjacent upward projected deletions mirror addition tail behavior
+do
+  local projected_paths = {
+    {
+      kind = "delete",
+      origin_display_row = 3,
+      origin_right_line = 3,
+      top = 3,
+      display_start_row = 2,
+      triangle_display_row = 2,
+      lane = 1,
+      connect_tail_on_triangle_row = true,
+    },
+  }
+  local active_bars = paths_mod.compute_active_bars(projected_paths)
+  local underlines = paths_mod.compute_underlines(projected_paths, active_bars, {
+    left_number_width = 0,
+    connector_core_width = 12,
+    rail_spacing = 1,
+    sidecar_numbers = true,
+  })
+
+  assert_eq(active_bars[2] == nil or active_bars[2][1] == nil, true,
+    "Adjacent upward delete route should not draw a rail on the triangle row")
+  assert_eq(active_bars[3] ~= nil and active_bars[3][1] ~= nil, true,
+    "Adjacent upward delete route should terminate on the origin row")
+  assert_eq(underlines.origin_has_bar[3], true,
+    "Adjacent upward delete origin should connect to the triangle-row rail")
+  assert_eq(underlines.tail_underlines[2] ~= nil, true,
+    "Adjacent upward delete route should underline from the triangle toward the rail")
+  assert_eq(underlines.tail_underlines[2].kind, "delete",
+    "Adjacent upward delete tail underline should keep delete styling")
+  assert_eq(underlines.delete_origin_right_lines[3].underline_start_after, 1,
+    "Adjacent upward delete origin underline should start after the rail column")
+end
+
+-- Test Suite 4j: Deletion hidden overlaps use the outer lane
+do
+  local upper_group = {}
+  local lower_group = {}
+  local projected_paths = {
+    {
+      kind = "delete",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 0,
+      triangle_display_row = 0,
+      route_group = upper_group,
+      hide_triangle = true,
+    },
+    {
+      kind = "delete",
+      origin_display_row = 7,
+      top = 7,
+      display_start_row = 3,
+      triangle_display_row = 3,
+      route_group = lower_group,
+      connect_tail_on_triangle_row = true,
+    },
+  }
+
+  paths_mod.assign_lanes(projected_paths)
+
+  local by_group = {}
+  for _, p in ipairs(projected_paths) do
+    by_group[p.route_group] = p
+  end
+  local active_bars = paths_mod.compute_active_bars(projected_paths)
+
+  assert_eq(by_group[upper_group].lane, 2,
+    "Hidden projected deletion continuation should step outward around a visible route")
+  assert_eq(by_group[lower_group].lane, 1,
+    "Visible projected deletion route should keep the inner lane")
+  assert_eq(active_bars[3] ~= nil and active_bars[3][2] ~= nil, true,
+    "Hidden upward deletion continuation should include the origin row to avoid a broken corner")
+  assert_eq(active_bars[3] == nil or active_bars[3][1] == nil, true,
+    "Visible lower deletion route should not draw its inner rail on the triangle row")
+  assert_eq(active_bars[7] ~= nil and active_bars[7][1] ~= nil, true,
+    "Visible lower deletion route should terminate on its origin row")
+end
+
 -- Test Suite 5: No visual collisions between bars
 -- Verifies different lanes have different column positions
 do

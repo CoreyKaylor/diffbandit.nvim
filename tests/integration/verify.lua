@@ -1421,31 +1421,130 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
     return errors
   end
 
-  local delete_glyphs = { "\226\151\164", "\226\151\165" } -- ◤, ◥
-  if phase == "origin-offscreen" or phase == "left-j-scroll" then
+  local delete_glyphs = { "\226\151\164", "\226\151\163", "\226\151\165" } -- ◤, ◣, ◥
+  local function require_plain_fragment(fragment, description)
+    for _, line in ipairs(lines) do
+      if strip_ansi(line):find(fragment, 1, true) then
+        return
+      end
+    end
+    table.insert(errors, description)
+  end
+
+  local function forbid_plain_fragment(fragment, description)
+    for _, line in ipairs(lines) do
+      if strip_ansi(line):find(fragment, 1, true) then
+        table.insert(errors, description)
+        return
+      end
+    end
+  end
+
+  local function delete_connector_tail_reaches_glyph(label, glyph)
+    if not ansi_lines then
+      return false
+    end
+    local separator_width = #"\226\148\130" -- │
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) and stripped:find(glyph, 1, true) then
+        local glyph_pos = stripped:find(glyph, 1, true)
+        local tail_pos = glyph_pos and (glyph_pos + #glyph + separator_width) or nil
+        if tail_pos and ansi_underline_at_plain_byte(line, tail_pos) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  if phase == "origin-offscreen" then
     if not find_plain_line(lines, { "Deleted scroll" }) then
       table.insert(errors, "Expected scroll deletion viewport to include deleted content")
     end
     if contains_any_glyph(lines, { "Deleted scroll" }, delete_glyphs) then
       table.insert(errors, "Offscreen-origin deletion rows should show rails/background, not synthetic triangles")
     end
-    if phase == "left-j-scroll" and not find_plain_line(lines, { "Scroll delete context 01" }) then
+    return errors
+  end
+
+  if phase == "left-j-scroll" or phase == "left-j-scroll-line39" or phase == "left-j-scroll-line41" then
+    if not find_plain_line(lines, { "Deleted scroll" }) then
+      table.insert(errors, "Expected left key-scroll deletion viewport to include deleted content")
+    end
+    if not find_plain_line(lines, { "Scroll delete context 01" }) then
       table.insert(errors, "Left-pane scroll should leave right pane stationary at the top context")
+    end
+    if phase == "left-j-scroll" then
+      require_plain_fragment("18◣│", "Expected key-scroll deletion split to keep the upper triangle on the projected origin row")
+      require_plain_fragment("19◤│", "Expected key-scroll deletion split to keep the lower triangle adjacent to the projected origin row")
     end
     return errors
   end
 
-  if phase == "target-above" or phase == "target-spanning" then
-    local _, _, glyph = find_plain_line(lines, { "Deleted scroll" }, delete_glyphs)
-    if not glyph then
-      table.insert(errors, "Expected independent deletion viewport to show a directional transition glyph")
+  if phase == "initial" then
+    require_plain_fragment("Deleted scroll A 01                             │  4◤│", "Expected initial deletion target below the origin to use a down-route triangle")
+  elseif phase == "target-aligned" then
+    require_plain_fragment("Deleted scroll A 01                             │  4◣│", "Expected deletion split upper triangle on the projected origin row")
+    require_plain_fragment("Deleted scroll A 02                             │  5◤│", "Expected deletion split lower triangle adjacent to the projected origin row")
+  elseif phase == "target-flipped" then
+    require_plain_fragment("Deleted scroll A 02                             │  5◣│", "Expected scrolled deletion upper triangle to track the projected origin row")
+    require_plain_fragment("Deleted scroll A 03                             │  6◤│", "Expected scrolled deletion lower triangle to stay adjacent to the upper triangle")
+  elseif phase == "target-spanning" then
+    require_plain_fragment("Deleted scroll A 03                             │  6◣│", "Expected spanning deletion upper triangle to stay anchored to the projected origin")
+    require_plain_fragment("Deleted scroll A 04                             │  7◤│", "Expected spanning deletion lower triangle to stay adjacent to the upper triangle")
+  elseif phase == "lower-target-below" then
+    require_plain_fragment("Deleted scroll A 49                             │ 52◣│", "Expected upper deletion split to remain visible while lower target approaches")
+    require_plain_fragment("Deleted scroll A 50                             │ 53◤│", "Expected upper deletion lower split to remain adjacent")
+    require_plain_fragment("Deleted scroll B 01                             │ 58◤│", "Expected lower deletion target below origin to use the down-route triangle")
+  elseif phase == "lower-target-approach" then
+    require_plain_fragment("Deleted scroll B 01                             │ 58◣│", "Expected lower deletion upper split triangle as its block crosses the projected origin")
+    require_plain_fragment("Deleted scroll B 02                             │ 59◤│", "Expected lower deletion lower split triangle adjacent to the upper split")
+  elseif phase == "same-row-upper" then
+    require_plain_fragment("Deleted scroll B 02                             │ 59◣│", "Expected same-row deletion upper split to anchor at the projected origin")
+    require_plain_fragment("Deleted scroll B 03                             │ 60◤│", "Expected same-row deletion lower split to stay adjacent")
+  elseif phase == "upper-target-exiting" then
+    require_plain_fragment("Deleted scroll B 03                             │ 60◣│", "Expected exiting deletion upper split to anchor at the projected origin")
+    require_plain_fragment("Deleted scroll B 04                             │ 61◤│", "Expected exiting deletion lower split to stay adjacent")
+  elseif phase == "lower-target-entering" then
+    require_plain_fragment("Deleted scroll B 04                             │ 61◣│", "Expected entering deletion upper split to anchor at the projected origin")
+    require_plain_fragment("Deleted scroll B 05                             │ 62◤│", "Expected entering deletion lower split to stay adjacent")
+  elseif phase == "pre-overlap-inner" then
+    require_plain_fragment("Deleted scroll B 05                             │ 62◣│", "Expected pre-overlap deletion upper split to anchor at the projected origin")
+    require_plain_fragment("Deleted scroll B 06                             │ 63◤│", "Expected pre-overlap deletion lower split to stay adjacent")
+  elseif phase == "pre-collision-inner" then
+    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 7", "Expected adjacent upward deletion route to terminate at the triangle row without an inner pipe")
+    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Adjacent upward deletion route should not draw an inner pipe through the triangle row")
+  elseif phase == "target-above" then
+    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 6", "Expected deletion target above its origin to connect with an upward triangle and no inner pipe")
+    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Upward deletion target should not draw an inner pipe through the triangle row")
+    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
+      table.insert(errors, "Expected upward deletion tail underline to reach the connector cell beside B06")
     end
-    return errors
+  elseif phase == "upper-target-clipped" then
+    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 5", "Expected clipped deletion target to keep the real triangle while visible")
+    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Clipped deletion target should not draw an inner pipe through the visible triangle")
+    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
+      table.insert(errors, "Expected clipped upward deletion tail underline to reach the connector cell beside B06")
+    end
+  elseif phase == "overlap-stepped" then
+    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 4", "Expected overlap transition row to avoid an inner visible-route pipe")
+    require_plain_fragment("Scroll delete context 06                        │ 64 │ │", "Expected visible deletion route to continue from the origin row")
+    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
+      table.insert(errors, "Expected overlap deletion tail underline to reach the connector cell beside B06")
+    end
+  elseif phase == "hidden-overlap-inner" then
+    require_plain_fragment("Deleted scroll B 06                             │ 63◣│   │", "Expected hidden upper deletion route to step outward beside the visible triangle")
+    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │ │", "Hidden overlap should not collide with the visible route lane on the triangle row")
+    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
+      table.insert(errors, "Expected hidden-overlap deletion tail underline to reach the connector cell beside B06")
+    end
   end
 
   local _, _, glyph = find_plain_line(lines, { "Deleted scroll" }, delete_glyphs)
   if not glyph then
-    table.insert(errors, "Expected initial scroll deletion viewport to show the real transition glyph")
+    table.insert(errors, "Expected scroll deletion viewport to show a real directional transition glyph")
+    return errors
   end
 
   if ansi_lines and glyph then
