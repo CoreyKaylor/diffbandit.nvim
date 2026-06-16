@@ -101,9 +101,23 @@ run_scroll_test() {
         scroll-additions)
             capture_scroll_phase "initial" 1 1
             capture_scroll_phase "target-above" 1 58
+            capture_scroll_phase "target-aligned" 1 2
+            capture_scroll_phase "target-flipped" 1 3
             capture_scroll_phase "target-spanning" 1 4
+            capture_scroll_phase "lower-target-below" 1 45
+            capture_scroll_phase "lower-target-approach" 1 50
+            capture_scroll_phase "same-row-upper" 1 51
+            capture_scroll_phase "upper-target-exiting" 1 52
+            capture_scroll_phase "lower-target-entering" 1 53
+            capture_scroll_phase "pre-overlap-inner" 1 54
+            capture_scroll_phase "lower-target-anchor" 1 55
+            capture_scroll_phase "pre-collision-inner" 1 59
+            capture_scroll_phase "upper-target-clipped" 1 60
+            capture_scroll_phase "overlap-stepped" 1 61
+            capture_scroll_phase "hidden-overlap-inner" 1 64
             capture_scroll_phase "origin-offscreen" 10 25
             capture_scroll_phase "clamped-end" 13 69
+            capture_scroll_phase "overscroll-end" 20 76
             ;;
         scroll-deletions)
             capture_scroll_phase "initial" 1 1
@@ -158,6 +172,8 @@ run_scroll_test() {
     case "$test_name" in
         scroll-additions)
             capture_key_scroll_phase "right-j-scroll" "right" 25
+            capture_key_scroll_phase "right-j-scroll-line39" "right" 38
+            capture_key_scroll_phase "right-j-scroll-line41" "right" 40
             ;;
         scroll-deletions)
             capture_key_scroll_phase "left-j-scroll" "left" 25

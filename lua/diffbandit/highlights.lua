@@ -205,6 +205,12 @@ local function apply_diff_variants(config)
     fg = add_bg,
     bg = normal_base.bg,
   })
+  apply_group("DiffBanditConnectorExpansionAddUnderline", {
+    fg = add_bg,
+    bg = normal_base.bg,
+    underline = true,
+    sp = add_bg,
+  })
   apply_group("DiffBanditConnectorExpansionDelete", {
     fg = delete_bg,
     bg = normal_base.bg,

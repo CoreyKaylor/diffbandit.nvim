@@ -7,10 +7,13 @@ DiffBandit uses compact source buffers, sidecar line-number panes, and a connect
 ## Shared Scroll Rules
 
 - Scrolling the left content pane updates only the left line-number pane. Scrolling the right content pane updates only the right line-number pane.
-- Source panes are allowed to diverge. If one side is near EOF, only that side clamps to its final compact row.
+- Source panes are allowed to diverge. Each compact source buffer includes trailing scroll padding so users can continue scrolling past real EOF and manually align a changed region with its opposite-side origin.
 - Gutter panes are visual-only: window navigation and mouse interaction should not leave focus in the line-number or connector panes.
 - Native `scrollbind`, `cursorbind`, folds, and inherited scroll offsets must not change the source layout; DiffBandit owns gutter synchronization.
 - Gutter routes are viewport-aware. Scrolled-through middle rows show rails/background continuity; they do not invent transition glyphs just because a route crosses the viewport boundary.
+- Route geometry is based on current screen-row projection, not only original source row distance. If an addition target is visible above its left-side origin after independent right-pane scrolling, the add transition flips to `◢` and the connector approaches the bottom edge of the transition cell.
+- Once a visible addition block reaches its visible left-side origin row, the route uses two adjacent boundary transitions at the origin: `◢` on the upper side of the boundary and `◥` on the lower side. The origin row remains the stationary underline across the gutter and into whichever transition cell sits on that row.
+- When the transition row scrolls out of view but the added block remains visible, the connector rail clips at the viewport edge instead of moving the triangle to a synthetic visible row.
 - Transition-cell rules do not change while scrolling:
   - Addition and mixed change/add backgrounds begin after the triangle/wedge in the right number pane.
   - Deletion background stops before the triangle in the left number pane.

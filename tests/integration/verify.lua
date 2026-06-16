@@ -32,10 +32,27 @@ local function count_occurrences(lines, needle)
 end
 
 local function sgr_has(codes, wanted)
+  local parts = {}
   for code in codes:gmatch("%d+") do
-    if code == wanted then
+    parts[#parts + 1] = code
+  end
+
+  local i = 1
+  while i <= #parts do
+    local code = parts[i]
+    if code == "38" or code == "48" or code == "58" then
+      local mode = parts[i + 1]
+      if mode == "2" then
+        i = i + 5
+      elseif mode == "5" then
+        i = i + 3
+      else
+        i = i + 1
+      end
+    elseif code == wanted then
       return true
     end
+    i = i + 1
   end
   return false
 end
@@ -489,7 +506,7 @@ local function verify_deletions(lines, ansi_lines)
             and not ansi_underline_at_plain_byte(line, connector_col0 + 1)
             and ansi_underline_at_plain_byte(line, connector_col0 + 2)
         end
-      elseif stripped:find("Fourth line", 1, true) and stripped:find("~", 1, true) then
+      elseif stripped:find("Fourth line", 1, true) then
         local rail_pattern = stripped:find("  7 │ │", 1, true)
         if rail_pattern then
           local line_number_spacer = rail_pattern + #"  7"
@@ -789,26 +806,587 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
     return errors
   end
 
+  if phase == "overscroll-end" then
+    local first_content = nil
+    local saw_blank_padding = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add context 18", 1, true) then
+        first_content = first_content or stripped
+      elseif first_content and stripped:find("│    │            │    │", 1, true) then
+        saw_blank_padding = true
+      end
+    end
+    if not first_content then
+      table.insert(errors, "Expected overscroll additions capture to place final context at the top")
+    end
+    if not saw_blank_padding then
+      table.insert(errors, "Expected overscroll additions capture to include blank scroll padding after EOF")
+    end
+    return errors
+  end
+
   local add_glyphs = { "\226\151\165", "\226\151\162" } -- ◥, ◢
-  if phase == "origin-offscreen" or phase == "right-j-scroll" then
+  local function add_glyph_is_underlined(label, glyph)
+    if not ansi_lines then
+      return false
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) and stripped:find(glyph, 1, true) then
+        local glyph_pos = stripped:find(glyph, 1, true)
+        if glyph_pos and ansi_underline_at_plain_byte(line, glyph_pos) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  local function add_connector_tail_reaches_glyph(label, glyph)
+    if not ansi_lines then
+      return false
+    end
+    local right_separator_width = #"\226\148\130" -- │
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) and stripped:find(glyph, 1, true) then
+        local glyph_pos = stripped:find(glyph, 1, true)
+        local tail_pos = glyph_pos and (glyph_pos - right_separator_width - 1) or nil
+        if tail_pos and tail_pos > 0 and ansi_underline_at_plain_byte(line, tail_pos) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  local function add_connector_edge_cell_is_underlined(label)
+    if not ansi_lines then
+      return false
+    end
+    local separator = "\226\148\130" -- │
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      local label_pos = stripped:find(label, 1, true)
+      if label_pos then
+        local separators = {}
+        local pos = 1
+        while true do
+          local sep_pos = stripped:find(separator, pos, true)
+          if not sep_pos or sep_pos >= label_pos then
+            break
+          end
+          separators[#separators + 1] = sep_pos
+          pos = sep_pos + #separator
+        end
+        local right_num_left_sep = separators[#separators - 1]
+        if right_num_left_sep and ansi_underline_at_plain_byte(line, right_num_left_sep - 1) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
+  if phase == "origin-offscreen" then
     if not find_plain_line(lines, { "Added scroll" }) then
       table.insert(errors, "Expected scroll addition viewport to include added content")
     end
     if contains_any_glyph(lines, { "Added scroll" }, add_glyphs) then
       table.insert(errors, "Offscreen-origin addition rows should show rails/background, not synthetic triangles")
     end
-    if phase == "right-j-scroll" and not find_plain_line(lines, { "Scroll add context 01" }) then
-      table.insert(errors, "Right-pane scroll should leave left pane stationary at the top context")
-    end
     return errors
   end
 
-  if phase == "target-above" or phase == "target-spanning" then
+  if phase == "target-above" then
     local _, _, glyph = find_plain_line(lines, { "Added scroll" }, add_glyphs)
     if not glyph then
       table.insert(errors, "Expected independent addition viewport to show a directional transition glyph")
     end
+    if ansi_lines and not add_connector_tail_reaches_glyph("Added scroll B 06", "\226\151\162") then
+      table.insert(errors, "Expected adjacent upward addition tail to underline the connector cell before B06")
+    end
     return errors
+  end
+
+  if phase == "target-flipped" then
+    local _, _, glyph = find_plain_line(lines, { "Added scroll A 02" }, add_glyphs)
+    if glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected addition transition split point to stay anchored to the origin boundary")
+    end
+    local _, _, lower_glyph = find_plain_line(lines, { "Added scroll A 03" }, add_glyphs)
+    if lower_glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected addition span crossing the visible origin to keep a lower adjacent glyph")
+    end
+    if ansi_lines then
+      local found_origin_transition_underline = false
+      for _, line in ipairs(ansi_lines) do
+        local stripped = strip_ansi(line)
+        if stripped:find("Scroll add origin A", 1, true) and stripped:find("Added scroll A 02", 1, true) then
+          local glyph_pos = stripped:find("\226\151\162", 1, true)
+          if glyph_pos then
+            found_origin_transition_underline = ansi_underline_at_plain_byte(line, glyph_pos)
+          end
+        end
+      end
+      if not found_origin_transition_underline then
+        table.insert(errors, "Expected straddled addition origin underline to reach the right transition cell")
+      end
+    end
+    return errors
+  end
+
+  if phase == "target-aligned" then
+    local _, _, top_glyph = find_plain_line(lines, { "Added scroll A 01" }, add_glyphs)
+    if top_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected addition transition to split as soon as the added row aligns with the origin")
+    end
+    local _, _, lower_glyph = find_plain_line(lines, { "Added scroll A 02" }, add_glyphs)
+    if lower_glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected aligned addition transition to keep a lower adjacent glyph")
+    end
+    if ansi_lines then
+      local found_origin_transition_underline = false
+      for _, line in ipairs(ansi_lines) do
+        local stripped = strip_ansi(line)
+        if stripped:find("Scroll add origin A", 1, true) and stripped:find("Added scroll A 01", 1, true) then
+          local glyph_pos = stripped:find("\226\151\162", 1, true)
+          if glyph_pos then
+            found_origin_transition_underline = ansi_underline_at_plain_byte(line, glyph_pos)
+          end
+        end
+      end
+      if not found_origin_transition_underline then
+        table.insert(errors, "Expected aligned addition origin underline to reach the upper transition glyph")
+      end
+    end
+    return errors
+  end
+
+  if phase == "target-spanning" then
+    local _, _, top_glyph = find_plain_line(lines, { "Added scroll A 03" }, add_glyphs)
+    if top_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected upper addition transition to stay adjacent to the origin while the block straddles it")
+    end
+    local _, _, lower_glyph = find_plain_line(lines, { "Added scroll A 04" }, add_glyphs)
+    if lower_glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected lower addition transition to stay on the origin-aligned row while the block straddles it")
+    end
+    return errors
+  end
+
+  if phase == "lower-target-below" then
+    local found_lower_clipped_rail_bottom = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add context 09", 1, true)
+          and stripped:find("Scroll add context 04", 1, true)
+          and stripped:find("│          │ │ 55", 1, true) then
+        found_lower_clipped_rail_bottom = true
+        break
+      end
+    end
+    if not found_lower_clipped_rail_bottom then
+      table.insert(errors, "Expected lower addition route to continue down to the bottom row while its target is still below")
+    end
+    return errors
+  end
+
+  if phase == "lower-target-approach" then
+    local _, _, first_glyph = find_plain_line(lines, { "Added scroll B 01" }, add_glyphs)
+    if first_glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected lower addition route to show its first visible triangle as soon as B enters")
+    end
+    if contains_any_glyph(lines, { "Added scroll B 02", "Added scroll B 03" }, add_glyphs) then
+      table.insert(errors, "Expected lower addition route to keep a single lower triangle until B straddles its origin")
+    end
+    local found_lower_clipped_rail = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add context 06", 1, true)
+          and stripped:find("Scroll add origin B", 1, true)
+          and stripped:find("│          │ │ 57", 1, true) then
+        found_lower_clipped_rail = true
+        break
+      end
+    end
+    if not found_lower_clipped_rail then
+      table.insert(errors, "Expected lower addition approach to keep a continuation rail from origin B to B01")
+    end
+    if ansi_lines then
+      local found_tail_underline = false
+      for _, line in ipairs(ansi_lines) do
+        local stripped = strip_ansi(line)
+        if stripped:find("Scroll add context 06", 1, true)
+            and stripped:find("Scroll add origin B", 1, true)
+            and has_ansi_underline(line) then
+          found_tail_underline = true
+          break
+        end
+      end
+      if not found_tail_underline then
+        table.insert(errors, "Expected lower addition first-visible route to underline from the pipe into B01")
+      end
+    end
+    return errors
+  end
+
+  if phase == "same-row-upper" then
+    local _, _, glyph = find_plain_line(lines, { "Added scroll A 50" }, add_glyphs)
+    if glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected same-row upper addition transition to render its upper triangle on A50")
+    end
+    if ansi_lines and add_connector_edge_cell_is_underlined("Added scroll A 49") then
+      table.insert(errors, "Expected same-row upper transition not to underline the connector edge on the preceding add row")
+    end
+    return errors
+  end
+
+  if phase == "upper-target-exiting" then
+    local _, _, upper_a_glyph = find_plain_line(lines, { "Added scroll A 50" }, add_glyphs)
+    if upper_a_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected upper addition route to keep a triangle on A50 while the region exits upward")
+    end
+    local found_origin_rail = false
+    local found_tail_terminal = false
+    local found_tail_pipe = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Added scroll A 50", 1, true) then
+        if stripped:find("│            │◢53", 1, true) then
+          found_tail_terminal = true
+        end
+        if stripped:find("│          │ │◢53", 1, true) then
+          found_tail_pipe = true
+        end
+      elseif stripped:find("Scroll add origin A", 1, true)
+          and stripped:find("│          │ │ 54", 1, true) then
+        found_origin_rail = true
+      end
+    end
+    if not found_tail_terminal then
+      table.insert(errors, "Expected upper addition route to terminate the pipe on the row below A50")
+    end
+    if found_tail_pipe then
+      table.insert(errors, "Expected upper addition route not to draw a pipe on the A50 tail row")
+    end
+    if not found_origin_rail then
+      table.insert(errors, "Expected upper addition route to keep the origin-side pipe on origin A")
+    end
+    if ansi_lines and not add_glyph_is_underlined("Added scroll A 50", "\226\151\162") then
+      table.insert(errors, "Expected exiting upper addition triangle to carry the connector underline")
+    end
+    if ansi_lines and not add_connector_tail_reaches_glyph("Added scroll A 50", "\226\151\162") then
+      table.insert(errors, "Expected exiting upper addition tail to underline the connector cell before A50")
+    end
+    return errors
+  end
+
+  if phase == "lower-target-entering" then
+    local _, _, upper_a_glyph = find_plain_line(lines, { "Added scroll A 50" }, add_glyphs)
+    if upper_a_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected upper addition route to keep its final visible upper triangle at the top edge")
+    end
+    local found_origin_rail = false
+    local found_tail_terminal = false
+    local found_tail_pipe = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Added scroll A 50", 1, true) then
+        if stripped:find("│            │◢53", 1, true) then
+          found_tail_terminal = true
+        end
+        if stripped:find("│          │ │◢53", 1, true) then
+          found_tail_pipe = true
+        end
+      elseif stripped:find("Scroll add origin A", 1, true)
+          and stripped:find("│          │ │ 55", 1, true) then
+        found_origin_rail = true
+      end
+    end
+    if not found_tail_terminal then
+      table.insert(errors, "Expected upper addition route to terminate the pipe on the A50 top-edge tail row")
+    end
+    if found_tail_pipe then
+      table.insert(errors, "Expected upper addition route not to draw a pipe on the A50 top-edge tail row")
+    end
+    if not found_origin_rail then
+      table.insert(errors, "Expected upper addition route to keep the origin-side pipe at the top edge")
+    end
+    if ansi_lines then
+      local found_upper_tail = false
+      for _, line in ipairs(ansi_lines) do
+        local stripped = strip_ansi(line)
+        if stripped:find("Scroll add context 01", 1, true)
+            and stripped:find("Added scroll A 50", 1, true)
+            and has_ansi_underline(line) then
+          found_upper_tail = true
+          break
+        end
+      end
+      if not found_upper_tail then
+        table.insert(errors, "Expected upper addition route to keep an underlined tail to its top-edge triangle")
+      end
+      if not add_glyph_is_underlined("Added scroll A 50", "\226\151\162") then
+        table.insert(errors, "Expected top-edge upper addition triangle to carry the connector underline")
+      end
+      if add_connector_edge_cell_is_underlined("Added scroll B 01") then
+        table.insert(errors, "Expected same-row lower transition not to underline the connector edge on B01")
+      end
+    end
+    local _, _, top_glyph = find_plain_line(lines, { "Added scroll B 02" }, add_glyphs)
+    if top_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected lower addition upper transition to anchor at origin B when B target enters")
+    end
+    local _, _, lower_glyph = find_plain_line(lines, { "Added scroll B 03" }, add_glyphs)
+    if lower_glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected lower addition lower transition to anchor adjacent to origin B when B target enters")
+    end
+    return errors
+  end
+
+  if phase == "upper-target-clipped" then
+    local found_a_origin_rail = false
+    local found_a_stepped_corner = false
+    local found_b_origin_rail = false
+    local found_b_tail_terminal = false
+    local found_b_tail_pipe = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add origin A", 1, true)
+          and stripped:find("│          │ │ 62", 1, true) then
+        found_a_origin_rail = true
+      elseif stripped:find("Scroll add origin A", 1, true)
+          and stripped:find("│        │   │ 62", 1, true) then
+        found_a_stepped_corner = true
+      elseif stripped:find("Added scroll B 06", 1, true) then
+        if stripped:find("│            │◢63", 1, true) then
+          found_b_tail_terminal = true
+        end
+        if stripped:find("│          │ │◢63", 1, true) then
+          found_b_tail_pipe = true
+        end
+      elseif stripped:find("Scroll add origin B", 1, true)
+          and stripped:find("│          │ │ 66", 1, true) then
+        found_b_origin_rail = true
+      end
+    end
+    if found_a_origin_rail then
+      table.insert(errors, "Expected clipped upper addition route to step outward one row before same-cell collision")
+    end
+    if not found_a_stepped_corner then
+      table.insert(errors, "Expected clipped upper addition route to step outward when the lower route reaches the adjacent row")
+    end
+    if not found_b_tail_terminal then
+      table.insert(errors, "Expected visible upper B route to terminate the pipe on the B06 tail row")
+    end
+    if found_b_tail_pipe then
+      table.insert(errors, "Expected visible upper B route not to draw a pipe on the B06 tail row")
+    end
+    if not found_b_origin_rail then
+      table.insert(errors, "Expected visible upper B route to keep the origin-side pipe on origin B")
+    end
+    if ansi_lines and not add_glyph_is_underlined("Added scroll B 06", "\226\151\162") then
+      table.insert(errors, "Expected visible upper B triangle to carry the connector underline")
+    end
+    return errors
+  end
+
+  if phase == "pre-collision-inner" then
+    local found_inner_a_origin = false
+    local found_early_stepped_a_origin = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add origin A", 1, true) then
+        if stripped:find("│          │ │ 61", 1, true) then
+          found_inner_a_origin = true
+        end
+        if stripped:find("│        │   │ 61", 1, true) then
+          found_early_stepped_a_origin = true
+        end
+      end
+    end
+    if not found_inner_a_origin then
+      table.insert(errors, "Expected clipped route to stay inner while one full blank row remains before the lower route")
+    end
+    if found_early_stepped_a_origin then
+      table.insert(errors, "Expected clipped route not to step outward while one full blank row remains")
+    end
+    return errors
+  end
+
+  if phase == "pre-overlap-inner" then
+    local found_inner_a_origin = false
+    local found_early_stepped_a_origin = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add origin A", 1, true) then
+        if stripped:find("│          │ │ 56", 1, true) then
+          found_inner_a_origin = true
+        end
+        if stripped:find("│        │   │ 56", 1, true) then
+          found_early_stepped_a_origin = true
+        end
+      end
+    end
+    if not found_inner_a_origin then
+      table.insert(errors, "Expected pre-overlap clipped route to stay on the inner lane")
+    end
+    if found_early_stepped_a_origin then
+      table.insert(errors, "Expected pre-overlap clipped route not to step outward before collision")
+    end
+    return errors
+  end
+
+  if phase == "overlap-stepped" then
+    local found_stepped_clipped_upper = false
+    local found_inner_triangle = false
+    local found_inner_origin_rail = false
+    local found_lower_stepped_triangle = false
+    local found_inner_triangle_pipe = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add context 01", 1, true)
+          and stripped:find("Added scroll B 04", 1, true)
+          and stripped:find("│        │   │ 61", 1, true) then
+        found_stepped_clipped_upper = true
+      elseif stripped:find("Scroll add origin A", 1, true)
+          and stripped:find("Added scroll B 06", 1, true) then
+        if stripped:find("│        │   │◢63", 1, true) then
+          found_inner_triangle = true
+        end
+        if stripped:find("│        │ │ │◢63", 1, true) then
+          found_inner_triangle_pipe = true
+        end
+        if stripped:find("│      │     │◢63", 1, true) then
+          found_lower_stepped_triangle = true
+        end
+      elseif stripped:find("Scroll add origin B", 1, true)
+          and stripped:find("Scroll add context 09", 1, true)
+          and stripped:find("│          │ │ 67", 1, true) then
+        found_inner_origin_rail = true
+      end
+    end
+    if not found_stepped_clipped_upper then
+      table.insert(errors, "Expected clipped upper route to step outward before the lower route overlap")
+    end
+    if not found_inner_triangle then
+      table.insert(errors, "Expected lower route triangle to keep the inner lane while the upper continuation steps around it")
+    end
+    if found_inner_triangle_pipe then
+      table.insert(errors, "Expected lower route not to draw a pipe on the B06 tail row")
+    end
+    if not found_inner_origin_rail then
+      table.insert(errors, "Expected lower route to keep the origin-side pipe on origin B")
+    end
+    if found_lower_stepped_triangle then
+      table.insert(errors, "Expected lower visible route not to be displaced by the clipped upper route")
+    end
+    return errors
+  end
+
+  if phase == "hidden-overlap-inner" then
+    local found_lower_inner_origin = false
+    local found_lower_outer_origin = false
+    local found_shared_overlap = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add context 01", 1, true)
+          and stripped:find("Scroll add context 06", 1, true)
+          and stripped:find("│        │ │ │ 64", 1, true) then
+        found_shared_overlap = true
+      elseif stripped:find("Scroll add origin B", 1, true) then
+        if stripped:find("│          │ │ 70", 1, true) then
+          found_lower_inner_origin = true
+        end
+        if stripped:find("│        │   │ 70", 1, true) then
+          found_lower_outer_origin = true
+        end
+      end
+    end
+    if not found_shared_overlap then
+      table.insert(errors, "Expected overlapping clipped upward routes to occupy separate lanes near the top edge")
+    end
+    if not found_lower_inner_origin then
+      table.insert(errors, "Expected lower clipped upward route to keep the inner lane at origin B")
+    end
+    if found_lower_outer_origin then
+      table.insert(errors, "Expected lower clipped upward route not to connect to the upper route's outer lane")
+    end
+    return errors
+  end
+
+  if phase == "right-j-scroll" then
+    if not find_plain_line(lines, { "Scroll add context 01" }) then
+      table.insert(errors, "Right-pane scroll should leave left pane stationary at the top context")
+    end
+    local _, _, top_glyph = find_plain_line(lines, { "Added scroll A 15" }, add_glyphs)
+    if top_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected right-pane natural scroll to keep the upper flipped addition transition")
+    end
+    local _, _, lower_glyph = find_plain_line(lines, { "Added scroll A 16" }, add_glyphs)
+    if lower_glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected right-pane natural scroll to keep the lower addition transition on the origin-aligned row")
+    end
+    return errors
+  end
+
+  if phase == "right-j-scroll-line39" or phase == "right-j-scroll-line41" then
+    if not find_plain_line(lines, { "Scroll add context 01" }) then
+      table.insert(errors, "Deep right-pane scroll should leave left pane stationary at the top context")
+    end
+    local _, _, top_glyph = find_plain_line(lines, { "Scroll add origin A" }, add_glyphs)
+    if top_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected deep right-pane scroll to keep the upper transition docked to origin A")
+    end
+    local _, _, lower_glyph = find_plain_line(lines, { "Scroll add context 03" }, add_glyphs)
+    if lower_glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected deep right-pane scroll to keep the lower transition docked below origin A")
+    end
+
+    local found_lower_origin = false
+    local found_lower_rail = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add origin B", 1, true)
+          and stripped:find("│  7 │", 1, true) then
+        found_lower_origin = true
+      elseif stripped:find("Scroll add context 06", 1, true)
+          and stripped:find("│          │ │", 1, true) then
+        found_lower_rail = true
+      end
+    end
+    if not found_lower_origin then
+      table.insert(errors, "Expected deep right-pane scroll to keep lower route origin on left row 7")
+    end
+    if not found_lower_rail then
+      table.insert(errors, "Expected deep right-pane scroll to keep lower continuation rail below origin B")
+    end
+    return errors
+  end
+
+  if phase == "initial" then
+    local found_lower_clipped_rail = false
+    local found_lower_clipped_rail_bottom = false
+    for _, line in ipairs(lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find("Scroll add context 06", 1, true)
+          and stripped:find("Added scroll A 05", 1, true)
+          and stripped:find("│          │ │ 8", 1, true) then
+        found_lower_clipped_rail = true
+      elseif stripped:find("Scroll add context 09", 1, true)
+          and stripped:find("Added scroll A 08", 1, true)
+          and stripped:find("│          │ │ 11", 1, true) then
+        found_lower_clipped_rail_bottom = true
+      end
+    end
+    if not found_lower_clipped_rail then
+      table.insert(errors, "Expected offscreen lower addition target to leave a vertical continuation rail below its origin")
+    end
+    if not found_lower_clipped_rail_bottom then
+      table.insert(errors, "Expected offscreen lower addition continuation rail to reach the bottom visible row")
+    end
   end
 
   local _, _, glyph = find_plain_line(lines, { "Added scroll" }, add_glyphs)

@@ -154,6 +154,253 @@ do
   end
 end
 
+-- Test Suite 4b: Projected routes can run upward after independent scrolling
+do
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 1,
+      triangle_display_row = 1,
+      lane = 1,
+    },
+  }
+  local active_bars = paths_mod.compute_active_bars(projected_paths)
+  local underlines = paths_mod.compute_underlines(projected_paths, active_bars, {
+    left_number_width = 0,
+    connector_core_width = 12,
+    rail_spacing = 1,
+    sidecar_numbers = true,
+  })
+
+  assert_eq(active_bars[2] ~= nil, true,
+    "Projected upward add route should keep a rail between target and lower origin")
+  assert_eq(active_bars[2][1] ~= nil, true,
+    "Projected upward add route should use the assigned lane for the rail")
+  assert_eq(active_bars[1] == nil or active_bars[1][1] == nil, true,
+    "Projected upward add route should not draw a rail on the transition row")
+  assert_eq(active_bars[3] == nil or active_bars[3][1] == nil, true,
+    "Projected upward add route should not draw a rail on the origin row")
+  assert_eq(underlines.origin_has_bar[3], true,
+    "Projected upward add origin should connect to a vertical rail")
+  assert_eq(underlines.tail_underlines[2] ~= nil, true,
+    "Projected upward add route should place the tail underline below the transition")
+  assert_eq(underlines.tail_underlines[2].kind, "add",
+    "Projected upward tail underline should keep add styling")
+end
+
+-- Test Suite 4c: Projected route lanes are assigned from viewport geometry
+do
+  local upper_group = {}
+  local lower_group = {}
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 0,
+      triangle_display_row = 0,
+      route_group = upper_group,
+      hide_triangle = true,
+    },
+    {
+      kind = "add",
+      origin_display_row = 7,
+      top = 7,
+      display_start_row = 3,
+      triangle_display_row = 3,
+      route_group = lower_group,
+      connect_tail_on_triangle_row = true,
+    },
+  }
+
+  paths_mod.assign_lanes(projected_paths)
+
+  local by_group = {}
+  for _, p in ipairs(projected_paths) do
+    by_group[p.route_group] = p
+  end
+  local active_bars = paths_mod.compute_active_bars(projected_paths)
+
+  assert_eq(by_group[upper_group].lane, 2,
+    "Hidden projected continuation should step outward around a visible route")
+  assert_eq(by_group[lower_group].lane, 1,
+    "Visible projected route should keep the inner add lane")
+  assert_eq(active_bars[3] ~= nil and active_bars[3][2] ~= nil, true,
+    "Hidden upward continuation should include the origin row to avoid a broken corner")
+  assert_eq(active_bars[3] == nil or active_bars[3][1] == nil, true,
+    "Visible lower route should not draw its inner rail on the triangle row")
+  assert_eq(active_bars[7] ~= nil and active_bars[7][1] ~= nil, true,
+    "Visible lower route should terminate on its origin row")
+end
+
+-- Test Suite 4d: Split triangles for one projected addition share a lane
+do
+  local group = {}
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 2,
+      triangle_display_row = 2,
+      route_group = group,
+    },
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 4,
+      triangle_display_row = 4,
+      route_group = group,
+    },
+  }
+
+  paths_mod.assign_lanes(projected_paths)
+
+  assert_eq(projected_paths[1].lane, projected_paths[2].lane,
+    "Split triangles from the same added block should stay on one lane")
+end
+
+-- Test Suite 4e: Hidden continuations only step outward on real overlap
+do
+  local upper_group = {}
+  local lower_group = {}
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 0,
+      triangle_display_row = 0,
+      route_group = upper_group,
+      hide_triangle = true,
+    },
+    {
+      kind = "add",
+      origin_display_row = 7,
+      top = 7,
+      display_start_row = 5,
+      triangle_display_row = 5,
+      route_group = lower_group,
+      connect_tail_on_triangle_row = true,
+    },
+  }
+
+  paths_mod.assign_lanes(projected_paths)
+
+  local by_group = {}
+  for _, p in ipairs(projected_paths) do
+    by_group[p.route_group] = p
+  end
+
+  assert_eq(by_group[upper_group].lane, 1,
+    "Hidden continuation should stay inner when the visible route starts after a full-row gap")
+  assert_eq(by_group[lower_group].lane, 1,
+    "Visible route should reuse the inner lane when there is no adjacent collision")
+end
+
+-- Test Suite 4f: Adjacent upward projected additions still draw a tail
+do
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 2,
+      triangle_display_row = 2,
+      lane = 1,
+      connect_tail_on_triangle_row = true,
+    },
+  }
+  local active_bars = paths_mod.compute_active_bars(projected_paths)
+  local underlines = paths_mod.compute_underlines(projected_paths, active_bars, {
+    left_number_width = 0,
+    connector_core_width = 12,
+    rail_spacing = 1,
+    sidecar_numbers = true,
+  })
+
+  assert_eq(active_bars[2] == nil or active_bars[2][1] == nil, true,
+    "Adjacent upward add route should not draw a rail on the triangle row")
+  assert_eq(active_bars[3] ~= nil and active_bars[3][1] ~= nil, true,
+    "Adjacent upward add route should terminate on the origin row")
+  assert_eq(underlines.origin_has_bar[3], true,
+    "Adjacent upward add origin should connect to the triangle-row rail")
+  assert_eq(underlines.tail_underlines[2] ~= nil, true,
+    "Adjacent upward add route should underline from the rail to the triangle")
+end
+
+-- Test Suite 4g: Lower hidden upward continuations keep the inner lane
+do
+  local upper_group = {}
+  local lower_group = {}
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = -10,
+      triangle_display_row = -10,
+      route_group = upper_group,
+      hide_triangle = true,
+    },
+    {
+      kind = "add",
+      origin_display_row = 7,
+      top = 7,
+      display_start_row = 0,
+      triangle_display_row = 0,
+      route_group = lower_group,
+      hide_triangle = true,
+    },
+  }
+
+  paths_mod.assign_lanes(projected_paths)
+
+  local by_group = {}
+  for _, p in ipairs(projected_paths) do
+    by_group[p.route_group] = p
+  end
+
+  assert_eq(by_group[lower_group].lane, 1,
+    "Lower clipped upward route should keep the inner add lane")
+  assert_eq(by_group[upper_group].lane, 2,
+    "Upper clipped upward route should step outward around the lower route")
+end
+
+-- Test Suite 4h: Same-row projected additions do not draw an extra tail
+do
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 3,
+      top = 3,
+      display_start_row = 3,
+      triangle_display_row = 3,
+      lane = 1,
+      connect_tail_on_triangle_row = true,
+    },
+  }
+  local active_bars = paths_mod.compute_active_bars(projected_paths)
+  local underlines = paths_mod.compute_underlines(projected_paths, active_bars, {
+    left_number_width = 0,
+    connector_core_width = 12,
+    rail_spacing = 1,
+    sidecar_numbers = true,
+  })
+
+  assert_eq(active_bars[3] == nil or active_bars[3][1] == nil, true,
+    "Same-row add transition should not draw a vertical rail")
+  assert_eq(underlines.origin_has_bar[3], false,
+    "Same-row add transition should use the glyph column, not a routed bar")
+  assert_eq(underlines.tail_underlines[2] == nil, true,
+    "Same-row add transition should not underline the row above the glyph")
+  assert_eq(underlines.tail_underlines[3] == nil, true,
+    "Same-row add transition should not create a separate tail underline")
+end
+
 -- Test Suite 5: No visual collisions between bars
 -- Verifies different lanes have different column positions
 do

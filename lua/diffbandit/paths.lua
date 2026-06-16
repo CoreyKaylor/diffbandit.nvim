@@ -17,14 +17,12 @@ local function occupancy_range(p)
   local origin_row = origin_row_for_path(p)
   local triangle_row = triangle_row_for_path(p)
 
-  local has_vertical_bar = (triangle_row - origin_row) > 1
+  local has_vertical_bar = math.abs(triangle_row - origin_row) > 1
 
-  local start_row = origin_row
-  local finish_row
+  local start_row = math.min(origin_row, triangle_row)
+  local finish_row = start_row
   if has_vertical_bar then
-    finish_row = triangle_row - 1
-  else
-    finish_row = origin_row
+    finish_row = math.max(origin_row, triangle_row)
   end
 
   if finish_row < start_row then
@@ -230,40 +228,131 @@ end
 -- Assign lanes to paths based on overlap detection
 -- Mutates paths in place, returns max_lane
 local function assign_lanes(paths)
-  -- Sort by start_row
+  -- Sort by occupied range so viewport-projected routes are lane-assigned
+  -- from their actual on-screen geometry, not only from their source hunk row.
   table.sort(paths, function(a, b)
-    local as = a.display_start_row or a.start_row or 0
-    local bs = b.display_start_row or b.start_row or 0
+    local a_hidden = a.hide_triangle and 1 or 0
+    local b_hidden = b.hide_triangle and 1 or 0
+    if a_hidden ~= b_hidden then
+      return a_hidden < b_hidden
+    end
+
+    if a.hide_triangle and b.hide_triangle then
+      local a_origin = origin_row_for_path(a)
+      local b_origin = origin_row_for_path(b)
+      local a_triangle = triangle_row_for_path(a)
+      local b_triangle = triangle_row_for_path(b)
+      local a_upward = a_triangle < a_origin
+      local b_upward = b_triangle < b_origin
+      if a_upward and b_upward and a_origin ~= b_origin then
+        return a_origin > b_origin
+      end
+    end
+
+    local as = occupancy_range(a)
+    local bs = occupancy_range(b)
+    if as == bs then
+      local ao = origin_row_for_path(a)
+      local bo = origin_row_for_path(b)
+      if ao == bo then
+        return triangle_row_for_path(a) < triangle_row_for_path(b)
+      end
+      return ao < bo
+    end
     return as < bs
   end)
 
   local lanes_add = {}
   local lanes_delete = {}
+  local group_lanes_add = {}
+  local group_lanes_delete = {}
   local max_lane = 0
+  local use_projected_intervals = false
+  for _, p in ipairs(paths) do
+    if p.route_group ~= nil then
+      use_projected_intervals = true
+      break
+    end
+  end
+
+  local function lane_has_overlap(lane_ranges, lane, start_row, end_row, group, margin)
+    local ranges = lane_ranges[lane]
+    if not ranges then
+      return false
+    end
+    margin = margin or 0
+    for _, range in ipairs(ranges) do
+      if range.group ~= group
+          and start_row <= range.finish_row + margin
+          and end_row + margin >= range.start_row then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function add_lane_range(lane_ranges, lane, start_row, end_row, group)
+    lane_ranges[lane] = lane_ranges[lane] or {}
+    lane_ranges[lane][#lane_ranges[lane] + 1] = {
+      start_row = start_row,
+      finish_row = end_row,
+      group = group,
+    }
+  end
 
   -- Assign lanes so later paths go to OUTER lanes (further from triangle)
   for _, p in ipairs(paths) do
     if p.kind == "add" or p.kind == "delete" then
       local occupy_start, occupy_end = occupancy_range(p)
-      local origin_row = origin_row_for_path(p)
 
       local lanes = (p.kind == "delete") and lanes_delete or lanes_add
+      local group_lanes = (p.kind == "delete") and group_lanes_delete or group_lanes_add
+      local group = p.route_group
 
-      -- Find the highest lane number that is still active at this origin row
-      local highest_active_lane = 0
-      for li = 1, #lanes do
-        if (lanes[li] or 0) >= origin_row then
-          if li > highest_active_lane then
-            highest_active_lane = li
+      local assigned_lane = group and group_lanes[group] or nil
+      if not assigned_lane then
+        if use_projected_intervals then
+          assigned_lane = 1
+          local collision_margin = (p.hide_triangle and triangle_row_for_path(p) < origin_row_for_path(p)) and 1 or 0
+          while lane_has_overlap(lanes, assigned_lane, occupy_start, occupy_end, group, collision_margin) do
+            assigned_lane = assigned_lane + 1
           end
+
+          if p.hide_triangle then
+            local highest_overlapping_lane = 0
+            for li = 1, #lanes do
+              if lane_has_overlap(lanes, li, occupy_start, occupy_end, group, collision_margin)
+                  and li > highest_overlapping_lane then
+                highest_overlapping_lane = li
+              end
+            end
+            if highest_overlapping_lane > 0 then
+              assigned_lane = highest_overlapping_lane + 1
+            end
+          end
+        else
+          local origin_row = origin_row_for_path(p)
+          local highest_active_lane = 0
+          for li = 1, #lanes do
+            if (lanes[li] or 0) >= origin_row then
+              if li > highest_active_lane then
+                highest_active_lane = li
+              end
+            end
+          end
+          assigned_lane = highest_active_lane + 1
+        end
+        if group then
+          group_lanes[group] = assigned_lane
         end
       end
 
-      -- Assign to the next lane after the highest active one
-      local assigned_lane = highest_active_lane + 1
-
       p.lane = assigned_lane
-      lanes[assigned_lane] = occupy_end
+      if use_projected_intervals then
+        add_lane_range(lanes, assigned_lane, occupy_start, occupy_end, group)
+      else
+        lanes[assigned_lane] = math.max(lanes[assigned_lane] or occupy_end, occupy_end)
+      end
 
       if p.lane > max_lane then
         max_lane = p.lane
@@ -280,6 +369,8 @@ function M.compute_paths(chunks, line_meta)
   assign_lanes(paths)
   return paths
 end
+
+M.assign_lanes = assign_lanes
 
 -- Exported for testing: compute column position for a lane
 M.lane_col = lane_col_base
@@ -306,8 +397,14 @@ function M.compute_active_bars(paths)
     local origin_row = origin_row_for_path(p)
     local triangle_row = triangle_row_for_path(p)
 
-    local bar_start = origin_row + 1
-    local bar_end = triangle_row - 1
+    local bar_start = math.min(origin_row, triangle_row) + 1
+    local bar_end = math.max(origin_row, triangle_row) - 1
+    if p.connect_tail_on_triangle_row and triangle_row < origin_row then
+      bar_start = triangle_row + 1
+      bar_end = origin_row
+    elseif p.hide_triangle and triangle_row < origin_row then
+      bar_end = origin_row
+    end
 
     if bar_end >= bar_start then
       for row = bar_start, bar_end do
@@ -391,7 +488,8 @@ function M.compute_underlines(paths, active_bars, layout)
 
         local origin_row = origin_row_for_path(p)
         local triangle_row = triangle_row_for_path(p)
-        local has_bar = (triangle_row - origin_row) > 1
+        local has_bar = math.abs(triangle_row - origin_row) > 1
+            or (p.connect_tail_on_triangle_row == true and triangle_row < origin_row)
         origin_has_bar[p.origin_display_row] = has_bar
 
         -- Find leftmost active bar on origin row
@@ -408,8 +506,9 @@ function M.compute_underlines(paths, active_bars, layout)
             end
           end
         end
-        if has_bar and active_bars[origin_row + 1] then
-          for bar_lane, _ in pairs(active_bars[origin_row + 1]) do
+        local direction = triangle_row < origin_row and -1 or 1
+        if has_bar and active_bars[origin_row + direction] then
+          for bar_lane, _ in pairs(active_bars[origin_row + direction]) do
             local bar_col = (p.kind == "delete") and delete_lane_col(bar_lane) or lane_col(bar_lane)
             if p.kind == "delete" then
               if bar_col > leftmost_bar_col then
@@ -422,8 +521,11 @@ function M.compute_underlines(paths, active_bars, layout)
         end
         origin_bar_cols[p.origin_display_row] = leftmost_bar_col
 
-        if has_bar then
-          local tail_row = triangle_row - 1
+        if has_bar and not p.suppress_tail then
+          local tail_row = triangle_row - direction
+          if p.connect_tail_on_triangle_row and triangle_row < origin_row then
+            tail_row = triangle_row
+          end
           -- Triangle position depends on kind:
           -- Additions dock to the target edge. Deletions start immediately
           -- after the left line number and use compact rails/underlines to

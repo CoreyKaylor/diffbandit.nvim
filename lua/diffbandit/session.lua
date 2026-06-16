@@ -28,8 +28,16 @@ local function format_line_number_left(num, width)
 end
 
 local function build_display_lines(session)
-  -- View arrays now have different lengths, return them directly
-  return session.view.left, session.view.right
+  -- View arrays have different lengths; copy them so render-time scroll
+  -- padding does not mutate the canonical diff view.
+  local left_lines = vim.list_extend({}, session.view.left)
+  local right_lines = vim.list_extend({}, session.view.right)
+  local padding = session:get_scroll_padding()
+  for _ = 1, padding do
+    left_lines[#left_lines + 1] = ""
+    right_lines[#right_lines + 1] = ""
+  end
+  return left_lines, right_lines
 end
 
 local function set_win_view_topline(win, topline)
@@ -57,6 +65,14 @@ local function get_win_view_topline(win)
     return view.topline
   end
   return 1
+end
+
+local function shallow_copy(tbl)
+  local copy = {}
+  for key, value in pairs(tbl) do
+    copy[key] = value
+  end
+  return copy
 end
 
 local function set_buffer_options(buf, opts)
@@ -345,10 +361,22 @@ function Session:resize_layout()
   set_window_width(self.right_num_win, self.right_number_pane_width)
 end
 
+function Session:get_scroll_padding()
+  local height = 1
+  local wins = { self.left_win, self.right_win, self.connector_win }
+  for _, win in ipairs(wins) do
+    if win and vim.api.nvim_win_is_valid(win) then
+      height = math.max(height, vim.api.nvim_win_get_height(win))
+    end
+  end
+  return math.max(0, height - 1)
+end
+
 function Session:setup_autocmds()
   local augroup = vim.api.nvim_create_augroup("DiffBanditSession" .. self.id, { clear = true })
   self.autocmd_group = augroup
   self.syncing_scroll = false  -- Flag to prevent infinite sync loops
+  self.rendering_viewport = false
 
   vim.api.nvim_create_autocmd("TabClosed", {
     group = augroup,
@@ -427,10 +455,11 @@ function Session:setup_autocmds()
   vim.api.nvim_create_autocmd("WinScrolled", {
     group = augroup,
     callback = function()
-      if self.syncing_scroll or self.disposed then
+      if self.syncing_scroll or self.rendering_viewport or self.disposed then
         return
       end
       self:sync_gutter_viewports()
+      self:rerender_for_viewport()
     end,
   })
 
@@ -495,7 +524,7 @@ function Session:setup_keymaps()
   end)
 end
 
-local function sync_source_to_gutter(self, source_win, source_key, number_win)
+local function sync_source_to_gutter(self, source_win, number_win)
   if self.disposed or not vim.api.nvim_win_is_valid(source_win) then
     return
   end
@@ -503,21 +532,13 @@ local function sync_source_to_gutter(self, source_win, source_key, number_win)
   local cursor = vim.api.nvim_win_get_cursor(source_win)
   local source_line = cursor[1]
 
-  local display_idx = nil
-  for idx, meta in ipairs(self.view.line_meta) do
-    if meta[source_key] == source_line then
-      display_idx = idx
-      break
-    end
-  end
-
   self.syncing_scroll = true
   if number_win and vim.api.nvim_win_is_valid(number_win) then
     pcall(vim.api.nvim_win_set_cursor, number_win, { source_line, 0 })
     set_win_view_topline(number_win, get_win_view_topline(source_win))
   end
-  if display_idx and vim.api.nvim_win_is_valid(self.connector_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.connector_win, { display_idx, 0 })
+  if self.connector_win and vim.api.nvim_win_is_valid(self.connector_win) then
+    set_win_view_topline(self.connector_win, get_win_view_topline(self.left_win))
   end
   self.syncing_scroll = false
 end
@@ -526,15 +547,16 @@ function Session:sync_gutter_viewports()
   self.syncing_scroll = true
   set_win_view_topline(self.left_num_win, get_win_view_topline(self.left_win))
   set_win_view_topline(self.right_num_win, get_win_view_topline(self.right_win))
+  set_win_view_topline(self.connector_win, get_win_view_topline(self.left_win))
   self.syncing_scroll = false
 end
 
 function Session:sync_from_left()
-  sync_source_to_gutter(self, self.left_win, "left_index", self.left_num_win)
+  sync_source_to_gutter(self, self.left_win, self.left_num_win)
 end
 
 function Session:sync_from_right()
-  sync_source_to_gutter(self, self.right_win, "right_index", self.right_num_win)
+  sync_source_to_gutter(self, self.right_win, self.right_num_win)
 end
 
 function Session:set_viewport_toplines(left_topline, right_topline)
@@ -542,11 +564,33 @@ function Session:set_viewport_toplines(left_topline, right_topline)
   set_win_view_topline(self.left_num_win, left_topline)
   set_win_view_topline(self.right_win, right_topline)
   set_win_view_topline(self.right_num_win, right_topline)
-  local connector_topline = left_topline or right_topline or 1
-  if self.last_source_side == "right" then
-    connector_topline = right_topline or connector_topline
+  set_win_view_topline(self.connector_win, left_topline or 1)
+  self:rerender_for_viewport()
+end
+
+function Session:rerender_for_viewport()
+  if self.disposed or self.rendering_viewport then
+    return
   end
-  set_win_view_topline(self.connector_win, connector_topline)
+
+  local left_topline = get_win_view_topline(self.left_win)
+  local right_topline = get_win_view_topline(self.right_win)
+  local left_cursor = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_cursor(self.left_win) or nil
+  local right_cursor = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_cursor(self.right_win) or nil
+  self.rendering_viewport = true
+  self:render()
+  set_win_view_topline(self.left_win, left_topline)
+  set_win_view_topline(self.left_num_win, left_topline)
+  set_win_view_topline(self.connector_win, left_topline)
+  set_win_view_topline(self.right_win, right_topline)
+  set_win_view_topline(self.right_num_win, right_topline)
+  if left_cursor and vim.api.nvim_win_is_valid(self.left_win) then
+    pcall(vim.api.nvim_win_set_cursor, self.left_win, left_cursor)
+  end
+  if right_cursor and vim.api.nvim_win_is_valid(self.right_win) then
+    pcall(vim.api.nvim_win_set_cursor, self.right_win, right_cursor)
+  end
+  self.rendering_viewport = false
 end
 
 function Session:dispose()
@@ -619,6 +663,116 @@ local function highlight_for_connector(meta)
   return HIGHLIGHT_CONNECTOR[meta.kind] or "DiffBanditConnectorChange"
 end
 
+function Session:project_paths_for_viewport(paths)
+  local left_topline = get_win_view_topline(self.left_win)
+  local right_topline = get_win_view_topline(self.right_win)
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local projected = {}
+
+  local function right_to_connector_row(right_index)
+    return left_topline + (right_index - right_topline)
+  end
+
+  local function add_projected_path(path, target_index, glyph, show_triangle, suppress_tail)
+    local projected_target = right_to_connector_row(target_index)
+    local q = shallow_copy(path)
+    q.route_group = path.route_group or path
+    q.top = path.origin_left_index or path.origin_display_row
+    q.origin_display_row = q.top
+    q.display_start_row = projected_target
+    q.display_end_row = projected_target
+    q.triangle_display_row = projected_target
+    q.target_start_index = target_index
+    q.target_end_index = target_index
+    q.approach = glyph == "◢" and "from_below" or "from_above"
+    q.triangle_glyph = glyph
+    q.connect_tail_on_triangle_row = path.kind == "add" and glyph == "◢" and show_triangle ~= false
+    q.hide_triangle = show_triangle == false
+    q.suppress_tail = suppress_tail == true
+    projected[#projected + 1] = q
+  end
+
+  for _, p in ipairs(paths) do
+    if p.kind == "add" and not p.embedded_in_change then
+      local origin_row = p.origin_left_index or p.origin_display_row
+      local block_start = p.target_start_index or p.triangle_display_row or p.display_start_row
+      local block_end = p.target_end_index or block_start
+      if origin_row and block_start and block_end then
+        local origin_visible = origin_row >= left_topline and origin_row <= (left_topline + left_height - 1)
+        local visible_start = math.max(block_start, right_topline)
+        local visible_end = math.min(block_end, right_topline + right_height - 1)
+        if visible_start > visible_end then
+          if origin_visible then
+            if block_start > right_topline + right_height - 1 then
+              add_projected_path(p, right_topline + right_height, "◥", false, true)
+            elseif block_end < right_topline then
+              add_projected_path(p, right_topline - 1, "◢", false, true)
+            end
+          end
+        else
+          local visible_start_row = right_to_connector_row(visible_start)
+          local visible_end_row = right_to_connector_row(visible_end)
+          local right_index_at_origin = right_topline + (origin_row - left_topline)
+
+          if not origin_visible then
+            local target = block_start
+            if visible_end_row < origin_row then
+              target = visible_end
+            elseif visible_start_row > origin_row then
+              target = visible_start
+            end
+            add_projected_path(p, target, visible_start_row < origin_row and "◢" or "◥", false)
+          elseif visible_start_row > origin_row then
+            add_projected_path(p, visible_start, "◥", true)
+          elseif visible_end_row < origin_row then
+            add_projected_path(p, visible_end, "◢", true)
+          else
+            local target_above
+            local target_below
+            if visible_start_row == origin_row then
+              target_above = visible_start
+              target_below = visible_start + 1
+            else
+              target_above = right_index_at_origin
+              target_below = right_index_at_origin + 1
+            end
+
+            if target_above >= visible_start and target_above <= visible_end then
+              add_projected_path(p, target_above, "◢", true)
+            end
+            if target_below >= visible_start and target_below <= visible_end then
+              add_projected_path(p, target_below, "◥", true)
+            end
+          end
+        end
+      end
+    elseif p.kind == "delete" then
+      local q = shallow_copy(p)
+      q.route_group = p.route_group or p
+      local origin_row = p.origin_right_index and right_to_connector_row(p.origin_right_index) or p.origin_display_row
+      local target_row = p.target_start_index or p.triangle_display_row or p.display_start_row
+      if origin_row and target_row then
+        q.top = origin_row
+        q.origin_display_row = origin_row
+        q.display_start_row = target_row
+        q.display_end_row = target_row
+        q.triangle_display_row = target_row
+        q.approach = origin_row > target_row and "from_below" or "from_above"
+        q.triangle_glyph = q.approach == "from_below" and "◥" or "◤"
+      end
+      projected[#projected + 1] = q
+    else
+      local q = shallow_copy(p)
+      q.route_group = p.route_group or p
+      projected[#projected + 1] = q
+    end
+  end
+
+  paths_mod.assign_lanes(projected)
+  return projected
+end
+
 function Session:render()
   set_buffer_options(self.left_buf, { modifiable = true })
   set_buffer_options(self.left_num_buf, { modifiable = true })
@@ -630,15 +784,16 @@ function Session:render()
 
   -- Compute connector routing lanes using extracted paths module
   local paths = paths_mod.compute_paths(self.view.chunks, self.view.line_meta)
+  local route_paths = self:project_paths_for_viewport(paths)
   local max_lane = 0
-  for _, p in ipairs(paths) do
+  for _, p in ipairs(route_paths) do
     if p.lane and p.lane > max_lane then
       max_lane = p.lane
     end
   end
 
   -- Build active_vertical_bars[row][lane] tracking which lanes have active bars at each row
-  local active_vertical_bars = paths_mod.compute_active_bars(paths)
+  local active_vertical_bars = paths_mod.compute_active_bars(route_paths)
 
   -- Required connector core width: lanes + glyph column + spacing + indentation buffer
   -- Formula ensures enough room for:
@@ -679,12 +834,22 @@ function Session:render()
     rail_spacing = 1,
     sidecar_numbers = true,
   }
-  local underline_data = paths_mod.compute_underlines(paths, active_vertical_bars, underline_layout)
+  local underline_data = paths_mod.compute_underlines(route_paths, active_vertical_bars, underline_layout)
   local origin_glyph_cols = underline_data.origin_glyph_cols
   local origin_bar_cols = underline_data.origin_bar_cols
   local origin_has_bar = underline_data.origin_has_bar
   local tail_underlines = underline_data.tail_underlines
   local delete_origin_right_lines = underline_data.delete_origin_right_lines or {}
+  local add_origin_row_has_transition = {}
+  for _, p in ipairs(route_paths) do
+    if p.kind == "add"
+        and not p.embedded_in_change
+        and not p.hide_triangle
+        and p.origin_display_row
+        and (p.triangle_display_row or p.display_start_row) == p.origin_display_row then
+      add_origin_row_has_transition[p.origin_display_row] = true
+    end
+  end
 
   local embedded_add_right_indexes = {}
   local embedded_add_terminal_right_indexes = {}
@@ -743,8 +908,10 @@ function Session:render()
     return core_start_col
   end
 
-  -- The connector buffer owns the aligned display model.
-  local connector_height = #self.view.line_meta
+  -- The connector buffer owns the aligned display model and must include the
+  -- same scroll padding as the source panes so routes can remain visible while
+  -- either side is scrolled past real EOF.
+  local connector_height = math.max(#self.view.line_meta, #left_lines, #right_lines)
   local connector_lines = {}
   for i = 1, connector_height do
     -- Initialize with spaces for the full gutter width
@@ -855,7 +1022,13 @@ function Session:render()
   -- rows as their owner buffers.
   local core_start_col_base = 0
   local right_col_base = self.connector_core_width
+  local left_topline = get_win_view_topline(self.left_win)
+  local right_topline = get_win_view_topline(self.right_win)
   local ctx_hl = "DiffBanditConnectorContext"
+
+  local function right_index_to_connector_row(right_index)
+    return left_topline + (right_index - right_topline)
+  end
 
   for row = 0, connector_height - 1 do
     vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, ctx_hl, row, 0, -1)
@@ -869,6 +1042,9 @@ function Session:render()
 
   local function add_origin_core_underline(origin_row, row, meta)
     if meta.origin == "add" then
+      if row < 0 or row >= connector_height then
+        return
+      end
       local stop_col = origin_has_bar[origin_row] and origin_bar_cols[origin_row] or origin_glyph_cols[origin_row]
       local underline_width = math.max(1, (stop_col or right_col_base - 1) + 1)
       underline_width = math.min(underline_width, self.connector_core_width)
@@ -880,12 +1056,24 @@ function Session:render()
         virt_text = { { string.rep(" ", underline_width), "DiffBanditAddLeftSeparatorConnector" } },
         virt_text_pos = "overlay",
       })
+      local right_index_at_row = right_topline + ((row + 1) - left_topline)
+      if add_origin_row_has_transition[origin_row]
+          and right_index_at_row >= 1
+          and right_index_at_row <= #right_lines then
+        vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, right_index_at_row - 1, 0, {
+          virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
+          virt_text_pos = "overlay",
+        })
+      end
     end
   end
 
   local function set_delete_origin_core(row, right_line)
     local del_info = delete_origin_right_lines[right_line]
     if not del_info then
+      return
+    end
+    if row < 0 or row >= connector_height then
       return
     end
     local underline_start_col = 0
@@ -951,7 +1139,8 @@ function Session:render()
       end
 
       if is_delete_origin then
-        set_delete_origin_core(row, meta.right_line)
+        local connector_row = right_index_to_connector_row(meta.right_index) - 1
+        set_delete_origin_core(connector_row, meta.right_line)
         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, row, 0, {
           virt_text = { { " ", "DiffBanditDeleteRightSeparatorConnector" } },
           virt_text_pos = "overlay",
@@ -1250,8 +1439,8 @@ function Session:render()
    -- glyph_rows_by_lane[lane][row] = true if that lane has a glyph on that row
    -- Only mark the triangle row (start_row), not the entire block range
    local glyph_rows_by_lane = {}
-   for _, p in ipairs(paths) do
-     if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change then
+   for _, p in ipairs(route_paths) do
+     if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change and not p.hide_triangle then
        local lane = p.lane or 1
        glyph_rows_by_lane[lane] = glyph_rows_by_lane[lane] or {}
        -- Only the triangle row has a glyph, not the whole block
@@ -1272,6 +1461,12 @@ function Session:render()
            path = p,
            fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
          }
+       elseif p.connect_tail_on_triangle_row then
+         active_bars[row] = active_bars[row] or {}
+         active_bars[row][lane] = {
+           path = p,
+           fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
+         }
        end
      end
    end
@@ -1280,7 +1475,7 @@ function Session:render()
    -- to ensure proper per-row indentation. The spine bars section was removed
    -- to prevent duplicate rendering on glyph rows.
 
-  for _, p in ipairs(paths) do
+  for _, p in ipairs(route_paths) do
     if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change then
       local lane = math.max(1, p.lane)
       local col = lane_col(lane)
@@ -1289,7 +1484,7 @@ function Session:render()
       local top_row = (p.top or start_display_row) - 1
 
       -- If there's no origin line, draw top curve
-      if not p.top then
+      if not p.top and top_row >= 0 and top_row < connector_height then
         vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, top_row, core_start_col, {
           virt_text = {
             {string.rep("─", math.max(0, col - core_start_col)), fg_group},
@@ -1306,18 +1501,24 @@ function Session:render()
        local expansion_hl
        if p.kind == "add" then
          expansion_hl = "DiffBanditConnectorExpansionAdd"
+         if (p.triangle_display_row or p.display_start_row) == p.origin_display_row
+             or p.connect_tail_on_triangle_row then
+           expansion_hl = "DiffBanditConnectorExpansionAddUnderline"
+         end
        else
          expansion_hl = "DiffBanditConnectorExpansionDelete"
        end
        local glyph = p.triangle_glyph or ((p.kind == "add") and "◥" or "◤")
-       local triangle_meta = self.view.line_meta[start_display_row]
-       if p.kind == "add" and triangle_meta and triangle_meta.right_index then
-         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, triangle_meta.right_index - 1, 0, {
+       if p.hide_triangle then
+         -- Clipped route: keep rails/tails from projected geometry, but do
+         -- not invent a transition glyph at the viewport edge.
+       elseif p.kind == "add" and p.target_start_index then
+         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.target_start_index - 1, 0, {
            virt_text = { { glyph, expansion_hl } },
            virt_text_pos = "overlay",
          })
-       elseif p.kind == "delete" and triangle_meta and triangle_meta.left_index then
-         vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, triangle_meta.left_index - 1, self.left_number_width, {
+       elseif p.kind == "delete" and p.target_start_index then
+         vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, p.target_start_index - 1, self.left_number_width, {
            virt_text = { { glyph, expansion_hl } },
            virt_text_pos = "overlay",
          })
@@ -1385,26 +1586,28 @@ function Session:render()
   -- Render all vertical bars from active_bars (row-centric approach)
   -- This allows multiple bars from different paths to appear on the same row
   for row, lanes_on_row in pairs(active_bars) do
-    for lane, bar_info in pairs(lanes_on_row) do
-      local bar_col
-      local kind = bar_info.path and bar_info.path.kind or "add"
-      if kind == "delete" then
-        bar_col = delete_lane_col(lane)
-      else
-        bar_col = lane_col(lane)
-      end
+    if row >= 1 and row <= connector_height then
+      for lane, bar_info in pairs(lanes_on_row) do
+        local bar_col
+        local kind = bar_info.path and bar_info.path.kind or "add"
+        if kind == "delete" then
+          bar_col = delete_lane_col(lane)
+        else
+          bar_col = lane_col(lane)
+        end
 
-      -- Primary spine rail
-      vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, bar_col, {
-        virt_text = { { "│", bar_info.fg_group } },
-        virt_text_pos = "overlay",
-      })
+        -- Primary spine rail
+        vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, bar_col, {
+          virt_text = { { "│", bar_info.fg_group } },
+          virt_text_pos = "overlay",
+        })
+      end
     end
   end
 
   -- Render tail underlines (horizontal connector from bar to triangle)
   for row, tail_info in pairs(tail_underlines) do
-    if tail_info.kind == "delete" then
+    if row >= 1 and row <= connector_height and tail_info.kind == "delete" then
       local bar_col = math.max(0, tail_info.bar_col or 0)
       if bar_col > 0 then
         vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, 0, {
@@ -1417,7 +1620,7 @@ function Session:render()
           virt_text_pos = "overlay",
         })
       end
-    else
+    elseif row >= 1 and row <= connector_height then
       local underline_start = math.min(tail_info.bar_col, tail_info.triangle_col) + 1
       local underline_end = math.max(tail_info.bar_col, tail_info.triangle_col)
       local underline_width = underline_end - underline_start
