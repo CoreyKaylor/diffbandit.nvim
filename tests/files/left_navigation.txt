@@ -1,0 +1,13 @@
+alpha
+bravo
+old first change
+charlie
+delta
+add origin
+echo
+foxtrot
+deleted navigation line
+golf
+hotel
+old final change
+india

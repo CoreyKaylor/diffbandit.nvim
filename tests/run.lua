@@ -7,6 +7,7 @@ local config = require("diffbandit.config").defaults()
 local diff = require("diffbandit.diff")
 local view = require("diffbandit.view")
 local paths_mod = require("diffbandit.paths")
+local Session = require("diffbandit.session")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -889,6 +890,45 @@ do
       assert_eq(longest >= 6, true, fixture.name .. " should include a scrollable route")
     end
   end
+end
+
+-- Test Suite 13: Chunk navigation anchors align semantic origins and targets
+do
+  local function anchors_for(left, right)
+    local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+    assert_eq(err, nil, "diff error (navigation anchors)")
+    local v = view.build(left, right, hunks, config)
+    local session = { view = v }
+    return Session.chunk_navigation_anchors(session, v.chunks[1])
+  end
+
+  local left_anchor, right_anchor = anchors_for(
+    { "alpha", "bravo", "charlie" },
+    { "alpha", "bravo", "added", "charlie" }
+  )
+  assert_eq(left_anchor, 2, "Add navigation should anchor left on the origin row")
+  assert_eq(right_anchor, 2, "Add navigation should anchor right on the row above the insertion")
+
+  left_anchor, right_anchor = anchors_for(
+    { "alpha", "bravo", "deleted", "charlie" },
+    { "alpha", "bravo", "charlie" }
+  )
+  assert_eq(left_anchor, 3, "Delete navigation should anchor left on the first deleted row")
+  assert_eq(right_anchor, 2, "Delete navigation should anchor right on the origin row")
+
+  left_anchor, right_anchor = anchors_for(
+    { "alpha", "old", "charlie" },
+    { "alpha", "new", "charlie" }
+  )
+  assert_eq(left_anchor, 2, "Change navigation should anchor left on the first changed row")
+  assert_eq(right_anchor, 2, "Change navigation should anchor right on the first changed row")
+
+  left_anchor, right_anchor = anchors_for(
+    { "alpha", "old one", "old two", "charlie" },
+    { "alpha", "new one", "new two", "added", "charlie" }
+  )
+  assert_eq(left_anchor, 2, "Mixed navigation should anchor left on the first changed row")
+  assert_eq(right_anchor, 2, "Mixed navigation should anchor right on the first changed row")
 end
 
 vim.api.nvim_out_write("OK\n")

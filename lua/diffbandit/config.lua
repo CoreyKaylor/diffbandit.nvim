@@ -22,6 +22,14 @@ local defaults = {
     },
   },
   navigation = {
+    align_on_jump = true,
+    jump_context = 0,
+    align_strategy = "change_top",
+    initial_focus = "right",
+    document_keys = {
+      top = "[d",
+      bottom = "]d",
+    },
     prompt_message = "Reached final change in this diff. Open next file with changes?",
     on_request_next_file = nil,
   },

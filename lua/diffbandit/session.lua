@@ -139,7 +139,10 @@ function Session.start(sources, config)
   if self.current_chunk > 0 then
     vim.schedule(function()
       if not self.disposed then
-        self:goto_chunk(self.current_chunk)
+        local chunk = self.view.chunks[self.current_chunk]
+        if chunk then
+          self:highlight_active_chunk(chunk)
+        end
       end
     end)
   end
@@ -310,9 +313,12 @@ function Session:open_layout()
   -- Set vertical split character to thin line
   vim.opt.fillchars:append({ vert = "│" })
 
-  vim.api.nvim_set_current_win(self.left_win)
-  self.last_source_win = self.left_win
-  self.last_source_side = "left"
+  local navigation = self.config.navigation or {}
+  local initial_focus = navigation.initial_focus == "left" and "left" or "right"
+  local initial_win = initial_focus == "left" and self.left_win or self.right_win
+  vim.api.nvim_set_current_win(initial_win)
+  self.last_source_win = initial_win
+  self.last_source_side = initial_focus
 
   local left_name = self.left.label or self.left.path or ""
   local right_name = self.right.label or self.right.path or ""
@@ -497,6 +503,8 @@ function Session:setup_keymaps()
   local function map(buf, lhs, rhs)
     vim.keymap.set("n", lhs, rhs, vim.tbl_extend("force", opts, { buffer = buf }))
   end
+  local navigation = self.config.navigation or {}
+  local document_keys = navigation.document_keys or {}
 
   local function buffer_maps(buf)
     map(buf, "]c", function()
@@ -508,6 +516,16 @@ function Session:setup_keymaps()
     map(buf, "q", function()
       self:close()
     end)
+    if document_keys.top then
+      map(buf, document_keys.top, function()
+        self:goto_document_edge("top")
+      end)
+    end
+    if document_keys.bottom then
+      map(buf, document_keys.bottom, function()
+        self:goto_document_edge("bottom")
+      end)
+    end
   end
 
   buffer_maps(self.left_buf)
@@ -566,6 +584,138 @@ function Session:set_viewport_toplines(left_topline, right_topline)
   set_win_view_topline(self.right_num_win, right_topline)
   set_win_view_topline(self.connector_win, left_topline or 1)
   self:rerender_for_viewport()
+end
+
+function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_cursor, right_cursor)
+  set_win_view_topline(self.left_win, left_topline)
+  set_win_view_topline(self.left_num_win, left_topline)
+  set_win_view_topline(self.right_win, right_topline)
+  set_win_view_topline(self.right_num_win, right_topline)
+  set_win_view_topline(self.connector_win, left_topline or 1)
+  if left_cursor then
+    pcall(vim.api.nvim_win_set_cursor, self.left_win, { left_cursor, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { left_cursor, 0 })
+  end
+  if right_cursor then
+    pcall(vim.api.nvim_win_set_cursor, self.right_win, { right_cursor, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_cursor, 0 })
+  end
+  self:rerender_for_viewport()
+end
+
+local function first_meta_index_with(meta_list, start_idx, end_idx, predicate)
+  for idx = start_idx, end_idx do
+    local meta = meta_list[idx]
+    if meta and predicate(meta) then
+      return idx, meta
+    end
+  end
+  return nil, nil
+end
+
+function Session:chunk_navigation_anchors(chunk)
+  local meta_list = self.view and self.view.line_meta or {}
+  local start_idx = chunk and chunk.display_start or 1
+  local end_idx = chunk and chunk.display_end or start_idx
+  local left_anchor
+  local right_anchor
+
+  if chunk and chunk.type == "add" then
+    local origin_meta = meta_list[start_idx - 1]
+    left_anchor = origin_meta and origin_meta.left_index or 1
+    right_anchor = origin_meta and origin_meta.right_index or 1
+  elseif chunk and chunk.type == "delete" then
+    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.left_index ~= nil
+    end)
+    left_anchor = left_meta and left_meta.left_index or nil
+    local origin_meta = meta_list[start_idx - 1]
+    right_anchor = origin_meta and origin_meta.right_index or 1
+  else
+    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.left_index ~= nil
+    end)
+    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.right_index ~= nil
+    end)
+    left_anchor = left_meta and left_meta.left_index or nil
+    right_anchor = right_meta and right_meta.right_index or nil
+  end
+
+  if not left_anchor then
+    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.left_index ~= nil
+    end)
+    left_anchor = left_meta and left_meta.left_index or nil
+  end
+  if not right_anchor then
+    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.right_index ~= nil
+    end)
+    right_anchor = right_meta and right_meta.right_index or nil
+  end
+
+  return left_anchor, right_anchor
+end
+
+function Session:align_chunk_viewports(chunk)
+  local navigation = self.config.navigation or {}
+  if navigation.align_on_jump == false then
+    self:sync_gutter_viewports()
+    return
+  end
+
+  local focused_win = vim.api.nvim_get_current_win()
+  local left_anchor, right_anchor = self:chunk_navigation_anchors(chunk)
+  if not left_anchor or not right_anchor then
+    self:sync_gutter_viewports()
+    return
+  end
+
+  local context = math.max(0, tonumber(navigation.jump_context) or 0)
+  local left_topline = math.max(1, left_anchor - context)
+  local right_topline = math.max(1, right_anchor - context)
+
+  self:set_viewport_toplines(left_topline, right_topline)
+
+  if focused_win == self.left_win or focused_win == self.right_win then
+    pcall(vim.api.nvim_set_current_win, focused_win)
+  elseif self.last_source_win and vim.api.nvim_win_is_valid(self.last_source_win) then
+    pcall(vim.api.nvim_set_current_win, self.last_source_win)
+  end
+end
+
+function Session:goto_document_edge(edge)
+  local focused_win = vim.api.nvim_get_current_win()
+  local left_line_count = math.max(1, #self.view.left)
+  local right_line_count = math.max(1, #self.view.right)
+  local left_line = edge == "bottom" and left_line_count or 1
+  local right_line = edge == "bottom" and right_line_count or 1
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local left_topline = edge == "bottom" and math.max(1, left_line_count - left_height + 1) or 1
+  local right_topline = edge == "bottom" and math.max(1, right_line_count - right_height + 1) or 1
+
+  self.syncing_scroll = true
+  pcall(vim.api.nvim_win_set_cursor, self.left_win, { left_line, 0 })
+  pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { left_line, 0 })
+  pcall(vim.api.nvim_win_set_cursor, self.right_win, { right_line, 0 })
+  pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_line, 0 })
+  self.syncing_scroll = false
+
+  if edge == "bottom" then
+    self.current_chunk = #self.view.chunks + 1
+  else
+    self.current_chunk = 0
+  end
+  self:clear_active_chunk()
+  self:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_line, right_line)
+
+  if focused_win == self.left_win or focused_win == self.right_win then
+    pcall(vim.api.nvim_set_current_win, focused_win)
+  elseif self.last_source_win and vim.api.nvim_win_is_valid(self.last_source_win) then
+    pcall(vim.api.nvim_set_current_win, self.last_source_win)
+  end
 end
 
 function Session:rerender_for_viewport()
@@ -1925,12 +2075,16 @@ function Session:render()
   end
 end
 
-function Session:highlight_active_chunk(chunk)
+function Session:clear_active_chunk()
   vim.api.nvim_buf_clear_namespace(self.left_buf, self.active_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.left_num_buf, self.active_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.right_buf, self.active_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.active_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.connector_buf, self.active_ns, 0, -1)
+end
+
+function Session:highlight_active_chunk(chunk)
+  self:clear_active_chunk()
 
   local active_hl = "DiffBanditActiveChunk"
   local add_hl = vim.api.nvim_buf_add_highlight
@@ -1988,6 +2142,7 @@ function Session:goto_chunk(index)
   self.current_chunk = index
   local chunk = self.view.chunks[self.current_chunk]
   self:highlight_active_chunk(chunk)
+  self:align_chunk_viewports(chunk)
 end
 
 function Session:prompt_next_file()

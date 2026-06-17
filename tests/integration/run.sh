@@ -2,6 +2,7 @@
 # Integration tests for diffbandit.nvim using tmux
 # Usage: ./run.sh [test_name]
 #   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'comprehensive',
+#              'navigation',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
 
@@ -215,6 +216,142 @@ run_scroll_test() {
     echo "  Captures: $case_dir"
 }
 
+run_navigation_test() {
+    local test_name="navigation"
+    local left_file="$PROJECT_ROOT/tests/files/left_navigation.txt"
+    local right_file="$PROJECT_ROOT/tests/files/right_navigation.txt"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+    local initial_state="$case_dir/initial.state"
+    local next_state="$case_dir/after-next.state"
+    local final_state="$case_dir/after-final.state"
+    local prev_delete_state="$case_dir/after-prev-delete.state"
+    local prev_add_state="$case_dir/after-prev-add.state"
+    local prev_change_state="$case_dir/after-prev-change.state"
+    local top_state="$case_dir/after-doc-top.state"
+    local top_next_state="$case_dir/after-doc-top-next.state"
+    local bottom_state="$case_dir/after-doc-bottom.state"
+    local bottom_prev_state="$case_dir/after-doc-bottom-prev.state"
+
+    echo "Running integration test: $test_name"
+    mkdir -p "$case_dir"
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 8
+    tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
+    sleep 2
+
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $initial_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $next_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $final_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "[" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $prev_delete_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "[" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $prev_add_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "[" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $prev_change_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBViewport 5 7" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "[" "d"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $top_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $top_next_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "d"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $bottom_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "[" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteState $bottom_prev_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    local initial
+    local next
+    local final
+    local prev_delete
+    local prev_add
+    local prev_change
+    local doc_top
+    local doc_top_next
+    local doc_bottom
+    local doc_bottom_prev
+    initial="$(cat "$initial_state")"
+    next="$(cat "$next_state")"
+    final="$(cat "$final_state")"
+    prev_delete="$(cat "$prev_delete_state")"
+    prev_add="$(cat "$prev_add_state")"
+    prev_change="$(cat "$prev_change_state")"
+    doc_top="$(cat "$top_state")"
+    doc_top_next="$(cat "$top_next_state")"
+    doc_bottom="$(cat "$bottom_state")"
+    doc_bottom_prev="$(cat "$bottom_prev_state")"
+
+    if [[ "$initial" != *"focus=right"* || "$initial" != *"left_top=1"* || "$initial" != *"right_top=1"* || "$initial" != *"chunk=1"* ]]; then
+        echo "Navigation initial state failed: $initial"
+        exit 1
+    fi
+    if [[ "$next" != *"focus=right"* || "$next" != *"left_top=6"* || "$next" != *"right_top=6"* || "$next" != *"chunk=2"* ]]; then
+        echo "Navigation next-change state failed: $next"
+        exit 1
+    fi
+    if [[ "$final" != *"focus=right"* || "$final" != *"left_top=12"* || "$final" != *"right_top=12"* || "$final" != *"chunk=4"* ]]; then
+        echo "Navigation final-change state failed: $final"
+        exit 1
+    fi
+    if [[ "$prev_delete" != *"focus=right"* || "$prev_delete" != *"left_top=9"* || "$prev_delete" != *"right_top=9"* || "$prev_delete" != *"chunk=3"* ]]; then
+        echo "Navigation prev-delete state failed: $prev_delete"
+        exit 1
+    fi
+    if [[ "$prev_add" != *"focus=right"* || "$prev_add" != *"left_top=6"* || "$prev_add" != *"right_top=6"* || "$prev_add" != *"chunk=2"* ]]; then
+        echo "Navigation prev-add state failed: $prev_add"
+        exit 1
+    fi
+    if [[ "$prev_change" != *"focus=right"* || "$prev_change" != *"left_top=3"* || "$prev_change" != *"right_top=3"* || "$prev_change" != *"chunk=1"* ]]; then
+        echo "Navigation prev-change state failed: $prev_change"
+        exit 1
+    fi
+    if [[ "$doc_top" != *"focus=right"* || "$doc_top" != *"left_top=1"* || "$doc_top" != *"right_top=1"* || "$doc_top" != *"left_cursor=1"* || "$doc_top" != *"right_cursor=1"* || "$doc_top" != *"chunk=0"* ]]; then
+        echo "Navigation document-top state failed: $doc_top"
+        exit 1
+    fi
+    if [[ "$doc_top_next" != *"focus=right"* || "$doc_top_next" != *"left_top=3"* || "$doc_top_next" != *"right_top=3"* || "$doc_top_next" != *"chunk=1"* ]]; then
+        echo "Navigation document-top next-change state failed: $doc_top_next"
+        exit 1
+    fi
+    if [[ "$doc_bottom" != *"focus=right"* || "$doc_bottom" != *"left_top=9"* || "$doc_bottom" != *"right_top=9"* || "$doc_bottom" != *"left_cursor=13"* || "$doc_bottom" != *"right_cursor=13"* || "$doc_bottom" != *"chunk=5"* ]]; then
+        echo "Navigation document-bottom state failed: $doc_bottom"
+        exit 1
+    fi
+    if [[ "$doc_bottom_prev" != *"focus=right"* || "$doc_bottom_prev" != *"left_top=12"* || "$doc_bottom_prev" != *"right_top=12"* || "$doc_bottom_prev" != *"chunk=4"* ]]; then
+        echo "Navigation document-bottom prev-change state failed: $doc_bottom_prev"
+        exit 1
+    fi
+
+    echo "  PASSED: $test_name"
+    echo "  States: $case_dir"
+}
+
 # Parse arguments
 TEST_TO_RUN="${1:-all}"
 
@@ -243,6 +380,9 @@ case "$TEST_TO_RUN" in
         run_test "comprehensive" \
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
             "$PROJECT_ROOT/tests/files/right_comprehensive.txt"
+        ;;
+    navigation)
+        run_navigation_test
         ;;
     scroll-additions)
         run_scroll_test "scroll-additions" \
@@ -285,10 +425,12 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
             "$PROJECT_ROOT/tests/files/right_comprehensive.txt"
 
+        run_navigation_test
+
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|comprehensive|scroll-additions|scroll-deletions|scroll-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|comprehensive|navigation|scroll-additions|scroll-deletions|scroll-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac
