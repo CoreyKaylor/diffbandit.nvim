@@ -1,7 +1,7 @@
 #!/bin/bash
 # Integration tests for diffbandit.nvim using tmux
 # Usage: ./run.sh [test_name]
-#   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'comprehensive',
+#   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'theme-default', 'comprehensive',
 #              'navigation',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
@@ -376,6 +376,11 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_mixed.txt" \
             "$PROJECT_ROOT/tests/files/right_mixed.txt"
         ;;
+    theme-default)
+        run_test "theme-default" \
+            "$PROJECT_ROOT/tests/files/left_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_mixed.txt"
+        ;;
     comprehensive)
         run_test "comprehensive" \
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
@@ -421,6 +426,10 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_mixed.txt" \
             "$PROJECT_ROOT/tests/files/right_mixed.txt"
 
+        run_test "theme-default" \
+            "$PROJECT_ROOT/tests/files/left_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_mixed.txt"
+
         run_test "comprehensive" \
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
             "$PROJECT_ROOT/tests/files/right_comprehensive.txt"
@@ -430,7 +439,7 @@ case "$TEST_TO_RUN" in
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|comprehensive|navigation|scroll-additions|scroll-deletions|scroll-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|theme-default|comprehensive|navigation|scroll-additions|scroll-deletions|scroll-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac

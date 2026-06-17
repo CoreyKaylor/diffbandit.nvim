@@ -3,8 +3,10 @@ local test_dir = vim.fn.fnamemodify(source, ":p:h")
 local root = vim.fn.fnamemodify(test_dir .. "/..", ":p")
 package.path = package.path .. ";" .. root .. "/lua/?.lua;" .. root .. "/lua/?/init.lua"
 
-local config = require("diffbandit.config").defaults()
+local config_mod = require("diffbandit.config")
+local config = config_mod.defaults()
 local diff = require("diffbandit.diff")
+local highlights = require("diffbandit.highlights")
 local view = require("diffbandit.view")
 local paths_mod = require("diffbandit.paths")
 local Session = require("diffbandit.session")
@@ -26,6 +28,26 @@ local function assert_eq(a, b, msg)
   if a ~= b then
     error((msg or "assertion failed") .. string.format("\nExpected: %s\nActual:   %s", tostring(b), tostring(a)))
   end
+end
+
+local function assert_ne(a, b, msg)
+  if a == b then
+    error((msg or "assertion failed") .. string.format("\nExpected values to differ, both were: %s", tostring(a)))
+  end
+end
+
+local function get_hl(name)
+  return vim.api.nvim_get_hl(0, { name = name, link = false })
+end
+
+local function luminance(color)
+  if not color then
+    return 0
+  end
+  local r = math.floor(color / 65536) % 256
+  local g = math.floor(color / 256) % 256
+  local b = color % 256
+  return ((0.2126 * r) + (0.7152 * g) + (0.0722 * b)) / 255
 end
 
 -- Scenario 1: initial state
@@ -929,6 +951,125 @@ do
   )
   assert_eq(left_anchor, 2, "Mixed navigation should anchor left on the first changed row")
   assert_eq(right_anchor, 2, "Mixed navigation should anchor right on the first changed row")
+end
+
+-- Test Suite 14: Theme-derived highlights preserve existing color semantics
+do
+  local function set_palette(groups)
+    for name, opts in pairs(groups) do
+      vim.api.nvim_set_hl(0, name, opts)
+    end
+  end
+
+  set_palette({
+    Normal = { fg = 0xE0E2EA, bg = 0x14161B },
+    LineNr = { fg = 0x4F5258 },
+    Comment = { fg = 0x9B9EA4 },
+    DiffAdd = { fg = 0xEEF1F8, bg = 0x005523 },
+    DiffDelete = { fg = 0xFFC0B9 },
+    DiffChange = { fg = 0xEEF1F8, bg = 0x4F5258 },
+    DiffText = { fg = 0xEEF1F8, bg = 0x007373 },
+  })
+  highlights.apply(config_mod.defaults())
+
+  assert_eq(get_hl("DiffBanditAdd").bg, 0x005523,
+    "Default-like palette should keep usable DiffAdd background")
+  assert_eq(get_hl("DiffBanditChangeLeft").bg, 0x4F5258,
+    "Default-like palette should keep usable DiffChange background")
+  assert_ne(get_hl("DiffBanditDelete").bg, 0xD3D3D3,
+    "Default-like palette should not fall back to light delete gray")
+  assert_eq(luminance(get_hl("DiffBanditDelete").bg) < 0.5, true,
+    "Default-like palette should synthesize a dark delete background")
+  assert_ne(get_hl("DiffBanditChangeEmphasis").bg, get_hl("DiffBanditChangeLeft").bg,
+    "Change emphasis should remain distinct from the base change background")
+  assert_ne(get_hl("DiffBanditChangeEmphasis").bg, 0x007373,
+    "Change emphasis should be adaptive instead of using DiffText directly")
+
+  set_palette({
+    Normal = { fg = 0x101010, bg = 0xFFFFFF },
+    LineNr = { fg = 0x808080 },
+    Comment = { fg = 0x707070 },
+    DiffAdd = { fg = 0x006B2B },
+    DiffDelete = { fg = 0xB00020 },
+    DiffChange = { bg = 0xDDEBFF },
+  })
+  highlights.apply(config_mod.defaults())
+  assert_eq(get_hl("DiffBanditAdd").bg ~= nil, true,
+    "Light palette should synthesize add background from foreground when needed")
+  assert_eq(get_hl("DiffBanditDelete").bg ~= nil, true,
+    "Light palette should synthesize delete background from foreground when needed")
+  assert_eq(luminance(get_hl("DiffBanditChangeEmphasis").bg) < luminance(get_hl("DiffBanditChangeLeft").bg), true,
+    "Light palette change emphasis should darken the change background")
+
+  set_palette({
+    Normal = { fg = 0xEEEEEE, bg = 0x101010 },
+    LineNr = { fg = 0x777777 },
+    Comment = { fg = 0x909090 },
+    DiffAdd = { bg = 0x123D2B },
+    DiffDelete = { bg = 0x4A2426 },
+    DiffChange = { bg = 0x253344 },
+  })
+  highlights.apply(config_mod.defaults())
+  assert_eq(luminance(get_hl("DiffBanditChangeEmphasis").bg) > luminance(get_hl("DiffBanditChangeLeft").bg), true,
+    "Dark palette change emphasis should lighten the change background")
+
+  highlights.apply(config_mod.apply({
+    ui = {
+      theme = {
+        colors = {
+          add = 0x112233,
+          delete = "#445566",
+          change = 0x778899,
+          change_emphasis = 0xABCDEF,
+        },
+      },
+    },
+  }))
+  assert_eq(get_hl("DiffBanditAdd").bg, 0x112233,
+    "Add override should set the add source background")
+  assert_eq(get_hl("DiffBanditConnectorAddLine").fg, 0x112233,
+    "Add override should propagate to add connector rails")
+  assert_eq(get_hl("DiffBanditDelete").bg, 0x445566,
+    "Delete override should accept hex strings")
+  assert_eq(get_hl("DiffBanditDeleteRightSeparator").sp, 0x445566,
+    "Delete override should propagate to delete underlines")
+  assert_eq(get_hl("DiffBanditChangeRight").bg, 0x778899,
+    "Change override should set the change source background")
+  assert_eq(get_hl("DiffBanditConnectorExpansionChange").fg, 0x778899,
+    "Change override should propagate to change wedges")
+  assert_eq(get_hl("DiffBanditChangeEmphasis").bg, 0xABCDEF,
+    "Change emphasis override should win over adaptive derivation")
+
+  highlights.apply(config_mod.apply({
+    ui = {
+      theme = {
+        highlights = {
+          DiffBanditConnectorAddLine = { fg = 0x010203, bg = 0x040506 },
+        },
+      },
+    },
+  }))
+  assert_eq(get_hl("DiffBanditConnectorAddLine").fg, 0x010203,
+    "Per-group highlight override should apply last")
+  assert_eq(get_hl("DiffBanditConnectorAddLine").bg, 0x040506,
+    "Per-group highlight override should include background")
+
+  local diffbandit = require("diffbandit")
+  set_palette({
+    Normal = { fg = 0xEEEEEE, bg = 0x101010 },
+    LineNr = { fg = 0x777777 },
+    Comment = { fg = 0x909090 },
+    DiffAdd = { bg = 0x203040 },
+    DiffDelete = { bg = 0x402020 },
+    DiffChange = { bg = 0x202040 },
+  })
+  diffbandit.setup({})
+  assert_eq(get_hl("DiffBanditAdd").bg, 0x203040,
+    "Setup should apply the current add color")
+  vim.api.nvim_set_hl(0, "DiffAdd", { bg = 0x304050 })
+  vim.api.nvim_exec_autocmds("ColorScheme", {})
+  assert_eq(get_hl("DiffBanditAdd").bg, 0x304050,
+    "ColorScheme refresh should rederive add color")
 end
 
 vim.api.nvim_out_write("OK\n")

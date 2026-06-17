@@ -6,10 +6,33 @@ local highlights = require("diffbandit.highlights")
 local M = {}
 
 local highlights_ready = false
+local theme_augroup = nil
+
+local function configure_theme_refresh(config)
+  if theme_augroup then
+    pcall(vim.api.nvim_del_augroup_by_id, theme_augroup)
+    theme_augroup = nil
+  end
+
+  local theme = (((config or {}).ui or {}).theme or {})
+  if theme.auto_refresh == false then
+    return
+  end
+
+  theme_augroup = vim.api.nvim_create_augroup("DiffBanditTheme", { clear = true })
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = theme_augroup,
+    callback = function()
+      highlights.apply(state.get_config())
+      highlights_ready = true
+    end,
+  })
+end
 
 local function ensure_highlights(config)
   if not highlights_ready then
     highlights.apply(config or state.get_config())
+    configure_theme_refresh(config or state.get_config())
     highlights_ready = true
   end
 end
@@ -17,6 +40,7 @@ end
 function M.setup(opts)
   local config = state.set_config(opts)
   highlights.apply(config)
+  configure_theme_refresh(config)
   highlights_ready = true
   return config
 end

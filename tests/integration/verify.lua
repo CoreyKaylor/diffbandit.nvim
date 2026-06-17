@@ -288,6 +288,18 @@ local function ansi_glyph_transition_bgs(line, glyph)
   }
 end
 
+local function ansi_rgb_luminance(bg)
+  if not bg then
+    return nil
+  end
+  local r, g, b = bg:match("^(%d+);(%d+);(%d+)$")
+  if not r then
+    return nil
+  end
+  r, g, b = tonumber(r), tonumber(g), tonumber(b)
+  return ((0.2126 * r) + (0.7152 * g) + (0.0722 * b)) / 255
+end
+
 local function add_delete_triangle_transition_check(errors, ansi_lines, label, glyph, description)
   if not ansi_lines then
     table.insert(errors, "ANSI capture missing; cannot verify delete triangle transition for " .. description)
@@ -692,6 +704,33 @@ local function verify_mixed(lines, ansi_lines)
     table.insert(errors, "Terminal embedded added row should return to change background after its text")
   elseif modified_tail_bg and added_line2_after_bg ~= modified_tail_bg then
     table.insert(errors, "Terminal embedded added row should return to the mixed change envelope")
+  end
+
+  return errors
+end
+
+local function verify_theme_default(lines, ansi_lines)
+  local errors = verify_mixed(lines, ansi_lines)
+  if not ansi_lines then
+    table.insert(errors, "ANSI capture missing; cannot verify default theme delete background")
+    return errors
+  end
+
+  local delete_bg
+  for _, line in ipairs(ansi_lines) do
+    local stripped = strip_ansi(line)
+    if stripped:find("Delete this line", 1, true) then
+      local transition = ansi_glyph_transition_bgs(line, "\226\151\164")
+      delete_bg = transition and transition.before or nil
+      break
+    end
+  end
+
+  local lum = ansi_rgb_luminance(delete_bg)
+  if not lum then
+    table.insert(errors, "Expected ANSI RGB delete background for default theme")
+  elseif lum > 0.65 then
+    table.insert(errors, "Default theme delete background should not use a light fallback")
   end
 
   return errors
@@ -2078,6 +2117,11 @@ elseif test_name == "deletions" then
   end
 elseif test_name == "mixed" then
   errors = verify_mixed(lines, ansi_lines)
+  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
+    table.insert(errors, err)
+  end
+elseif test_name == "theme-default" then
+  errors = verify_theme_default(lines, ansi_lines)
   for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
     table.insert(errors, err)
   end

@@ -24,11 +24,6 @@ local function adopt_diff_colors(base_name)
   return base
 end
 
-local function get_background_color(hl_group, fallback)
-  local colors = adopt_diff_colors(hl_group)
-  return colors.bg or fallback
-end
-
 local function get_foreground_color(hl_group, fallback)
   local colors = adopt_diff_colors(hl_group)
   return colors.fg or fallback
@@ -44,6 +39,17 @@ local function color_to_rgb(color)
   return nil
 end
 
+local function color_to_number(color)
+  if type(color) == "number" then
+    return color
+  end
+  local r, g, b = color_to_rgb(color)
+  if not r then
+    return nil
+  end
+  return (r * 65536) + (g * 256) + b
+end
+
 local function blend_color(base, target, amount)
   amount = math.max(0, math.min(1, tonumber(amount) or 0))
   local br, bg, bb = color_to_rgb(base)
@@ -57,49 +63,137 @@ local function blend_color(base, target, amount)
   return (mix(br, tr) * 65536) + (mix(bg, tg) * 256) + mix(bb, tb)
 end
 
-local function apply_diff_variants(config)
-  local delete_base = adopt_diff_colors("DiffDelete")
-  local normal_base = adopt_diff_colors("Normal")
-  local ui = (config and config.ui) or {}
+local function luminance(color)
+  local r, g, b = color_to_rgb(color)
+  if not r then
+    return 0
+  end
+  return ((0.2126 * r) + (0.7152 * g) + (0.0722 * b)) / 255
+end
 
-  -- Extract or use fallback colors for backgrounds
-  local add_bg = get_background_color("DiffAdd", "#C8E6C9")
-  local delete_bg = get_background_color("DiffDelete", "#D3D3D3")  -- light gray
-  local change_bg = get_background_color("DiffChange", "#E3F2FD")
-  local text_bg = get_background_color("DiffText", "#D6EBFF")
+local function color_delta(a, b)
+  local ar, ag, ab = color_to_rgb(a)
+  local br, bg, bb = color_to_rgb(b)
+  if not ar or not br then
+    return 1
+  end
+  local dr = (ar - br) / 255
+  local dg = (ag - bg) / 255
+  local db = (ab - bb) / 255
+  return math.sqrt((dr * dr) + (dg * dg) + (db * db)) / math.sqrt(3)
+end
 
-  -- Get foreground colors - connector uses normal text
-  local connector_fg = normal_base.fg
+local function readable_background(bg, normal_bg, min_delta)
+  if not bg then
+    return nil
+  end
+  bg = color_to_number(bg)
+  if not bg then
+    return nil
+  end
+  if normal_bg and color_delta(bg, normal_bg) < min_delta then
+    return nil
+  end
+  return bg
+end
 
-  -- Full-line background highlights for additions (use normal text color, only background is colored)
-  local normal_bg = normal_base.bg
-  local function ensure_contrast(bg, fallback)
-    if not bg or (normal_bg and bg == normal_bg) then
-      return fallback
-    end
+local function default_background(kind, normal_bg)
+  local dark = luminance(normal_bg) < 0.5
+  if kind == "add" then
+    return dark and 0x123D2B or 0xDDF4E6
+  elseif kind == "delete" then
+    return dark and 0x4A2426 or 0xF8D7DA
+  end
+  return dark and 0x253344 or 0xDDEBFF
+end
+
+local function semantic_background(kind, hl_group, normal_bg, theme)
+  local overrides = (theme.colors or {})
+  local override = readable_background(overrides[kind], normal_bg, 0)
+  if override then
+    return override
+  end
+
+  local min_delta = tonumber(theme.min_background_delta) or 0.08
+  local colors = adopt_diff_colors(hl_group)
+  local bg = readable_background(colors.bg, normal_bg, min_delta)
+  if bg then
     return bg
   end
 
+  local fg = color_to_number(colors.fg)
+  if fg then
+    local blended = blend_color(normal_bg, fg, theme.semantic_blend or 0.3)
+    bg = readable_background(blended, normal_bg, min_delta)
+    if bg then
+      return bg
+    end
+  end
+
+  return default_background(kind, normal_bg)
+end
+
+local function change_emphasis_background(change_bg, normal_bg, normal_fg, theme)
+  local overrides = theme.colors or {}
+  local override = color_to_number(overrides.change_emphasis)
+  if override then
+    return override
+  end
+
+  local dark = luminance(normal_bg) < 0.5
+  local target = dark and normal_fg or 0x000000
+  local amount = tonumber(theme.change_emphasis_strength) or 0.16
+  local emphasis = blend_color(change_bg, target, amount)
+  local min_delta = (tonumber(theme.min_background_delta) or 0.08) * 0.45
+  if color_delta(emphasis, change_bg) < min_delta then
+    emphasis = blend_color(change_bg, target, math.min(1, amount + 0.06))
+  end
+  return emphasis
+end
+
+local function apply_theme_overrides(theme)
+  for group, opts in pairs(theme.highlights or {}) do
+    if type(group) == "string" and type(opts) == "table" then
+      apply_group(group, opts)
+    end
+  end
+end
+
+local function apply_diff_variants(config)
+  local normal_base = adopt_diff_colors("Normal")
+  local ui = (config and config.ui) or {}
+  local theme = ui.theme or {}
+
+  local normal_bg = color_to_number(normal_base.bg) or 0x000000
+  local normal_fg = color_to_number(normal_base.fg) or 0xFFFFFF
+  local add_bg = semantic_background("add", "DiffAdd", normal_bg, theme)
+  local delete_bg = semantic_background("delete", "DiffDelete", normal_bg, theme)
+  local change_bg = semantic_background("change", "DiffChange", normal_bg, theme)
+  local text_bg = change_emphasis_background(change_bg, normal_bg, normal_fg, theme)
+
+  -- Get foreground colors - connector uses normal text
+  local connector_fg = normal_fg
+
   -- Add background only; keep foreground as NONE so default text color is preserved
   apply_group("DiffBanditAdd", {
-    bg = ensure_contrast(add_bg, "#C8E6C9"),
+    bg = add_bg,
     fg = "NONE",
   })
 
   -- Delete background with normal text color (not red)
   apply_group("DiffBanditDelete", {
-    bg = ensure_contrast(delete_bg, "#F5F5DC"),
+    bg = delete_bg,
     fg = "NONE",
   })
 
   apply_group("DiffBanditChangeLeft", {
-    bg = ensure_contrast(change_bg, "#E3F2FD"),
+    bg = change_bg,
     fg = "NONE",
     underline = false,
   })
 
   apply_group("DiffBanditChangeRight", {
-    bg = ensure_contrast(change_bg, "#E3F2FD"),
+    bg = change_bg,
     fg = "NONE",
     underline = false,
   })
@@ -121,19 +215,19 @@ local function apply_diff_variants(config)
 
   -- Context highlight - no sp set to avoid conflicts with separator underlines
   apply_group("DiffBanditContext", {
-    bg = normal_base.bg,
-    fg = normal_base.fg,
+    bg = normal_bg,
+    fg = normal_fg,
   })
 
   local soft_split_fg = blend_color(normal_base.bg or "#000000", get_foreground_color("LineNr", "#808080"), ui.split_blend or 0.3)
   apply_group("DiffBanditSplit", {
     fg = soft_split_fg,
-    bg = normal_base.bg,
+    bg = normal_bg,
   })
 
   apply_group("DiffBanditHiddenSplit", {
     fg = soft_split_fg,
-    bg = normal_base.bg,
+    bg = normal_bg,
   })
 
   -- Separator line highlights for text buffers (use underline attribute)
@@ -174,12 +268,12 @@ local function apply_diff_variants(config)
 
   -- Filler/placeholder highlights
   apply_group("DiffBanditGap", {
-    bg = normal_base.bg,
+    bg = normal_bg,
     fg = get_foreground_color("Comment", "#808080"),
   })
 
   apply_group("DiffBanditPlaceholder", {
-    bg = normal_base.bg,
+    bg = normal_bg,
     fg = get_foreground_color("Comment", "#808080"),
   })
 
@@ -209,29 +303,29 @@ local function apply_diff_variants(config)
   -- a visual connection from the underline to the colored background region
   apply_group("DiffBanditConnectorExpansionAdd", {
     fg = add_bg,
-    bg = normal_base.bg,
+    bg = normal_bg,
   })
   apply_group("DiffBanditConnectorExpansionAddUnderline", {
     fg = add_bg,
-    bg = normal_base.bg,
+    bg = normal_bg,
     underline = true,
     sp = add_bg,
   })
   apply_group("DiffBanditConnectorExpansionDelete", {
     fg = delete_bg,
-    bg = normal_base.bg,
+    bg = normal_bg,
   })
   apply_group("DiffBanditConnectorExpansionChange", {
     fg = change_bg,
-    bg = normal_base.bg,
+    bg = normal_bg,
   })
   apply_group("DiffBanditConnectorDeleteCutout", {
-    fg = normal_base.bg,
+    fg = normal_bg,
     bg = delete_bg,
   })
 
   apply_group("DiffBanditConnectorContext", {
-    bg = normal_base.bg,
+    bg = normal_bg,
     fg = get_foreground_color("Comment", "#808080"),
   })
 
@@ -269,6 +363,8 @@ local function apply_diff_variants(config)
     underline = true,
     sp = delete_bg,
   })
+
+  apply_theme_overrides(theme)
 end
 
 function M.apply(config)

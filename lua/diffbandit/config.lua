@@ -11,6 +11,19 @@ local defaults = {
     connector_width = 12,
     right_number_padding = 2,
     split_blend = 0.3,
+    theme = {
+      auto_refresh = true,
+      semantic_blend = 0.3,
+      change_emphasis_strength = 0.16,
+      min_background_delta = 0.08,
+      colors = {
+        add = nil,
+        delete = nil,
+        change = nil,
+        change_emphasis = nil,
+      },
+      highlights = {},
+    },
     connectors = {
       context = "   ",
       change = {
