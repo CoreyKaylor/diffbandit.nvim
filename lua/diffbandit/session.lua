@@ -636,13 +636,6 @@ local HIGHLIGHT_RIGHT = {
   change = { default = "DiffBanditChangeRight", filler = "DiffBanditGap" },
 }
 
-local HIGHLIGHT_CONNECTOR = {
-  context = "DiffBanditConnectorContext",
-  add = "DiffBanditConnectorAdd",
-  delete = "DiffBanditConnectorDelete",
-  change = "DiffBanditConnectorChange",
-}
-
 local function get_highlight(tbl, meta, filler_key)
   local entry = tbl[meta.kind]
   if type(entry) == "table" then
@@ -659,10 +652,6 @@ local function highlight_for_right(meta)
   return get_highlight(HIGHLIGHT_RIGHT, meta, "filler_right")
 end
 
-local function highlight_for_connector(meta)
-  return HIGHLIGHT_CONNECTOR[meta.kind] or "DiffBanditConnectorChange"
-end
-
 function Session:project_paths_for_viewport(paths)
   local left_topline = get_win_view_topline(self.left_win)
   local right_topline = get_win_view_topline(self.right_win)
@@ -676,6 +665,20 @@ function Session:project_paths_for_viewport(paths)
 
   local function delete_glyph_for_target(origin_row, target_row)
     return origin_row > target_row and "◣" or "◤"
+  end
+
+  local function set_lane_occupancy(path, row_a, row_b)
+    if not row_a or not row_b then
+      return
+    end
+    local viewport_start = left_topline
+    local viewport_end = left_topline + left_height - 1
+    local start_row = math.max(viewport_start, math.min(row_a, row_b))
+    local end_row = math.min(viewport_end, math.max(row_a, row_b))
+    if start_row <= end_row then
+      path.lane_occupancy_start = start_row
+      path.lane_occupancy_end = end_row
+    end
   end
 
   local function add_projected_path(path, target_index, glyph, show_triangle, suppress_tail)
@@ -694,6 +697,7 @@ function Session:project_paths_for_viewport(paths)
     q.connect_tail_on_triangle_row = path.kind == "add" and glyph == "◢" and show_triangle ~= false
     q.hide_triangle = show_triangle == false
     q.suppress_tail = suppress_tail == true
+    set_lane_occupancy(q, q.origin_display_row, projected_target)
     projected[#projected + 1] = q
   end
 
@@ -712,7 +716,170 @@ function Session:project_paths_for_viewport(paths)
     q.connect_tail_on_triangle_row = (glyph == "◣" or glyph == "◥") and show_triangle ~= false
     q.hide_triangle = show_triangle == false
     q.suppress_tail = suppress_tail == true
+    set_lane_occupancy(q, origin_row, target_index)
     projected[#projected + 1] = q
+  end
+
+  local function add_change_link(links, from_side, from_row, to_side, to_row, show_from, show_to, from_glyph, to_glyph, no_vertical, underline_row)
+    if not from_row or not to_row then
+      return
+    end
+
+    local function glyph_for(side, row, other_row)
+      if side == "right" then
+        return other_row > row and "◢" or "◥"
+      end
+      return other_row > row and "◥" or "◤"
+    end
+
+    links[#links + 1] = {
+      from_side = from_side,
+      from_row = from_row,
+      from_glyph = from_glyph or glyph_for(from_side, from_row, to_row),
+      from_visible = show_from ~= false,
+      to_side = to_side,
+      to_row = to_row,
+      to_glyph = to_glyph or glyph_for(to_side, to_row, from_row),
+      to_visible = show_to ~= false,
+      no_vertical = no_vertical == true,
+      underline_row = underline_row,
+    }
+  end
+
+  local function change_glyph_for(side, row, other_row)
+    if side == "right" then
+      return other_row > row and "◢" or "◥"
+    end
+    return other_row > row and "◥" or "◤"
+  end
+
+  local function add_change_edge(edges, side, row, overlap_row)
+    if not row or not overlap_row then
+      return
+    end
+    edges[#edges + 1] = {
+      side = side,
+      row = row,
+      glyph = change_glyph_for(side, row, overlap_row),
+    }
+  end
+
+  local function set_change_lane_occupancy(path)
+    local start_row, end_row
+    local viewport_start = left_topline
+    local viewport_end = left_topline + left_height - 1
+    local function include_row(row)
+      if not row then
+        return
+      end
+      row = math.max(viewport_start, math.min(viewport_end, row))
+      start_row = start_row and math.min(start_row, row) or row
+      end_row = end_row and math.max(end_row, row) or row
+    end
+
+    for _, link in ipairs(path.viewport_change_links or {}) do
+      include_row(link.from_row)
+      include_row(link.to_row)
+    end
+    for _, edge in ipairs(path.viewport_change_edges or {}) do
+      include_row(edge.row)
+    end
+
+    if start_row and end_row then
+      path.lane_occupancy_start = start_row
+      path.lane_occupancy_end = end_row
+    end
+  end
+
+  local function project_change_path(path)
+    local q = shallow_copy(path)
+    q.route_group = path.route_group or path
+    q.viewport_change_links = {}
+    q.viewport_change_edges = {}
+
+    if not (path.start_left_index and path.end_left_index
+        and path.start_right_index and path.end_right_index) then
+      return q
+    end
+
+    local left_visible_start = math.max(path.start_left_index, left_topline)
+    local left_visible_end = math.min(path.end_left_index, left_topline + left_height - 1)
+    local right_visible_index_start = math.max(path.start_right_index, right_topline)
+    local right_visible_index_end = math.min(path.end_right_index, right_topline + right_height - 1)
+
+    if left_visible_start <= left_visible_end then
+      q.viewport_left_start = left_visible_start
+      q.viewport_left_end = left_visible_end
+    end
+    if right_visible_index_start <= right_visible_index_end then
+      q.viewport_right_index_start = right_visible_index_start
+      q.viewport_right_index_end = right_visible_index_end
+      q.viewport_right_start = right_to_connector_row(right_visible_index_start)
+      q.viewport_right_end = right_to_connector_row(right_visible_index_end)
+    end
+
+    local ls, le = q.viewport_left_start, q.viewport_left_end
+    local rs, re = q.viewport_right_start, q.viewport_right_end
+    if ls and le and rs and re then
+      local overlap_start = math.max(ls, rs)
+      local overlap_end = math.min(le, re)
+      if overlap_start <= overlap_end then
+        q.viewport_solid_start = overlap_start
+        q.viewport_solid_end = overlap_end
+
+        if rs < overlap_start then
+          local edge_row = overlap_start - 1
+          add_change_edge(q.viewport_change_edges, "right", edge_row, overlap_start)
+        end
+        if ls < overlap_start then
+          local edge_row = overlap_start - 1
+          add_change_edge(q.viewport_change_edges, "left", edge_row, overlap_start)
+        end
+        if re > overlap_end then
+          local edge_row = overlap_end + 1
+          add_change_edge(q.viewport_change_edges, "right", edge_row, overlap_end)
+        end
+        if le > overlap_end then
+          local edge_row = overlap_end + 1
+          add_change_edge(q.viewport_change_edges, "left", edge_row, overlap_end)
+        end
+      elseif re < ls then
+        if re + 1 == ls then
+          add_change_link(q.viewport_change_links, "right", re, "left", ls, true, true,
+            change_glyph_for("right", re, ls), change_glyph_for("left", ls, re), true, re)
+        else
+          add_change_link(q.viewport_change_links, "right", re, "left", ls, true, true)
+        end
+      elseif le < rs then
+        if le + 1 == rs then
+          add_change_link(q.viewport_change_links, "left", le, "right", rs, true, true,
+            change_glyph_for("left", le, rs), change_glyph_for("right", rs, le), true, le)
+        else
+          add_change_link(q.viewport_change_links, "left", le, "right", rs, true, true)
+        end
+      end
+    elseif ls and le then
+      local projected_right_start = right_to_connector_row(path.start_right_index)
+      local projected_right_end = right_to_connector_row(path.end_right_index)
+      if projected_right_end < ls then
+        add_change_link(q.viewport_change_links, "left", ls, "right", left_topline - 1, true, false,
+          nil, nil, false, math.max(left_topline, ls - 1))
+      elseif projected_right_start > le then
+        add_change_link(q.viewport_change_links, "left", le, "right", left_topline + left_height, true, false,
+          nil, nil, false, math.max(left_topline, le - 1))
+      end
+    elseif rs and re then
+      if path.end_left_index < rs then
+        add_change_link(q.viewport_change_links, "right", rs, "left", left_topline - 1, true, false,
+          nil, nil, false, math.max(left_topline, rs - 1))
+      elseif path.start_left_index > re then
+        add_change_link(q.viewport_change_links, "right", re, "left", left_topline + left_height, true, false,
+          nil, nil, false, math.max(left_topline, re - 1))
+      end
+    end
+
+    set_change_lane_occupancy(q)
+    return q
   end
 
   for _, p in ipairs(paths) do
@@ -794,7 +961,7 @@ function Session:project_paths_for_viewport(paths)
           elseif visible_start > origin_row then
             target = visible_start
           end
-          add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false)
+          add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), true)
         elseif visible_start > origin_row then
           add_projected_delete_path(p, origin_row, visible_start, "◤", true)
         elseif visible_end < origin_row then
@@ -818,6 +985,8 @@ function Session:project_paths_for_viewport(paths)
           end
         end
       end
+    elseif p.kind == "change" then
+      projected[#projected + 1] = project_change_path(p)
     else
       local q = shallow_copy(p)
       q.route_group = p.route_group or p
@@ -906,55 +1075,45 @@ function Session:render()
       add_origin_row_has_transition[p.origin_display_row] = true
     end
   end
+  local left_topline = get_win_view_topline(self.left_win)
+  local right_topline = get_win_view_topline(self.right_win)
 
-  local embedded_add_right_indexes = {}
   local embedded_add_terminal_right_indexes = {}
   local embedded_add_origin_left_indexes = {}
-  local mixed_envelope_left_indexes = {}
-  local mixed_envelope_right_indexes = {}
-  local mixed_envelope_connector_rows = {}
-  local change_connector_rows = {}
+  local change_number_left_indexes = {}
+  local change_number_right_indexes = {}
+  local solid_change_number_left_indexes = {}
+  local solid_change_number_right_indexes = {}
   for _, p in ipairs(paths) do
     if p.kind == "add" and p.embedded_in_change then
       if p.origin_left_index then
         embedded_add_origin_left_indexes[p.origin_left_index] = true
       end
       if p.target_start_index and p.target_end_index then
-        for row = p.target_start_index, p.target_end_index do
-          embedded_add_right_indexes[row] = true
-        end
         embedded_add_terminal_right_indexes[p.target_end_index] = true
       end
-    elseif p.kind == "change" and p.mixed_add then
-      local start_row = p.display_start_row or p.start_row
-      local end_row = p.display_end_row or p.end_row or start_row
-      if start_row and end_row then
-        for row = start_row, end_row do
-          change_connector_rows[row] = true
-        end
-      end
+    elseif p.kind == "change" then
       if p.start_left_index and p.end_left_index then
         for row = p.start_left_index, p.end_left_index do
-          mixed_envelope_left_indexes[row] = true
+          change_number_left_indexes[row] = true
         end
       end
       if p.start_right_index and p.end_right_index then
         for row = p.start_right_index, p.end_right_index do
-          mixed_envelope_right_indexes[row] = true
-          mixed_envelope_connector_rows[row] = true
+          change_number_right_indexes[row] = true
         end
       end
-      if p.start_left_index and p.end_left_index then
-        for row = p.start_left_index, p.end_left_index do
-          mixed_envelope_connector_rows[row] = true
-        end
-      end
-    elseif p.kind == "change" then
-      local start_row = p.display_start_row or p.start_row
-      local end_row = p.display_end_row or p.end_row or start_row
-      if start_row and end_row then
-        for row = start_row, end_row do
-          change_connector_rows[row] = true
+    end
+  end
+  for _, p in ipairs(route_paths) do
+    if p.kind == "change" and p.viewport_solid_start and p.viewport_solid_end then
+      for row = p.viewport_solid_start, p.viewport_solid_end do
+        if row >= left_topline then
+          solid_change_number_left_indexes[row] = true
+          local right_index = right_topline + (row - left_topline)
+          if right_index >= 1 then
+            solid_change_number_right_indexes[right_index] = true
+          end
         end
       end
     end
@@ -1076,10 +1235,7 @@ function Session:render()
 
   -- Apply connector backgrounds and number-pane styling on the same compact
   -- rows as their owner buffers.
-  local core_start_col_base = 0
   local right_col_base = self.connector_core_width
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
   local ctx_hl = "DiffBanditConnectorContext"
 
   local function right_index_to_connector_row(right_index)
@@ -1088,12 +1244,6 @@ function Session:render()
 
   for row = 0, connector_height - 1 do
     vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, ctx_hl, row, 0, -1)
-  end
-
-  local function add_connector_bg(row, meta, connector_bg_hl, _)
-    if meta.kind == "change" and not mixed_envelope_connector_rows[row + 1] then
-      vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, connector_bg_hl, row, 0, -1)
-    end
   end
 
   local function add_origin_core_underline(origin_row, row, meta)
@@ -1149,19 +1299,15 @@ function Session:render()
   end
 
   for idx, meta in ipairs(self.view.line_meta) do
-    local connector_hl = highlight_for_connector(meta)
-    local connector_bg_hl = connector_hl or "DiffBanditConnectorContext"
-
     if meta.left_index then
       local row = meta.left_index - 1
-      add_connector_bg(row, meta, connector_bg_hl, "left")
 
       local left_num_hl
       if meta.origin == "add" and not embedded_add_origin_left_indexes[meta.left_index] then
         left_num_hl = "DiffBanditLineNumberLeftUnderline"
       elseif meta.kind == "delete" then
         left_num_hl = "DiffBanditLineNumberLeftDelete"
-      elseif meta.kind == "change" or mixed_envelope_left_indexes[meta.left_index] then
+      elseif change_number_left_indexes[meta.left_index] then
         left_num_hl = "DiffBanditLineNumberLeftChange"
       else
         left_num_hl = "DiffBanditLineNumberLeft"
@@ -1170,8 +1316,9 @@ function Session:render()
       vim.api.nvim_buf_add_highlight(self.left_num_buf, self.linenum_ns, left_num_hl, row, 0, self.left_number_width)
       if meta.kind == "delete" then
         vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", row, 0, self.left_number_width)
-      elseif meta.kind == "change" or mixed_envelope_left_indexes[meta.left_index] then
-        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorChange", row, 0, -1)
+      elseif change_number_left_indexes[meta.left_index] then
+        local end_col = solid_change_number_left_indexes[meta.left_index] and -1 or self.left_number_width
+        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorChange", row, 0, end_col)
       end
       if not embedded_add_origin_left_indexes[meta.left_index] then
         add_origin_core_underline(meta.left_index, row, meta)
@@ -1180,15 +1327,14 @@ function Session:render()
 
     if meta.right_index then
       local row = meta.right_index - 1
-      add_connector_bg(row, meta, connector_bg_hl, "right")
 
       local is_delete_origin = meta.right_line and delete_origin_right_lines[meta.right_line] ~= nil
       local right_num_hl
       if is_delete_origin then
         right_num_hl = "DiffBanditLineNumberRightUnderline"
-      elseif meta.kind == "change" or mixed_envelope_right_indexes[meta.right_index] then
+      elseif change_number_right_indexes[meta.right_index] then
         right_num_hl = "DiffBanditLineNumberRightChange"
-      elseif meta.kind == "add" and not embedded_add_right_indexes[meta.right_index] then
+      elseif meta.kind == "add" then
         right_num_hl = "DiffBanditLineNumberRightAdd"
       else
         right_num_hl = "DiffBanditLineNumberRight"
@@ -1204,9 +1350,10 @@ function Session:render()
       end
 
       vim.api.nvim_buf_add_highlight(self.right_num_buf, self.linenum_ns, right_num_hl, row, 1, -1)
-      if meta.kind == "change" or mixed_envelope_right_indexes[meta.right_index] then
-        vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorChange", row, 1, -1)
-      elseif meta.kind == "add" and not embedded_add_right_indexes[meta.right_index] then
+      if change_number_right_indexes[meta.right_index] then
+        local start_col = solid_change_number_right_indexes[meta.right_index] and 0 or 1
+        vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorChange", row, start_col, -1)
+      elseif meta.kind == "add" then
         vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", row, 1, -1)
       end
     end
@@ -1229,33 +1376,12 @@ function Session:render()
           vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", meta.left_index - 1, 0, self.left_number_width)
         end
       end
-    elseif p.kind == "change" then
-      if p.mixed_add and p.start_left_index and p.start_right_index then
-        local right_start = p.start_right_index
-        local right_end = p.end_right_index or p.start_right_index
-        for row = right_start, right_end do
-          vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorChange", row - 1, 1, -1)
-        end
-        if p.start_left_index and p.end_left_index then
-          for row = p.start_left_index, p.end_left_index do
-            vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorChange", row - 1, 0, -1)
-          end
-        end
-      elseif p.offset and p.start_left_index and p.start_right_index then
-        local mid_col = core_start_col_base + math.floor(self.connector_core_width / 2)
-        local min_row = math.min(p.start_left_index, p.start_right_index)
-        local max_row = math.max(p.end_left_index or p.start_left_index, p.end_right_index or p.start_right_index)
-        for row = p.start_left_index, p.end_left_index or p.start_left_index do
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorChange", row - 1, 0, mid_col + 1)
-        end
-        for row = p.start_right_index, p.end_right_index or p.start_right_index do
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorChange", row - 1, mid_col, -1)
-        end
-        for row = min_row + 1, max_row - 1 do
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorChange", row - 1, mid_col, mid_col + 1)
-        end
-      else
-        for row = p.display_start_row, p.display_end_row do
+    end
+  end
+  for _, p in ipairs(route_paths) do
+    if p.kind == "change" and p.viewport_solid_start and p.viewport_solid_end then
+      for row = p.viewport_solid_start, p.viewport_solid_end do
+        if row >= 1 and row <= connector_height then
           vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorChange", row - 1, 0, -1)
         end
       end
@@ -1486,6 +1612,195 @@ function Session:render()
   vim.api.nvim_buf_clear_namespace(self.connector_buf, self.path_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.path_ns, 0, -1)
   local core_start_col = 0
+  local default_change_rail_col = math.max(2, math.floor(self.connector_core_width / 3))
+
+  local function route_bar_col(path, lane)
+    if path and path.kind == "delete" then
+      return delete_lane_col(lane)
+    end
+    return lane_col(lane)
+  end
+
+  local function change_rail_col_for_path(path)
+    if path and path.lane and path.lane > 0 then
+      return delete_lane_col(path.lane)
+    end
+    return default_change_rail_col
+  end
+
+  local change_vertical_cols_by_row = {}
+  local function reserve_change_vertical(row, rail_col)
+    if row >= 1 and row <= connector_height then
+      change_vertical_cols_by_row[row] = change_vertical_cols_by_row[row] or {}
+      change_vertical_cols_by_row[row][rail_col] = true
+    end
+  end
+
+  for _, p in ipairs(route_paths) do
+    if p.kind == "change" then
+      local rail_col = change_rail_col_for_path(p)
+      for _, link in ipairs(p.viewport_change_links or {}) do
+        if not link.no_vertical then
+          local start_row = math.min(link.from_row, link.to_row) + 1
+          local end_row = math.max(link.from_row, link.to_row) - 1
+          for row = start_row, end_row do
+            reserve_change_vertical(row, rail_col)
+          end
+        end
+      end
+    end
+  end
+
+  local function render_change_wedge(side, row, glyph)
+    if row < 1 or row > connector_height then
+      return
+    end
+    if side == "left" then
+      vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, row - 1, self.left_number_width, {
+        virt_text = { { glyph, "DiffBanditConnectorExpansionChange" } },
+        virt_text_pos = "overlay",
+      })
+    else
+      local right_index = right_topline + (row - left_topline)
+      if right_index >= 1 and right_index <= #right_lines then
+        vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, right_index - 1, 0, {
+          virt_text = { { glyph, "DiffBanditConnectorExpansionChange" } },
+          virt_text_pos = "overlay",
+        })
+      end
+    end
+  end
+
+  local function render_change_vertical(row, rail_col)
+    if row >= 1 and row <= connector_height then
+      vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, rail_col or default_change_rail_col, {
+        virt_text = { { "│", "DiffBanditConnectorChangeLine" } },
+        virt_text_pos = "overlay",
+      })
+    end
+  end
+
+  local function occupied_route_cols(row)
+    local occupied = {}
+    local lanes_at_row = active_vertical_bars[row]
+    if lanes_at_row then
+      for lane, path in pairs(lanes_at_row) do
+        occupied[route_bar_col(path, lane)] = true
+      end
+    end
+    if change_vertical_cols_by_row[row] then
+      for col, _ in pairs(change_vertical_cols_by_row[row]) do
+        occupied[col] = true
+      end
+    end
+    return occupied
+  end
+
+  local function render_change_underline_run(row, start_col, end_col, occupied)
+    local run_start = nil
+    for col = start_col, end_col do
+      if occupied[col] then
+        if run_start and col > run_start then
+          vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, run_start, {
+            virt_text = { { string.rep(" ", col - run_start), "DiffBanditChangeSeparatorConnector" } },
+            virt_text_pos = "overlay",
+          })
+        end
+        run_start = nil
+      elseif not run_start then
+        run_start = col
+      end
+    end
+    if run_start and end_col >= run_start then
+      vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, run_start, {
+        virt_text = { { string.rep(" ", end_col - run_start + 1), "DiffBanditChangeSeparatorConnector" } },
+        virt_text_pos = "overlay",
+      })
+    end
+  end
+
+  local function render_change_underline(side, row, rail_col, skip_sidecar)
+    if row < 1 or row > connector_height then
+      return
+    end
+    rail_col = rail_col or default_change_rail_col
+    local occupied = occupied_route_cols(row)
+    if side == "left" then
+      if not skip_sidecar then
+        vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, row - 1, self.left_number_width, {
+          virt_text = { { " ", "DiffBanditChangeSeparatorConnector" } },
+          virt_text_pos = "overlay",
+        })
+      end
+      if rail_col > 0 then
+        render_change_underline_run(row, 0, rail_col - 1, occupied)
+      end
+    else
+      if not skip_sidecar then
+        local right_index = right_topline + (row - left_topline)
+        if right_index >= 1 and right_index <= #right_lines then
+          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, right_index - 1, 0, {
+            virt_text = { { " ", "DiffBanditChangeSeparatorConnector" } },
+            virt_text_pos = "overlay",
+          })
+        end
+      end
+      local start_col = math.min(self.connector_core_width - 1, rail_col + 1)
+      if start_col <= self.connector_core_width - 1 then
+        render_change_underline_run(row, start_col, self.connector_core_width - 1, occupied)
+      end
+    end
+  end
+
+  local function render_change_vertical_between(from_row, to_row, rail_col)
+    local start_row = math.min(from_row, to_row) + 1
+    local end_row = math.max(from_row, to_row) - 1
+    for row = start_row, end_row do
+      render_change_vertical(row, rail_col)
+    end
+  end
+
+  local function endpoint_underline_row(side, row, glyph)
+    if side == "left" and glyph == "◤" then
+      return math.max(left_topline, row - 1)
+    end
+    return row
+  end
+
+  for _, p in ipairs(route_paths) do
+    if p.kind == "change" and p.viewport_change_edges then
+      for _, edge in ipairs(p.viewport_change_edges) do
+        render_change_wedge(edge.side, edge.row, edge.glyph)
+      end
+    end
+    if p.kind == "change" and p.viewport_change_links then
+      for _, link in ipairs(p.viewport_change_links) do
+        if link.from_visible then
+          render_change_wedge(link.from_side, link.from_row, link.from_glyph)
+        end
+        if link.to_visible then
+          render_change_wedge(link.to_side, link.to_row, link.to_glyph)
+        end
+
+        local rail_col = change_rail_col_for_path(p)
+        local from_underline_row = link.underline_row
+          or endpoint_underline_row(link.from_side, link.from_row, link.from_glyph)
+        local to_underline_row = link.underline_row
+          or endpoint_underline_row(link.to_side, link.to_row, link.to_glyph)
+        local skip_from_sidecar = link.from_visible and link.from_row == from_underline_row
+        local skip_to_sidecar = link.to_visible and link.to_row == to_underline_row
+        if link.from_visible then
+          render_change_underline(link.from_side, from_underline_row, rail_col, skip_from_sidecar)
+        end
+        if link.to_visible then
+          render_change_underline(link.to_side, to_underline_row, rail_col, skip_to_sidecar)
+        end
+        if not link.no_vertical then
+          render_change_vertical_between(link.from_row, link.to_row, rail_col)
+        end
+      end
+    end
+  end
 
    -- Build row-centric bar collection: maps each row to the lanes with active vertical bars
    -- This enables multiple bars from different paths to coexist on the same row (expansion zones)
@@ -1581,61 +1896,6 @@ function Session:render()
        end
 
        -- Middle rows: lane vertical bars from active_bars rendering provide visual continuity.
-    elseif p.kind == "change" then
-      -- Change routes are expressed with background spans. For mixed change/add
-      -- envelopes, add one-cell colored wedges at the stepped edge so the
-      -- terminal shape reads closer to IntelliJ's softened route.
-      if p.mixed_add and p.start_left_index and p.end_left_index
-          and p.start_right_index and p.end_right_index then
-        if p.start_right_index < p.start_left_index then
-          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.start_right_index - 1, 0, {
-            virt_text = { { "◢", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        end
-
-        if p.end_right_index > p.end_left_index then
-          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.end_right_index - 1, 0, {
-            virt_text = { { "◥", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        end
-      elseif p.start_left_index and p.end_left_index
-          and p.start_right_index and p.end_right_index then
-        if p.start_right_index < p.start_left_index then
-          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.start_right_index - 1, 0, {
-            virt_text = { { "◢", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        elseif p.start_left_index < p.start_right_index then
-          vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, p.start_left_index - 1, self.left_number_width, {
-            virt_text = { { "◤", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        else
-          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.start_right_index - 1, 0, {
-            virt_text = { { "◢", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        end
-
-        if p.end_right_index > p.end_left_index then
-          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.end_right_index - 1, 0, {
-            virt_text = { { "◥", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        elseif p.end_left_index > p.end_right_index then
-          vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, p.end_left_index - 1, self.left_number_width, {
-            virt_text = { { "◥", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        else
-          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.end_right_index - 1, 0, {
-            virt_text = { { "◥", "DiffBanditConnectorExpansionChange" } },
-            virt_text_pos = "overlay",
-          })
-        end
-      end
     end
   end
 

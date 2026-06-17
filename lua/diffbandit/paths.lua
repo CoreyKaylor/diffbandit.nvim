@@ -11,9 +11,78 @@ local function triangle_row_for_path(p)
   return p.triangle_display_row or p.display_start_row or p.start_row or origin_row_for_path(p)
 end
 
+local function sort_row_for_path(p)
+  if p.kind == "change" then
+    local sort_row
+    local function include_row(row)
+      if not row then
+        return
+      end
+      if p.lane_occupancy_start and row < p.lane_occupancy_start then
+        return
+      end
+      if p.lane_occupancy_end and row > p.lane_occupancy_end then
+        return
+      end
+      sort_row = sort_row and math.min(sort_row, row) or row
+    end
+
+    for _, link in ipairs(p.viewport_change_links or {}) do
+      if link.from_visible then
+        include_row(link.from_row)
+      end
+      if link.to_visible then
+        include_row(link.to_row)
+      end
+    end
+    for _, edge in ipairs(p.viewport_change_edges or {}) do
+      include_row(edge.row)
+    end
+    if sort_row then
+      return sort_row
+    end
+  end
+
+  if p.lane_occupancy_start and p.lane_occupancy_end then
+    local origin_row = origin_row_for_path(p)
+    if origin_row < p.lane_occupancy_start or origin_row > p.lane_occupancy_end then
+      return triangle_row_for_path(p)
+    end
+  end
+
+  return origin_row_for_path(p)
+end
+
 -- Compute occupancy range for overlap detection
 -- Returns: start_row, finish_row
 local function occupancy_range(p)
+  if p.lane_occupancy_start and p.lane_occupancy_end then
+    return p.lane_occupancy_start, p.lane_occupancy_end
+  end
+
+  if p.kind == "change" then
+    local start_row, finish_row
+    local function include_row(row)
+      if not row then
+        return
+      end
+      start_row = start_row and math.min(start_row, row) or row
+      finish_row = finish_row and math.max(finish_row, row) or row
+    end
+
+    for _, link in ipairs(p.viewport_change_links or {}) do
+      include_row(link.from_row)
+      include_row(link.to_row)
+    end
+    for _, edge in ipairs(p.viewport_change_edges or {}) do
+      include_row(edge.row)
+    end
+
+    if start_row and finish_row then
+      return start_row, finish_row
+    end
+  end
+
   local origin_row = origin_row_for_path(p)
   local triangle_row = triangle_row_for_path(p)
 
@@ -228,9 +297,34 @@ end
 -- Assign lanes to paths based on overlap detection
 -- Mutates paths in place, returns max_lane
 local function assign_lanes(paths)
+  local use_projected_intervals = false
+  local has_change_path = false
+  for idx, p in ipairs(paths) do
+    p.lane_order = idx
+    if p.route_group ~= nil then
+      use_projected_intervals = true
+    end
+    if p.kind == "change" then
+      has_change_path = true
+    end
+  end
+
+  local function ranges_overlap(start_a, end_a, start_b, end_b, margin)
+    margin = margin or 0
+    return start_a <= end_b + margin and end_a + margin >= start_b
+  end
+
   -- Sort by occupied range so viewport-projected routes are lane-assigned
   -- from their actual on-screen geometry, not only from their source hunk row.
   table.sort(paths, function(a, b)
+    if has_change_path and a.kind ~= "add" and b.kind ~= "add" then
+      local as, ae = occupancy_range(a)
+      local bs, be = occupancy_range(b)
+      if ranges_overlap(as, ae, bs, be, 1) then
+        return (a.lane_order or 0) < (b.lane_order or 0)
+      end
+    end
+
     local a_hidden = a.hide_triangle and 1 or 0
     local b_hidden = b.hide_triangle and 1 or 0
     if a_hidden ~= b_hidden then
@@ -252,8 +346,8 @@ local function assign_lanes(paths)
     local as = occupancy_range(a)
     local bs = occupancy_range(b)
     if as == bs then
-      local ao = origin_row_for_path(a)
-      local bo = origin_row_for_path(b)
+      local ao = sort_row_for_path(a)
+      local bo = sort_row_for_path(b)
       if ao == bo then
         return triangle_row_for_path(a) < triangle_row_for_path(b)
       end
@@ -267,13 +361,6 @@ local function assign_lanes(paths)
   local group_lanes_add = {}
   local group_lanes_delete = {}
   local max_lane = 0
-  local use_projected_intervals = false
-  for _, p in ipairs(paths) do
-    if p.route_group ~= nil then
-      use_projected_intervals = true
-      break
-    end
-  end
 
   local function lane_has_overlap(lane_ranges, lane, start_row, end_row, group, margin)
     local ranges = lane_ranges[lane]
@@ -302,23 +389,24 @@ local function assign_lanes(paths)
 
   -- Assign lanes so later paths go to OUTER lanes (further from triangle)
   for _, p in ipairs(paths) do
-    if p.kind == "add" or p.kind == "delete" then
+    if p.kind == "add" or p.kind == "delete" or p.kind == "change" then
       local occupy_start, occupy_end = occupancy_range(p)
 
-      local lanes = (p.kind == "delete") and lanes_delete or lanes_add
-      local group_lanes = (p.kind == "delete") and group_lanes_delete or group_lanes_add
+      local lanes = (p.kind == "add") and lanes_add or lanes_delete
+      local group_lanes = (p.kind == "add") and group_lanes_add or group_lanes_delete
       local group = p.route_group
 
       local assigned_lane = group and group_lanes[group] or nil
       if not assigned_lane then
         if use_projected_intervals then
           assigned_lane = 1
-          local collision_margin = (p.hide_triangle and triangle_row_for_path(p) < origin_row_for_path(p)) and 1 or 0
+          local collision_margin = has_change_path and 1
+            or ((p.hide_triangle and triangle_row_for_path(p) < origin_row_for_path(p)) and 1 or 0)
           while lane_has_overlap(lanes, assigned_lane, occupy_start, occupy_end, group, collision_margin) do
             assigned_lane = assigned_lane + 1
           end
 
-          if p.hide_triangle then
+          if has_change_path or p.hide_triangle then
             local highest_overlapping_lane = 0
             for li = 1, #lanes do
               if lane_has_overlap(lanes, li, occupy_start, occupy_end, group, collision_margin)
@@ -326,7 +414,7 @@ local function assign_lanes(paths)
                 highest_overlapping_lane = li
               end
             end
-            if highest_overlapping_lane > 0 then
+            if highest_overlapping_lane > 0 and assigned_lane <= highest_overlapping_lane then
               assigned_lane = highest_overlapping_lane + 1
             end
           end

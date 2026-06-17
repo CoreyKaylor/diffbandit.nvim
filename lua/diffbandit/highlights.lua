@@ -166,6 +166,12 @@ local function apply_diff_variants(config)
     sp = delete_bg,
   })
 
+  apply_group("DiffBanditChangeSeparatorConnector", {
+    fg = change_bg,
+    underline = true,
+    sp = change_bg,
+  })
+
   -- Filler/placeholder highlights
   apply_group("DiffBanditGap", {
     bg = normal_base.bg,

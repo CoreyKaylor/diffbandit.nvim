@@ -604,9 +604,8 @@ local function verify_mixed(lines, ansi_lines)
   end
 
   local old_word_bg, old_tail_bg, new_word_bg, new_tail_bg, original_word_bg, original_tail_bg
-  local modified_word_bg, modified_tail_bg, added_suffix_bg, right_number_bg
+  local modified_word_bg, modified_tail_bg, added_suffix_bg
   local delete_before_bg, delete_glyph_bg, delete_after_bg
-  local before_top_wedge_bg, after_top_wedge_bg
   local top_wedge_docked_to_right_number
   local delete_origin_underline_reaches_edge
   local added_line2_bg, added_line2_after_bg
@@ -635,13 +634,8 @@ local function verify_mixed(lines, ansi_lines)
         modified_tail_bg = ansi_bg_for_text(line, "text here")
         added_suffix_bg = ansi_bg_for_text(line, "with extra content")
         local number_pos = stripped:find("7%s+│Modified text here")
-        if number_pos then
-          right_number_bg = ansi_bg_at_plain_byte(line, number_pos)
-        end
         local wedge_pos = stripped:find(change_wedge_top, 1, true)
         if wedge_pos then
-          before_top_wedge_bg = ansi_bg_at_plain_byte(line, wedge_pos - 1)
-          after_top_wedge_bg = ansi_bg_at_plain_byte(line, wedge_pos + #change_wedge_top)
           top_wedge_docked_to_right_number = number_pos and (wedge_pos + #change_wedge_top == number_pos)
         end
       elseif stripped:find("Original text here", 1, true) then
@@ -679,17 +673,8 @@ local function verify_mixed(lines, ansi_lines)
       table.insert(errors, "Mixed replacement row should split change background from added suffix background")
     end
   end
-  if not right_number_bg then
-    table.insert(errors, "Expected mixed replacement right line number to have an ANSI background")
-  elseif not top_wedge_docked_to_right_number then
+  if not top_wedge_docked_to_right_number then
     table.insert(errors, "Mixed replacement wedge should dock directly against the right line number")
-  end
-  if not after_top_wedge_bg then
-    table.insert(errors, "Expected mixed route background after the top expansion wedge")
-  elseif modified_tail_bg and after_top_wedge_bg ~= modified_tail_bg then
-    table.insert(errors, "Top mixed expansion wedge should connect directly into the change route")
-  elseif before_top_wedge_bg == after_top_wedge_bg then
-    table.insert(errors, "Top mixed expansion route should not paint change background before the wedge")
   end
   if not delete_origin_underline_reaches_edge then
     table.insert(errors, "Delete origin underline should reach the right edge of the gutter")
@@ -770,6 +755,30 @@ local function find_plain_line(lines, labels, glyphs)
   for _, line in ipairs(lines) do
     local stripped = strip_ansi(line)
     if line_contains_any(stripped, labels) then
+      if not glyphs then
+        return line, stripped
+      end
+      for _, glyph in ipairs(glyphs) do
+        if stripped:find(glyph, 1, true) then
+          return line, stripped, glyph
+        end
+      end
+    end
+  end
+  return nil, nil, nil
+end
+
+local function find_plain_line_all(lines, labels, glyphs)
+  for _, line in ipairs(lines) do
+    local stripped = strip_ansi(line)
+    local ok = true
+    for _, label in ipairs(labels) do
+      if not stripped:find(label, 1, true) then
+        ok = false
+        break
+      end
+    end
+    if ok then
       if not glyphs then
         return line, stripped
       end
@@ -1430,7 +1439,6 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
     end
     table.insert(errors, description)
   end
-
   local function forbid_plain_fragment(fragment, description)
     for _, line in ipairs(lines) do
       if strip_ansi(line):find(fragment, 1, true) then
@@ -1462,8 +1470,8 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
     if not find_plain_line(lines, { "Deleted scroll" }) then
       table.insert(errors, "Expected scroll deletion viewport to include deleted content")
     end
-    if contains_any_glyph(lines, { "Deleted scroll" }, delete_glyphs) then
-      table.insert(errors, "Offscreen-origin deletion rows should show rails/background, not synthetic triangles")
+    if not contains_any_glyph(lines, { "Deleted scroll" }, delete_glyphs) then
+      table.insert(errors, "Offscreen-origin deletion target should keep its real visible transition triangle")
     end
     return errors
   end
@@ -1569,6 +1577,231 @@ end
 
 local function verify_scroll_mixed(lines, ansi_lines, phase)
   local errors = {}
+  local function require_plain_fragment(fragment, description)
+    for _, line in ipairs(lines) do
+      if strip_ansi(line):find(fragment, 1, true) then
+        return
+      end
+    end
+    table.insert(errors, description)
+  end
+  local function nth_plain_pos(line, needle, n)
+    local from = 1
+    local pos
+    for _ = 1, n do
+      pos = line:find(needle, from, true)
+      if not pos then
+        return nil
+      end
+      from = pos + #needle
+    end
+    return pos
+  end
+  local function plain_bar_positions(line)
+    local positions = {}
+    local from = 1
+    while true do
+      local pos = line:find("│", from, true)
+      if not pos then
+        break
+      end
+      positions[#positions + 1] = pos
+      from = pos + #"│"
+    end
+    return positions
+  end
+  local function number_pane_bounds(stripped, side)
+    local bars = plain_bar_positions(stripped)
+    if side == "left" then
+      if #bars < 2 then
+        return nil, nil
+      end
+      return bars[1] + #"│", bars[2] - 1
+    end
+    if #bars < 4 then
+      return nil, nil
+    end
+    return bars[#bars - 1] + #"│", bars[#bars] - 1
+  end
+  local function first_number_pane_ascii_bg(label, side)
+    if not ansi_lines then
+      return nil
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) then
+        local start_pos, end_pos = number_pane_bounds(stripped, side)
+        if start_pos and end_pos then
+          for pos = start_pos, end_pos do
+            local byte = stripped:sub(pos, pos)
+            if byte:match("[%d ]") then
+              return ansi_bg_at_plain_byte(line, pos)
+            end
+          end
+        end
+      end
+    end
+    return nil
+  end
+  local function require_number_pane_bg(label, side, expected_bg, description, also_label)
+    if not ansi_lines then
+      table.insert(errors, "ANSI capture missing; cannot verify number pane background")
+      return
+    end
+    local saw_line = false
+    local checked = false
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) and (not also_label or stripped:find(also_label, 1, true)) then
+        saw_line = true
+        local start_pos, end_pos = number_pane_bounds(stripped, side)
+        if not start_pos or not end_pos then
+          table.insert(errors, "Expected number pane bounds for: " .. label)
+          return
+        end
+        for pos = start_pos, end_pos do
+          local byte = stripped:sub(pos, pos)
+          if byte:match("[%d ]") then
+            checked = true
+            local bg = ansi_bg_at_plain_byte(line, pos)
+            if not bg or (expected_bg and bg ~= expected_bg) then
+              table.insert(errors, description)
+              return
+            end
+          end
+        end
+        break
+      end
+    end
+    if not saw_line then
+      table.insert(errors, "Expected mixed row for number pane background check: " .. label)
+    elseif not checked then
+      table.insert(errors, "Expected ASCII number cells for number pane background check: " .. label)
+    end
+  end
+  local function require_number_text_bg(label, side, expected_bg, description, also_label)
+    if not ansi_lines then
+      table.insert(errors, "ANSI capture missing; cannot verify number text background")
+      return
+    end
+    local saw_line = false
+    local checked = false
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) and (not also_label or stripped:find(also_label, 1, true)) then
+        saw_line = true
+        local start_pos, end_pos = number_pane_bounds(stripped, side)
+        if not start_pos or not end_pos then
+          table.insert(errors, "Expected number pane bounds for: " .. label)
+          return
+        end
+        for pos = start_pos, end_pos do
+          local byte = stripped:sub(pos, pos)
+          if byte:match("%d") then
+            checked = true
+            local bg = ansi_bg_at_plain_byte(line, pos)
+            if not bg or (expected_bg and bg ~= expected_bg) then
+              table.insert(errors, description)
+              return
+            end
+          end
+        end
+        break
+      end
+    end
+    if not saw_line then
+      table.insert(errors, "Expected mixed row for number text background check: " .. label)
+    elseif not checked then
+      table.insert(errors, "Expected number text for number background check: " .. label)
+    end
+  end
+  local function require_number_pane_gap(label, side, description, also_label, forbidden_bg)
+    if not ansi_lines then
+      table.insert(errors, "ANSI capture missing; cannot verify number pane gap")
+      return
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) and (not also_label or stripped:find(also_label, 1, true)) then
+        local start_pos, end_pos = number_pane_bounds(stripped, side)
+        if not start_pos or not end_pos then
+          table.insert(errors, "Expected number pane bounds for: " .. label)
+          return
+        end
+        local gap_pos = (side == "left") and end_pos or start_pos
+        local gap_bg = ansi_bg_at_plain_byte(line, gap_pos)
+        if (forbidden_bg and gap_bg == forbidden_bg) or (not forbidden_bg and gap_bg) then
+          table.insert(errors, description)
+        end
+        return
+      end
+    end
+    table.insert(errors, "Expected mixed row for number pane gap check: " .. label)
+  end
+  local function require_solid_mixed_connector(label, base_label)
+    if not ansi_lines then
+      table.insert(errors, "ANSI capture missing; cannot verify solid mixed connector row")
+      return
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) then
+        local text_bg = ansi_bg_for_text(line, base_label or label)
+        local sep2 = nth_plain_pos(stripped, "│", 2)
+        local sep3 = nth_plain_pos(stripped, "│", 3)
+        if not text_bg or not sep2 or not sep3 then
+          table.insert(errors, "Expected ANSI data for solid mixed connector row: " .. label)
+          return
+        end
+        local core_pos = sep2 + #"│" + math.floor((sep3 - sep2 - #"│") / 2)
+        local core_bg = ansi_bg_at_plain_byte(line, core_pos)
+        if core_bg ~= text_bg then
+          table.insert(errors, "Expected mixed overlap connector core to use solid change background")
+        end
+        return
+      end
+    end
+    table.insert(errors, "Expected mixed row for solid connector check: " .. label)
+  end
+  local function mixed_connector_core_bg(label)
+    if not ansi_lines then
+      return nil, "ANSI capture missing; cannot verify mixed connector core row"
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) then
+        local sep2 = nth_plain_pos(stripped, "│", 2)
+        local sep3 = nth_plain_pos(stripped, "│", 3)
+        if not sep2 or not sep3 then
+          return nil, "Expected ANSI separator data for mixed connector row: " .. label
+        end
+        local core_pos = sep2 + #"│" + math.floor((sep3 - sep2 - #"│") / 2)
+        return ansi_bg_at_plain_byte(line, core_pos), nil
+      end
+    end
+    return nil, "Expected mixed row for connector core check: " .. label
+  end
+  local function require_non_solid_mixed_connector(label, overlap_label, overlap_base_label)
+    local row_bg, row_err = mixed_connector_core_bg(label)
+    local overlap_bg, overlap_err = nil, nil
+    if ansi_lines then
+      for _, line in ipairs(ansi_lines) do
+        local stripped = strip_ansi(line)
+        if stripped:find(overlap_label, 1, true) then
+          overlap_bg = ansi_bg_for_text(line, overlap_base_label or overlap_label)
+          break
+        end
+      end
+    end
+    if row_err then
+      table.insert(errors, row_err)
+    elseif overlap_err then
+      table.insert(errors, overlap_err)
+    elseif overlap_bg and row_bg == overlap_bg then
+      table.insert(errors, "Expected mixed transition row connector core to stay line-only, not solid background")
+    end
+  end
+
   if phase == "clamped-end" then
     if not find_plain_line(lines, { "Scroll mixed context 15" }) then
       table.insert(errors, "Expected mixed clamped-end capture to include final context")
@@ -1580,6 +1813,41 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     if not find_plain_line(lines, { "Old scroll value A" }) then
       table.insert(errors, "Expected initial mixed scroll capture to include changed text")
     end
+    local change_number_bg = first_number_pane_ascii_bg("Old scroll value A", "right")
+      or first_number_pane_ascii_bg("Original scroll header", "right")
+    require_number_pane_bg("Old scroll value A", "left", change_number_bg,
+      "Expected initial changed left line number pane to stay solid change background")
+    require_number_pane_bg("Old scroll value A", "right", change_number_bg,
+      "Expected initial changed right line number pane to stay solid change background")
+    require_number_pane_bg("Old scroll value B", "right", change_number_bg,
+      "Expected second initial changed right line number pane to stay solid change background")
+    require_plain_fragment("Scroll mixed context 04                         │  8 │            │◢8",
+      "Expected initial mixed top wedge to stay on the real right envelope edge")
+    require_number_pane_bg("Scroll mixed context 04", "right", change_number_bg,
+      "Expected initial mixed top transition right line number pane to keep change background after the wedge",
+      "Modified scroll header")
+    require_non_solid_mixed_connector("Scroll mixed context 04", "Original scroll header", "scroll header")
+    require_plain_fragment("Original scroll header                          │  9 │            │ 9",
+      "Expected initial mixed overlap row to remain a solid connector background row without route lines")
+    require_number_pane_bg("Original scroll header", "left", change_number_bg,
+      "Expected initial mixed overlap left line number pane to stay solid change background")
+    require_number_pane_bg("Original scroll header", "right", change_number_bg,
+      "Expected initial mixed overlap right line number pane to stay solid change background")
+    require_solid_mixed_connector("Original scroll header", "scroll header")
+    require_plain_fragment("Scroll mixed context 05                         │ 10 │            │◥10",
+      "Expected initial mixed lower wedge to dock on the right number pane below the overlap row")
+    require_number_pane_bg("Scroll mixed context 05", "right", change_number_bg,
+      "Expected initial mixed lower transition right line number pane to keep change background after the wedge",
+      "Added mixed scroll 02")
+    require_non_solid_mixed_connector("Scroll mixed context 05", "Original scroll header", "scroll header")
+    require_plain_fragment("Scroll mixed context 06                         │ 11 │            │ 11",
+      "Expected initial mixed continuation to avoid an orphan connector rail while overlap is visible")
+    require_number_text_bg("Scroll mixed context 06", "right", change_number_bg,
+      "Expected initial mixed continuation right line number text to keep change background",
+      "Added mixed scroll 03")
+    require_number_pane_gap("Scroll mixed context 06", "right",
+      "Expected initial mixed continuation to leave a clear spacer before the right line number",
+      "Added mixed scroll 03", change_number_bg)
     return errors
   else
     if not find_plain_line(lines, { "Added mixed scroll", "Modified scroll header" }) then
@@ -1588,14 +1856,81 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
   end
 
   local wedge_glyphs = { "\226\151\162", "\226\151\165" } -- ◢, ◥
-  if phase == "origin-offscreen" or phase == "right-diverged" or phase == "right-j-scroll" then
-    if contains_any_glyph(lines, { "Added mixed scroll", "Modified scroll header" }, wedge_glyphs) then
-      table.insert(errors, "Offscreen-origin mixed rows should not invent synthetic wedges")
-    end
-    if phase == "right-j-scroll" and not find_plain_line(lines, { "Scroll mixed context 01" }) then
-      table.insert(errors, "Right-pane mixed scroll should leave left pane stationary at the top context")
+  if phase == "origin-offscreen" then
+    local _, _, glyph = find_plain_line_all(lines, { "Scroll mixed context 07", "Added mixed scroll 17" }, wedge_glyphs)
+    if glyph ~= "\226\151\165" then
+      table.insert(errors, "Expected offscreen-origin mixed route to keep the visible lower transition triangle")
     end
     return errors
+  end
+  if phase == "right-j-scroll" and not find_plain_line(lines, { "Scroll mixed context 01" }) then
+    table.insert(errors, "Right-pane mixed scroll should leave left pane stationary at the top context")
+  end
+  if phase == "right-diverged" or phase == "right-j-scroll" then
+    local change_number_bg = first_number_pane_ascii_bg("Old scroll value A", "left")
+      or first_number_pane_ascii_bg("Original scroll header", "right")
+    require_number_text_bg("Old scroll value A", "left", change_number_bg,
+      "Expected scrolled changed left line number text to keep change background")
+    require_number_pane_gap("Old scroll value A", "left",
+      "Expected scrolled changed left line number pane to leave a clear spacer by the route",
+      nil, change_number_bg)
+    require_number_text_bg("Old scroll value B", "left", change_number_bg,
+      "Expected second scrolled changed left line number text to keep change background")
+    require_number_pane_gap("Old scroll value B", "left",
+      "Expected second scrolled changed left line number pane to leave a clear spacer by the route",
+      nil, change_number_bg)
+    local _, _, top_wedge = find_plain_line_all(lines, { "Scroll mixed context 04", "Added mixed scroll" }, wedge_glyphs)
+    if top_wedge ~= "\226\151\162" then
+      table.insert(errors, "Expected right-diverged mixed top wedge to stay adjacent to the projected overlap row")
+    end
+    require_number_pane_bg("Scroll mixed context 04", "right", change_number_bg,
+      "Expected right-diverged mixed top transition right line number pane to keep change background after the wedge",
+      "Added mixed scroll")
+    require_non_solid_mixed_connector("Scroll mixed context 04", "Original scroll header", "scroll header")
+    if not find_plain_line(lines, { "Original scroll header", "Added mixed scroll" }) then
+      table.insert(errors, "Expected right-diverged mixed overlap row to remain solid without route lines")
+    end
+    require_number_pane_bg("Original scroll header", "right", change_number_bg,
+      "Expected right-diverged mixed overlap right line number pane to stay solid change background")
+    require_solid_mixed_connector("Original scroll header", "scroll header")
+    local _, _, lower_wedge = find_plain_line_all(lines, { "Scroll mixed context 05", "Added mixed scroll" }, wedge_glyphs)
+    if lower_wedge ~= "\226\151\165" then
+      table.insert(errors, "Expected right-diverged mixed lower wedge to stay adjacent to the projected overlap row")
+    end
+    require_number_pane_bg("Scroll mixed context 05", "right", change_number_bg,
+      "Expected right-diverged mixed lower transition right line number pane to keep change background after the wedge",
+      "Added mixed scroll")
+    if not contains_any_glyph(lines, { "Deleted mixed scroll line" }, { "\226\151\164" }) then
+      table.insert(errors, "Expected scrolled mixed deletion target to keep its visible triangle")
+    end
+    require_non_solid_mixed_connector("Scroll mixed context 05", "Original scroll header", "scroll header")
+  end
+  if phase == "right-overlap-clipped" then
+    require_plain_fragment("Old scroll value B                            │  4 │   │           │",
+      "Expected clipped mixed change/delete routes to remain separated instead of stacking adjacent pipes")
+  end
+  if phase == "right-overlap-middle" then
+    require_plain_fragment("Original scroll header                        │  9 │               │ 18",
+      "Expected mid-overlap mixed row to remain solid/clear without an orphan connector rail")
+    require_plain_fragment("Scroll mixed context 05                       │ 10 │               │◥19",
+      "Expected mid-overlap lower transition to terminate at the wedge without an orphan connector rail below it")
+    require_plain_fragment("Scroll mixed context 06                       │ 11 │               │ 20",
+      "Expected mid-overlap continuation to stay clear after the lower transition wedge")
+  end
+  if phase == "right-overlap-exit" then
+    local _, _, top_glyph = find_plain_line_all(lines, { "Scroll mixed context 02", "New scroll value B" }, wedge_glyphs)
+    if top_glyph ~= "\226\151\162" then
+      table.insert(errors, "Expected first non-overlapping mixed change route to stay on the shared boundary row")
+    end
+    if not contains_any_glyph(lines, { "Old scroll value A" }, { "\226\151\164" }) then
+      table.insert(errors, "Expected first non-overlapping mixed change route to keep the lower left transition triangle without a vertical step")
+    end
+  end
+  if phase == "right-tail-approach" or phase == "right-tail-aligned" then
+    require_plain_fragment("Old scroll value A                            │  3◤│   │",
+      "Expected deep mixed scroll to keep the upper visible change triangle while avoiding add/delete rails")
+    require_plain_fragment("Scroll mixed context 04                       │  8 │     │",
+      "Expected deep mixed scroll to connect the lower change transition from the top of its visible triangle")
   end
 
   local _, stripped, glyph = find_plain_line(lines, { "Modified scroll header", "Added mixed scroll" }, wedge_glyphs)
@@ -1605,28 +1940,57 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     table.insert(errors, "Expected scroll mixed wedge to dock directly against the right line number")
   end
 
-  if ansi_lines and glyph then
-    local found_transition = false
-    for _, line in ipairs(ansi_lines) do
-      local stripped_line = strip_ansi(line)
-      if (stripped_line:find("Modified scroll header", 1, true)
-          or stripped_line:find("Added mixed scroll", 1, true))
-          and stripped_line:find(glyph, 1, true) then
-        local transition = ansi_glyph_transition_bgs(line, glyph)
-        found_transition = transition and transition.after and transition.glyph ~= transition.after
-        break
-      end
-    end
-    if not found_transition then
-      table.insert(errors, "Expected scroll mixed background to start after the wedge")
-    end
-  end
-
   return errors
 end
 
 local function verify_scroll_changes(lines, ansi_lines, phase)
   local errors = {}
+  local function require_plain_fragment(fragment, description)
+    for _, line in ipairs(lines) do
+      if strip_ansi(line):find(fragment, 1, true) then
+        return
+      end
+    end
+    table.insert(errors, description)
+  end
+  local function nth_plain_pos(line, needle, n)
+    local from = 1
+    local pos
+    for _ = 1, n do
+      pos = line:find(needle, from, true)
+      if not pos then
+        return nil
+      end
+      from = pos + #needle
+    end
+    return pos
+  end
+  local function require_solid_change_connector(label)
+    if not ansi_lines then
+      table.insert(errors, "ANSI capture missing; cannot verify solid change connector row")
+      return
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) then
+        local text_bg = ansi_bg_for_text(line, "routed change")
+        local sep2 = nth_plain_pos(stripped, "│", 2)
+        local sep3 = nth_plain_pos(stripped, "│", 3)
+        if not text_bg or not sep2 or not sep3 then
+          table.insert(errors, "Expected ANSI data for solid change connector row: " .. label)
+          return
+        end
+        local core_pos = sep2 + #"│" + math.floor((sep3 - sep2 - #"│") / 2)
+        local core_bg = ansi_bg_at_plain_byte(line, core_pos)
+        if core_bg ~= text_bg then
+          table.insert(errors, "Expected overlapping changed row connector core to use solid change background")
+        end
+        return
+      end
+    end
+    table.insert(errors, "Expected changed row for solid connector check: " .. label)
+  end
+
   if phase == "clamped-end" then
     if not find_plain_line(lines, { "Scroll change context 22" }) then
       table.insert(errors, "Expected changes clamped-end capture to include final context")
@@ -1641,6 +2005,7 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
     if not find_plain_line(lines, { "New routed change A" }) then
       table.insert(errors, "Expected initial change capture to include new changed text")
     end
+    require_solid_change_connector("Old routed change A")
     return errors
   end
 
@@ -1656,6 +2021,31 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
   end
   if phase == "left-j-scroll" and not find_plain_line(lines, { "Scroll change context 01" }) then
     table.insert(errors, "Left-pane change scroll should leave right pane stationary at the top context")
+  end
+  if phase == "right-diverged" then
+    require_plain_fragment("Scroll change context 03                        │  3 │            │◢7",
+      "Expected right-diverged change route to dock the upper transition on the right number pane")
+    require_plain_fragment("Scroll change context 04                        │  4 │ │          │ 8",
+      "Expected right-diverged change route to draw a connector rail between shifted regions")
+    require_plain_fragment("Old routed change A                             │  5◤│            │",
+      "Expected right-diverged change route to dock the lower transition on the left number pane")
+  elseif phase == "left-diverged" then
+    require_plain_fragment("Old routed change C                             │  7◥│            │",
+      "Expected left-diverged change route to dock the upper transition on the left number pane")
+    require_plain_fragment("Scroll change context 05                        │  8 │ │          │ 4",
+      "Expected left-diverged change route to draw a connector rail between shifted regions")
+    require_plain_fragment("Scroll change context 06                        │  9 │            │◥5",
+      "Expected left-diverged change route to dock the lower transition on the right number pane")
+  elseif phase == "both-diverged" then
+    require_plain_fragment("Scroll change context 04                        │  4 │            │◢6",
+      "Expected both-diverged change route to dock the upper right transition beside the overlap")
+    require_plain_fragment("Old routed change A                             │  5 │            │ 7",
+      "Expected both-diverged change overlap row to remain solid without route lines")
+    require_solid_change_connector("Old routed change A")
+    require_plain_fragment("Old routed change B                             │  6◤│            │ 8",
+      "Expected both-diverged change route to dock the lower left transition beside the overlap")
+    require_plain_fragment("Old routed change C                             │  7 │            │ 9",
+      "Expected both-diverged change continuation to stay clear after the lower wedge row")
   end
 
   if ansi_lines and not contains_any_glyph(lines, { "Old routed change", "New routed change" }, change_glyphs) then

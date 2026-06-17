@@ -40,7 +40,7 @@ run_test() {
     sleep 1
 
     # Run DiffBandit command after nvim is fully initialized
-    tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" Enter
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
 
     # Wait for render
     sleep 2
@@ -73,7 +73,7 @@ run_scroll_test() {
         tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 14
         tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
         sleep 1
-        tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" Enter
+        tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
         sleep 2
     }
 
@@ -140,6 +140,13 @@ run_scroll_test() {
             ;;
         scroll-mixed)
             capture_scroll_phase "initial" 1 1
+            capture_scroll_phase "right-overlap-first" 1 2
+            capture_scroll_phase "right-overlap-exit" 1 3
+            capture_scroll_phase "right-overlap-past" 1 4
+            capture_scroll_phase "right-overlap-clipped" 1 5
+            capture_scroll_phase "right-overlap-middle" 1 10
+            capture_scroll_phase "right-tail-approach" 1 47
+            capture_scroll_phase "right-tail-aligned" 1 49
             capture_scroll_phase "right-diverged" 1 22
             capture_scroll_phase "left-diverged" 7 1
             capture_scroll_phase "origin-offscreen" 12 25
