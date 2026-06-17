@@ -806,6 +806,41 @@ local function contains_any_glyph(lines, labels, glyphs)
   return glyph ~= nil
 end
 
+local function plain_fragment_requirements(errors, lines)
+  local function require_plain_fragment(fragment, description)
+    for _, line in ipairs(lines) do
+      if strip_ansi(line):find(fragment, 1, true) then
+        return
+      end
+    end
+    table.insert(errors, description)
+  end
+
+  local function forbid_plain_fragment(fragment, description)
+    for _, line in ipairs(lines) do
+      if strip_ansi(line):find(fragment, 1, true) then
+        table.insert(errors, description)
+        return
+      end
+    end
+  end
+
+  return require_plain_fragment, forbid_plain_fragment
+end
+
+local function nth_plain_pos(line, needle, n)
+  local from = 1
+  local pos
+  for _ = 1, n do
+    pos = line:find(needle, from, true)
+    if not pos then
+      return nil
+    end
+    from = pos + #needle
+  end
+  return pos
+end
+
 local function verify_scroll_additions(lines, ansi_lines, phase)
   local errors = {}
   if phase == "clamped-end" then
@@ -1431,22 +1466,7 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
   end
 
   local delete_glyphs = { "\226\151\164", "\226\151\163", "\226\151\165" } -- ◤, ◣, ◥
-  local function require_plain_fragment(fragment, description)
-    for _, line in ipairs(lines) do
-      if strip_ansi(line):find(fragment, 1, true) then
-        return
-      end
-    end
-    table.insert(errors, description)
-  end
-  local function forbid_plain_fragment(fragment, description)
-    for _, line in ipairs(lines) do
-      if strip_ansi(line):find(fragment, 1, true) then
-        table.insert(errors, description)
-        return
-      end
-    end
-  end
+  local require_plain_fragment, forbid_plain_fragment = plain_fragment_requirements(errors, lines)
 
   local function delete_connector_tail_reaches_glyph(label, glyph)
     if not ansi_lines then
@@ -1577,26 +1597,7 @@ end
 
 local function verify_scroll_mixed(lines, ansi_lines, phase)
   local errors = {}
-  local function require_plain_fragment(fragment, description)
-    for _, line in ipairs(lines) do
-      if strip_ansi(line):find(fragment, 1, true) then
-        return
-      end
-    end
-    table.insert(errors, description)
-  end
-  local function nth_plain_pos(line, needle, n)
-    local from = 1
-    local pos
-    for _ = 1, n do
-      pos = line:find(needle, from, true)
-      if not pos then
-        return nil
-      end
-      from = pos + #needle
-    end
-    return pos
-  end
+  local require_plain_fragment = plain_fragment_requirements(errors, lines)
   local function plain_bar_positions(line)
     local positions = {}
     local from = 1
@@ -1945,26 +1946,7 @@ end
 
 local function verify_scroll_changes(lines, ansi_lines, phase)
   local errors = {}
-  local function require_plain_fragment(fragment, description)
-    for _, line in ipairs(lines) do
-      if strip_ansi(line):find(fragment, 1, true) then
-        return
-      end
-    end
-    table.insert(errors, description)
-  end
-  local function nth_plain_pos(line, needle, n)
-    local from = 1
-    local pos
-    for _ = 1, n do
-      pos = line:find(needle, from, true)
-      if not pos then
-        return nil
-      end
-      from = pos + #needle
-    end
-    return pos
-  end
+  local require_plain_fragment = plain_fragment_requirements(errors, lines)
   local function require_solid_change_connector(label)
     if not ansi_lines then
       table.insert(errors, "ANSI capture missing; cannot verify solid change connector row")

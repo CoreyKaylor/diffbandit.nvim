@@ -531,13 +531,9 @@ function M.compute_underlines(paths, active_bars, layout)
     return lane_col(lane) + 1
   end
 
-  local function delete_glyph_col_for_lane(path)
-    return left_number_width
-  end
-
   local function compute_glyph_col_for_row(path, row)
     if path.kind == "delete" then
-      return delete_glyph_col_for_lane(path)
+      return left_number_width
     end
 
     if not active_bars[row] then
@@ -568,6 +564,47 @@ function M.compute_underlines(paths, active_bars, layout)
   -- Map right line numbers to delete origin info (for rendering underlines at correct display rows)
   local delete_origin_right_lines = {}
 
+  local function bar_col_for_kind(kind, lane)
+    if kind == "delete" then
+      return delete_lane_col(lane)
+    end
+    return lane_col(lane)
+  end
+
+  local function choose_outer_bar_col(kind, current_col, candidate_col)
+    if kind == "delete" then
+      return (candidate_col > current_col) and candidate_col or current_col
+    end
+    return (candidate_col < current_col) and candidate_col or current_col
+  end
+
+  local function outer_active_bar_col(row, kind, initial_col)
+    local lanes_at_row = active_bars[row]
+    if not lanes_at_row then
+      return initial_col
+    end
+    local selected_col = initial_col
+    for bar_lane, _ in pairs(lanes_at_row) do
+      selected_col = choose_outer_bar_col(kind, selected_col, bar_col_for_kind(kind, bar_lane))
+    end
+    return selected_col
+  end
+
+  local function rightmost_delete_bar_col(row, initial_col)
+    local lanes_at_row = active_bars[row]
+    if not lanes_at_row then
+      return initial_col
+    end
+    local selected_col = initial_col
+    for bar_lane, _ in pairs(lanes_at_row) do
+      local bar_col = delete_lane_col(bar_lane)
+      if not selected_col or bar_col > selected_col then
+        selected_col = bar_col
+      end
+    end
+    return selected_col
+  end
+
   for _, p in ipairs(paths) do
     if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change then
       local lane = math.max(1, p.lane)
@@ -580,34 +617,13 @@ function M.compute_underlines(paths, active_bars, layout)
             or (p.connect_tail_on_triangle_row == true and triangle_row < origin_row)
         origin_has_bar[p.origin_display_row] = has_bar
 
-        -- Find leftmost active bar on origin row
-        local leftmost_bar_col = (p.kind == "delete") and delete_lane_col(lane) or lane_col(lane)
-        if active_bars[origin_row] then
-          for bar_lane, _ in pairs(active_bars[origin_row]) do
-            local bar_col = (p.kind == "delete") and delete_lane_col(bar_lane) or lane_col(bar_lane)
-            if p.kind == "delete" then
-              if bar_col > leftmost_bar_col then
-                leftmost_bar_col = bar_col
-              end
-            elseif bar_col < leftmost_bar_col then
-              leftmost_bar_col = bar_col
-            end
-          end
-        end
+        -- Find the outermost active bar on the origin row.
+        local outer_bar_col = outer_active_bar_col(origin_row, p.kind, bar_col_for_kind(p.kind, lane))
         local direction = triangle_row < origin_row and -1 or 1
-        if has_bar and active_bars[origin_row + direction] then
-          for bar_lane, _ in pairs(active_bars[origin_row + direction]) do
-            local bar_col = (p.kind == "delete") and delete_lane_col(bar_lane) or lane_col(bar_lane)
-            if p.kind == "delete" then
-              if bar_col > leftmost_bar_col then
-                leftmost_bar_col = bar_col
-              end
-            elseif bar_col < leftmost_bar_col then
-              leftmost_bar_col = bar_col
-            end
-          end
+        if has_bar then
+          outer_bar_col = outer_active_bar_col(origin_row + direction, p.kind, outer_bar_col)
         end
-        origin_bar_cols[p.origin_display_row] = leftmost_bar_col
+        origin_bar_cols[p.origin_display_row] = outer_bar_col
 
         if has_bar and not p.suppress_tail then
           local tail_row = triangle_row - direction
@@ -620,7 +636,7 @@ function M.compute_underlines(paths, active_bars, layout)
           -- reach the right side without occupying the whole gutter.
           local tri_col, bar_col_for_tail
           if p.kind == "delete" then
-            tri_col = delete_glyph_col_for_lane(p)
+            tri_col = left_number_width
             bar_col_for_tail = delete_lane_col(lane)
           else
             tri_col = left_number_width + connector_core_width - 1
@@ -642,25 +658,9 @@ function M.compute_underlines(paths, active_bars, layout)
           -- Find where underline should start for this delete origin
           -- Must account for: (1) any active bars from other deletions, (2) this deletion's own bar
           -- The underline should start AFTER the rightmost bar position
-          local underline_start_after = nil
-
-          -- Check active bars from other deletions
-          if active_bars[origin_row] then
-            for bar_lane, _ in pairs(active_bars[origin_row]) do
-              local bar_col = delete_lane_col(bar_lane)
-              if not underline_start_after or bar_col > underline_start_after then
-                underline_start_after = bar_col
-              end
-            end
-          end
-
-          -- Also account for THIS deletion's bar column (even though bar starts at origin+1,
-          -- the underline at origin should leave space for where the bar connects)
-          if has_bar then
-            if not underline_start_after or delete_bar_col > underline_start_after then
-              underline_start_after = delete_bar_col
-            end
-          end
+          -- If this deletion has a vertical bar, leave space for where it connects even
+          -- though the bar itself starts after the origin row.
+          local underline_start_after = rightmost_delete_bar_col(origin_row, has_bar and delete_bar_col or nil)
 
           delete_origin_right_lines[p.origin_right_line] = {
             has_bar = has_bar,

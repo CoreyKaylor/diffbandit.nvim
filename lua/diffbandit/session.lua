@@ -652,6 +652,13 @@ local function highlight_for_right(meta)
   return get_highlight(HIGHLIGHT_RIGHT, meta, "filler_right")
 end
 
+local function connector_line_highlight(kind)
+  if kind == "add" then
+    return "DiffBanditConnectorAddLine"
+  end
+  return "DiffBanditConnectorDeleteLine"
+end
+
 function Session:project_paths_for_viewport(paths)
   local left_topline = get_win_view_topline(self.left_win)
   local right_topline = get_win_view_topline(self.right_win)
@@ -665,6 +672,13 @@ function Session:project_paths_for_viewport(paths)
 
   local function delete_glyph_for_target(origin_row, target_row)
     return origin_row > target_row and "◣" or "◤"
+  end
+
+  local function change_glyph_for(side, row, other_row)
+    if side == "right" then
+      return other_row > row and "◢" or "◥"
+    end
+    return other_row > row and "◥" or "◤"
   end
 
   local function set_lane_occupancy(path, row_a, row_b)
@@ -725,32 +739,18 @@ function Session:project_paths_for_viewport(paths)
       return
     end
 
-    local function glyph_for(side, row, other_row)
-      if side == "right" then
-        return other_row > row and "◢" or "◥"
-      end
-      return other_row > row and "◥" or "◤"
-    end
-
     links[#links + 1] = {
       from_side = from_side,
       from_row = from_row,
-      from_glyph = from_glyph or glyph_for(from_side, from_row, to_row),
+      from_glyph = from_glyph or change_glyph_for(from_side, from_row, to_row),
       from_visible = show_from ~= false,
       to_side = to_side,
       to_row = to_row,
-      to_glyph = to_glyph or glyph_for(to_side, to_row, from_row),
+      to_glyph = to_glyph or change_glyph_for(to_side, to_row, from_row),
       to_visible = show_to ~= false,
       no_vertical = no_vertical == true,
       underline_row = underline_row,
     }
-  end
-
-  local function change_glyph_for(side, row, other_row)
-    if side == "right" then
-      return other_row > row and "◢" or "◥"
-    end
-    return other_row > row and "◥" or "◤"
   end
 
   local function add_change_edge(edges, side, row, overlap_row)
@@ -1119,10 +1119,6 @@ function Session:render()
     end
   end
 
-  local function delete_triangle_col(_, core_start_col, _)
-    return core_start_col
-  end
-
   -- The connector buffer owns the aligned display model and must include the
   -- same scroll padding as the source panes so routes can remain visible while
   -- either side is scrolled past real EOF.
@@ -1131,20 +1127,6 @@ function Session:render()
   for i = 1, connector_height do
     -- Initialize with spaces for the full gutter width
     connector_lines[i] = string.rep(" ", self.gutter_width)
-  end
-
-  -- Store gutter layout information for each metadata entry
-  -- We'll use this for positioning line numbers and glyphs
-  -- Ensure connector_text is always padded to full connector_core_width for alignment
-  for idx, meta in ipairs(self.view.line_meta) do
-    local raw_connector = self.view.connectors[idx] or ""
-    local conn_width = vim.fn.strdisplaywidth(raw_connector)
-    local padding_needed = self.connector_core_width - conn_width
-    if padding_needed > 0 then
-      meta.connector_text = raw_connector .. string.rep(" ", padding_needed)
-    else
-      meta.connector_text = raw_connector
-    end
   end
 
   -- Left and right buffers now have different line counts
@@ -1235,7 +1217,6 @@ function Session:render()
 
   -- Apply connector backgrounds and number-pane styling on the same compact
   -- rows as their owner buffers.
-  local right_col_base = self.connector_core_width
   local ctx_hl = "DiffBanditConnectorContext"
 
   local function right_index_to_connector_row(right_index)
@@ -1252,7 +1233,7 @@ function Session:render()
         return
       end
       local stop_col = origin_has_bar[origin_row] and origin_bar_cols[origin_row] or origin_glyph_cols[origin_row]
-      local underline_width = math.max(1, (stop_col or right_col_base - 1) + 1)
+      local underline_width = math.max(1, (stop_col or self.connector_core_width - 1) + 1)
       underline_width = math.min(underline_width, self.connector_core_width)
       vim.api.nvim_buf_set_extmark(self.left_num_buf, self.linenum_ns, row, self.left_number_width, {
         virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
@@ -1802,45 +1783,33 @@ function Session:render()
     end
   end
 
-   -- Build row-centric bar collection: maps each row to the lanes with active vertical bars
-   -- This enables multiple bars from different paths to coexist on the same row (expansion zones)
-   local active_bars = {}  -- row -> { [lane] = {path, fg_group} }
+  -- Build row-centric bar collection: maps each row to the lanes with active vertical bars.
+  local active_bars = {}  -- row -> { [lane] = { path, fg_group } }
+  local glyph_rows_by_lane = {}
+  local function add_active_bar(row, lane, path)
+    active_bars[row] = active_bars[row] or {}
+    active_bars[row][lane] = {
+      path = path,
+      fg_group = connector_line_highlight(path.kind),
+    }
+  end
 
-   -- Build per-lane glyph tracking to avoid duplicate rendering
-   -- glyph_rows_by_lane[lane][row] = true if that lane has a glyph on that row
-   -- Only mark the triangle row (start_row), not the entire block range
-   local glyph_rows_by_lane = {}
-   for _, p in ipairs(route_paths) do
-     if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change and not p.hide_triangle then
-       local lane = p.lane or 1
-       glyph_rows_by_lane[lane] = glyph_rows_by_lane[lane] or {}
-       -- Only the triangle row has a glyph, not the whole block
-       glyph_rows_by_lane[lane][p.triangle_display_row or p.display_start_row or p.start_row] = true
-     end
-   end
+  for _, p in ipairs(route_paths) do
+    if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change and not p.hide_triangle then
+      local lane = p.lane or 1
+      glyph_rows_by_lane[lane] = glyph_rows_by_lane[lane] or {}
+      glyph_rows_by_lane[lane][p.triangle_display_row or p.display_start_row or p.start_row] = true
+    end
+  end
 
-   -- Create vertical bars using active_vertical_bars (already computed with proper extended ranges)
-   -- This shows visual overlap where later blocks start within earlier blocks' vertical extent
-   -- Only skip bar rendering if THIS SPECIFIC LANE has a glyph on this row
-   for row, lanes_at_row in pairs(active_vertical_bars) do
-     for lane, p in pairs(lanes_at_row) do
-       -- Only render bar if this lane doesn't have a glyph on this row
-       local lane_has_glyph = glyph_rows_by_lane[lane] and glyph_rows_by_lane[lane][row]
-       if not lane_has_glyph then
-         active_bars[row] = active_bars[row] or {}
-         active_bars[row][lane] = {
-           path = p,
-           fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
-         }
-       elseif p.connect_tail_on_triangle_row then
-         active_bars[row] = active_bars[row] or {}
-         active_bars[row][lane] = {
-           path = p,
-           fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
-         }
-       end
-     end
-   end
+  for row, lanes_at_row in pairs(active_vertical_bars) do
+    for lane, p in pairs(lanes_at_row) do
+      local lane_has_glyph = glyph_rows_by_lane[lane] and glyph_rows_by_lane[lane][row]
+      if not lane_has_glyph or p.connect_tail_on_triangle_row then
+        add_active_bar(row, lane, p)
+      end
+    end
+  end
 
    -- Note: Middle bars for multi-line blocks are now handled by glyph rendering
    -- to ensure proper per-row indentation. The spine bars section was removed
@@ -1850,7 +1819,7 @@ function Session:render()
     if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change then
       local lane = math.max(1, p.lane)
       local col = lane_col(lane)
-      local fg_group = (p.kind == "add") and "DiffBanditConnectorAddLine" or "DiffBanditConnectorDeleteLine"
+      local fg_group = connector_line_highlight(p.kind)
       local start_display_row = p.triangle_display_row or p.display_start_row or p.start_row
       local top_row = (p.top or start_display_row) - 1
 
