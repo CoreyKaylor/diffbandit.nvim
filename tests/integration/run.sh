@@ -1,9 +1,10 @@
 #!/bin/bash
 # Integration tests for diffbandit.nvim using tmux
 # Usage: ./run.sh [test_name]
-#   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'theme-default', 'comprehensive',
+#   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'dense-mixed',
+#              'theme-default', 'comprehensive',
 #              'navigation',
-#              'scroll-additions', 'scroll-deletions', 'scroll-mixed',
+#              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
 
 set -e
@@ -98,6 +99,31 @@ run_scroll_test() {
         lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "$test_name:$phase" "$ansi_capture"
     }
 
+    capture_tall_scroll_phase() {
+        local phase="$1"
+        local left_top="$2"
+        local right_top="$3"
+        local plain_capture="$case_dir/${phase}.txt"
+        local ansi_capture="$case_dir/${phase}.ansi"
+
+        echo "  phase: $phase ($left_top,$right_top tall)"
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 40
+        tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
+        sleep 1
+        tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
+        sleep 2
+        tmux send-keys -t "$TMUX_SESSION" Escape
+        sleep 0.2
+        tmux send-keys -t "$TMUX_SESSION" ":DBViewport $left_top $right_top" C-m
+        sleep 1
+
+        tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+        tmux capture-pane -t "$TMUX_SESSION" -e -p > "$ansi_capture"
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "$test_name:$phase" "$ansi_capture"
+    }
+
     case "$test_name" in
         scroll-additions)
             capture_scroll_phase "initial" 1 1
@@ -153,6 +179,21 @@ run_scroll_test() {
             capture_scroll_phase "origin-offscreen" 12 25
             capture_scroll_phase "clamped-end" 13 56
             ;;
+        scroll-dense-mixed)
+            capture_scroll_phase "initial" 1 1
+            capture_scroll_phase "top-route-separation" 1 4
+            capture_scroll_phase "pre-conflict" 1 38
+            capture_scroll_phase "lower-route-separation" 1 42
+            capture_scroll_phase "lower-route-entering" 1 43
+            capture_scroll_phase "four-lane-conflict" 1 46
+            capture_scroll_phase "post-conflict" 1 53
+            capture_scroll_phase "lane-reuse" 8 46
+            capture_tall_scroll_phase "initial-tall" 1 1
+            capture_tall_scroll_phase "top-route-separation-tall" 1 4
+            capture_tall_scroll_phase "lower-route-separation-tall" 1 42
+            capture_tall_scroll_phase "lower-route-entering-tall" 1 43
+            capture_tall_scroll_phase "lower-four-lane-tall" 1 46
+            ;;
         scroll-changes)
             capture_scroll_phase "initial" 1 1
             capture_scroll_phase "right-diverged" 1 5
@@ -202,6 +243,10 @@ run_scroll_test() {
             ;;
         scroll-mixed)
             capture_key_scroll_phase "right-j-scroll" "right" 25
+            capture_key_scroll_phase "left-j-scroll" "left" 8
+            ;;
+        scroll-dense-mixed)
+            capture_key_scroll_phase "right-j-scroll" "right" 45
             capture_key_scroll_phase "left-j-scroll" "left" 8
             ;;
         scroll-changes)
@@ -376,6 +421,11 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_mixed.txt" \
             "$PROJECT_ROOT/tests/files/right_mixed.txt"
         ;;
+    dense-mixed)
+        run_test "dense-mixed" \
+            "$PROJECT_ROOT/tests/files/left_dense_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_dense_mixed.txt"
+        ;;
     theme-default)
         run_test "theme-default" \
             "$PROJECT_ROOT/tests/files/left_mixed.txt" \
@@ -404,6 +454,11 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_scroll_mixed.txt" \
             "$PROJECT_ROOT/tests/files/right_scroll_mixed.txt"
         ;;
+    scroll-dense-mixed)
+        run_scroll_test "scroll-dense-mixed" \
+            "$PROJECT_ROOT/tests/files/left_dense_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_dense_mixed.txt"
+        ;;
     scroll-changes)
         run_scroll_test "scroll-changes" \
             "$PROJECT_ROOT/tests/files/left_scroll_changes.txt" \
@@ -426,6 +481,10 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_mixed.txt" \
             "$PROJECT_ROOT/tests/files/right_mixed.txt"
 
+        run_test "dense-mixed" \
+            "$PROJECT_ROOT/tests/files/left_dense_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_dense_mixed.txt"
+
         run_test "theme-default" \
             "$PROJECT_ROOT/tests/files/left_mixed.txt" \
             "$PROJECT_ROOT/tests/files/right_mixed.txt"
@@ -439,7 +498,7 @@ case "$TEST_TO_RUN" in
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|theme-default|comprehensive|navigation|scroll-additions|scroll-deletions|scroll-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac

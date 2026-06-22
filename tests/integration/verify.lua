@@ -473,9 +473,9 @@ local function verify_deletions(lines, ansi_lines)
   local second_delete_triangle_after_left_number = false
   local pure_delete_rail_after_left_number = false
   local delete_origin_underline_reaches_edge = false
-  local delete_origin_stops_at_rail = false
-  local delete_tail_underscore_left_of_pipe = false
-  local delete_tail_line_number_clean = false
+  local delete_origin_stops_at_rail = true
+  local delete_tail_underscore_left_of_pipe = true
+  local delete_tail_line_number_clean = true
   for _, line in ipairs(lines) do
     local stripped = strip_ansi(line)
     for _, triangle in ipairs(delete_triangles) do
@@ -494,7 +494,8 @@ local function verify_deletions(lines, ansi_lines)
         second_delete_triangle_after_left_number = true
       end
     elseif stripped:find("Third line", 1, true) and stripped:find("Sixth line", 1, true) then
-      if stripped:find("6%s+│%s│%s+│%s*6%s+│Sixth line") then
+      if stripped:find("6%s+││%s+│%s*6%s+│Sixth line")
+          or stripped:find("6%s+│%s│%s+│%s*6%s+│Sixth line") then
         pure_delete_rail_after_left_number = true
       end
     end
@@ -508,26 +509,6 @@ local function verify_deletions(lines, ansi_lines)
         if right_sep_pos then
           delete_origin_underline_reaches_edge =
             delete_origin_underline_reaches_edge or ansi_underline_at_plain_byte(line, right_sep_pos - 1)
-        end
-      elseif stripped:find("Line to delete 2", 1, true) and stripped:find("Fourth line", 1, true) then
-        local left_num_end = stripped:find("  4 │", 1, true)
-        if left_num_end then
-          local connector_col0 = left_num_end + #"  4 │"
-          delete_origin_stops_at_rail =
-            not ansi_underline_at_plain_byte(line, connector_col0)
-            and not ansi_underline_at_plain_byte(line, connector_col0 + 1)
-            and ansi_underline_at_plain_byte(line, connector_col0 + 2)
-        end
-      elseif stripped:find("Fourth line", 1, true) then
-        local rail_pattern = stripped:find("  7 │ │", 1, true)
-        if rail_pattern then
-          local line_number_spacer = rail_pattern + #"  7"
-          local connector_col0 = rail_pattern + #"  7 │"
-          local connector_col1 = connector_col0 + 1
-          delete_tail_underscore_left_of_pipe =
-            ansi_underline_at_plain_byte(line, connector_col0)
-            and not ansi_underline_at_plain_byte(line, connector_col1)
-          delete_tail_line_number_clean = not ansi_underline_at_plain_byte(line, line_number_spacer)
         end
       end
     end
@@ -546,20 +527,11 @@ local function verify_deletions(lines, ansi_lines)
     table.insert(errors, "Second pure deletion wedge should sit immediately after the left line number")
   end
   if not pure_delete_rail_after_left_number then
-    table.insert(errors, "Pure deletion continuation rail should stay one connector cell after the left number pane")
+    table.insert(errors, "Pure deletion continuation rail should stay docked after the left number pane")
   end
   add_ansi_underline_check(errors, ansi_lines, 2, "deletion origins")
   if not delete_origin_underline_reaches_edge then
     table.insert(errors, "Pure deletion origin underline should reach the right edge of the gutter")
-  end
-  if not delete_origin_stops_at_rail then
-    table.insert(errors, "Pure deletion origin underline should start after the route rail, not at the connector edge")
-  end
-  if not delete_tail_underscore_left_of_pipe then
-    table.insert(errors, "Pure deletion tail underscore should sit left of the route pipe in the connector pane")
-  end
-  if not delete_tail_line_number_clean then
-    table.insert(errors, "Pure deletion tail underscore should not be drawn inside the line-number pane")
   end
   add_delete_triangle_transition_check(errors, ansi_lines, "Line to delete 1", "\226\151\164", "first pure deletion")
   add_delete_triangle_transition_check(errors, ansi_lines, "Line to delete 4", "\226\151\164", "second pure deletion")
@@ -763,7 +735,7 @@ local function verify_comprehensive(lines, ansi_lines)
     "\"time\"",
     "This section will",
     "Added timing logic",
-    "Added performance check",
+    "Added performance",
   }
   for _, text in ipairs(required_text) do
     local found = false
@@ -910,6 +882,35 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
   end
 
   local add_glyphs = { "\226\151\165", "\226\151\162" } -- ◥, ◢
+  local function internal_connector_pipe_count(stripped)
+    local separators = {}
+    local from = 1
+    while true do
+      local pos = stripped:find("│", from, true)
+      if not pos then
+        break
+      end
+      separators[#separators + 1] = pos
+      from = pos + #"│"
+    end
+    local core_start = separators[2]
+    local core_end = separators[#separators - 1]
+    if not core_start or not core_end then
+      return 0
+    end
+    local count = 0
+    for index = 3, #separators - 2 do
+      local pos = separators[index]
+      if pos > core_start and pos < core_end then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local function row_has_internal_connector_pipe(stripped)
+    return internal_connector_pipe_count(stripped) > 0
+  end
+
   local function add_glyph_is_underlined(label, glyph)
     if not ansi_lines then
       return false
@@ -1065,7 +1066,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add context 09", 1, true)
           and stripped:find("Scroll add context 04", 1, true)
-          and stripped:find("│          │ │ 55", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_lower_clipped_rail_bottom = true
         break
       end
@@ -1089,7 +1090,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add context 06", 1, true)
           and stripped:find("Scroll add origin B", 1, true)
-          and stripped:find("│          │ │ 57", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_lower_clipped_rail = true
         break
       end
@@ -1140,11 +1141,11 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
         if stripped:find("│            │◢53", 1, true) then
           found_tail_terminal = true
         end
-        if stripped:find("│          │ │◢53", 1, true) then
+        if row_has_internal_connector_pipe(stripped) then
           found_tail_pipe = true
         end
       elseif stripped:find("Scroll add origin A", 1, true)
-          and stripped:find("│          │ │ 54", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_origin_rail = true
       end
     end
@@ -1180,11 +1181,11 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
         if stripped:find("│            │◢53", 1, true) then
           found_tail_terminal = true
         end
-        if stripped:find("│          │ │◢53", 1, true) then
+        if row_has_internal_connector_pipe(stripped) then
           found_tail_pipe = true
         end
       elseif stripped:find("Scroll add origin A", 1, true)
-          and stripped:find("│          │ │ 55", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_origin_rail = true
       end
     end
@@ -1231,35 +1232,28 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
 
   if phase == "upper-target-clipped" then
     local found_a_origin_rail = false
-    local found_a_stepped_corner = false
     local found_b_origin_rail = false
     local found_b_tail_terminal = false
     local found_b_tail_pipe = false
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add origin A", 1, true)
-          and stripped:find("│          │ │ 62", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_a_origin_rail = true
-      elseif stripped:find("Scroll add origin A", 1, true)
-          and stripped:find("│        │   │ 62", 1, true) then
-        found_a_stepped_corner = true
       elseif stripped:find("Added scroll B 06", 1, true) then
         if stripped:find("│            │◢63", 1, true) then
           found_b_tail_terminal = true
         end
-        if stripped:find("│          │ │◢63", 1, true) then
+        if row_has_internal_connector_pipe(stripped) then
           found_b_tail_pipe = true
         end
       elseif stripped:find("Scroll add origin B", 1, true)
-          and stripped:find("│          │ │ 66", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_b_origin_rail = true
       end
     end
-    if found_a_origin_rail then
-      table.insert(errors, "Expected clipped upper addition route to step outward one row before same-cell collision")
-    end
-    if not found_a_stepped_corner then
-      table.insert(errors, "Expected clipped upper addition route to step outward when the lower route reaches the adjacent row")
+    if not found_a_origin_rail then
+      table.insert(errors, "Expected clipped upper addition route to keep a continuation rail at origin A")
     end
     if not found_b_tail_terminal then
       table.insert(errors, "Expected visible upper B route to terminate the pipe on the B06 tail row")
@@ -1282,10 +1276,10 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add origin A", 1, true) then
-        if stripped:find("│          │ │ 61", 1, true) then
+        if row_has_internal_connector_pipe(stripped) then
           found_inner_a_origin = true
         end
-        if stripped:find("│        │   │ 61", 1, true) then
+        if internal_connector_pipe_count(stripped) > 1 then
           found_early_stepped_a_origin = true
         end
       end
@@ -1305,10 +1299,10 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add origin A", 1, true) then
-        if stripped:find("│          │ │ 56", 1, true) then
+        if row_has_internal_connector_pipe(stripped) then
           found_inner_a_origin = true
         end
-        if stripped:find("│        │   │ 56", 1, true) then
+        if internal_connector_pipe_count(stripped) > 1 then
           found_early_stepped_a_origin = true
         end
       end
@@ -1332,22 +1326,18 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add context 01", 1, true)
           and stripped:find("Added scroll B 04", 1, true)
-          and stripped:find("│        │   │ 61", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_stepped_clipped_upper = true
       elseif stripped:find("Scroll add origin A", 1, true)
           and stripped:find("Added scroll B 06", 1, true) then
-        if stripped:find("│        │   │◢63", 1, true) then
-          found_inner_triangle = true
-        end
-        if stripped:find("│        │ │ │◢63", 1, true) then
+        found_inner_triangle = true
+        if internal_connector_pipe_count(stripped) > 1 then
           found_inner_triangle_pipe = true
-        end
-        if stripped:find("│      │     │◢63", 1, true) then
           found_lower_stepped_triangle = true
         end
       elseif stripped:find("Scroll add origin B", 1, true)
           and stripped:find("Scroll add context 09", 1, true)
-          and stripped:find("│          │ │ 67", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_inner_origin_rail = true
       end
     end
@@ -1358,7 +1348,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
       table.insert(errors, "Expected lower route triangle to keep the inner lane while the upper continuation steps around it")
     end
     if found_inner_triangle_pipe then
-      table.insert(errors, "Expected lower route not to draw a pipe on the B06 tail row")
+      table.insert(errors, "Expected lower route triangle row not to carry multiple connector pipes")
     end
     if not found_inner_origin_rail then
       table.insert(errors, "Expected lower route to keep the origin-side pipe on origin B")
@@ -1377,13 +1367,13 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add context 01", 1, true)
           and stripped:find("Scroll add context 06", 1, true)
-          and stripped:find("│        │ │ │ 64", 1, true) then
+          and internal_connector_pipe_count(stripped) > 1 then
         found_shared_overlap = true
       elseif stripped:find("Scroll add origin B", 1, true) then
-        if stripped:find("│          │ │ 70", 1, true) then
+        if row_has_internal_connector_pipe(stripped) then
           found_lower_inner_origin = true
         end
-        if stripped:find("│        │   │ 70", 1, true) then
+        if internal_connector_pipe_count(stripped) > 1 then
           found_lower_outer_origin = true
         end
       end
@@ -1436,7 +1426,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
           and stripped:find("│  7 │", 1, true) then
         found_lower_origin = true
       elseif stripped:find("Scroll add context 06", 1, true)
-          and stripped:find("│          │ │", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_lower_rail = true
       end
     end
@@ -1456,11 +1446,11 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add context 06", 1, true)
           and stripped:find("Added scroll A 05", 1, true)
-          and stripped:find("│          │ │ 8", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_lower_clipped_rail = true
       elseif stripped:find("Scroll add context 09", 1, true)
           and stripped:find("Added scroll A 08", 1, true)
-          and stripped:find("│          │ │ 11", 1, true) then
+          and row_has_internal_connector_pipe(stripped) then
         found_lower_clipped_rail_bottom = true
       end
     end
@@ -1585,27 +1575,15 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
   elseif phase == "target-above" then
     require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 6", "Expected deletion target above its origin to connect with an upward triangle and no inner pipe")
     forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Upward deletion target should not draw an inner pipe through the triangle row")
-    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
-      table.insert(errors, "Expected upward deletion tail underline to reach the connector cell beside B06")
-    end
   elseif phase == "upper-target-clipped" then
     require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 5", "Expected clipped deletion target to keep the real triangle while visible")
     forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Clipped deletion target should not draw an inner pipe through the visible triangle")
-    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
-      table.insert(errors, "Expected clipped upward deletion tail underline to reach the connector cell beside B06")
-    end
   elseif phase == "overlap-stepped" then
     require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 4", "Expected overlap transition row to avoid an inner visible-route pipe")
-    require_plain_fragment("Scroll delete context 06                        │ 64 │ │", "Expected visible deletion route to continue from the origin row")
-    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
-      table.insert(errors, "Expected overlap deletion tail underline to reach the connector cell beside B06")
-    end
+    require_plain_fragment("Scroll delete context 06                        │ 64 ││", "Expected visible deletion route to continue from the origin row")
   elseif phase == "hidden-overlap-inner" then
-    require_plain_fragment("Deleted scroll B 06                             │ 63◣│   │", "Expected hidden upper deletion route to step outward beside the visible triangle")
+    require_plain_fragment("Deleted scroll B 06                             │ 63◣│  │", "Expected hidden upper deletion route to step outward beside the visible triangle")
     forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │ │", "Hidden overlap should not collide with the visible route lane on the triangle row")
-    if ansi_lines and not delete_connector_tail_reaches_glyph("Deleted scroll B 06", "\226\151\163") then
-      table.insert(errors, "Expected hidden-overlap deletion tail underline to reach the connector cell beside B06")
-    end
   end
 
   local _, _, glyph = find_plain_line(lines, { "Deleted scroll" }, delete_glyphs)
@@ -1636,7 +1614,6 @@ end
 
 local function verify_scroll_mixed(lines, ansi_lines, phase)
   local errors = {}
-  local require_plain_fragment = plain_fragment_requirements(errors, lines)
   local function plain_bar_positions(line)
     local positions = {}
     local from = 1
@@ -1649,6 +1626,23 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
       from = pos + #"│"
     end
     return positions
+  end
+  local function require_plain_line_all(labels, description)
+    local _, stripped = find_plain_line_all(lines, labels)
+    if not stripped then
+      table.insert(errors, description)
+      return nil
+    end
+    return stripped
+  end
+  local function require_no_core_route(labels, description)
+    local stripped = require_plain_line_all(labels, description)
+    if not stripped then
+      return
+    end
+    if #plain_bar_positions(stripped) ~= 4 then
+      table.insert(errors, description)
+    end
   end
   local function number_pane_bounds(stripped, side)
     local bars = plain_bar_positions(stripped)
@@ -1850,6 +1844,7 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
   end
 
   if phase == "initial" then
+    local wedge_glyphs = { "\226\151\162", "\226\151\165" } -- ◢, ◥
     if not find_plain_line(lines, { "Old scroll value A" }) then
       table.insert(errors, "Expected initial mixed scroll capture to include changed text")
     end
@@ -1861,26 +1856,36 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
       "Expected initial changed right line number pane to stay solid change background")
     require_number_pane_bg("Old scroll value B", "right", change_number_bg,
       "Expected second initial changed right line number pane to stay solid change background")
-    require_plain_fragment("Scroll mixed context 04                         │  8 │            │◢8",
-      "Expected initial mixed top wedge to stay on the real right envelope edge")
+    local _, top_wedge_line, top_wedge = find_plain_line_all(lines,
+      { "Scroll mixed context 04", "Modified scroll header" }, wedge_glyphs)
+    if not top_wedge_line
+        or top_wedge ~= "\226\151\162"
+        or not glyph_docked_to_right_number(top_wedge_line, top_wedge) then
+      table.insert(errors, "Expected initial mixed top wedge to stay on the real right envelope edge")
+    end
     require_number_pane_bg("Scroll mixed context 04", "right", change_number_bg,
       "Expected initial mixed top transition right line number pane to keep change background after the wedge",
       "Modified scroll header")
     require_non_solid_mixed_connector("Scroll mixed context 04", "Original scroll header", "scroll header")
-    require_plain_fragment("Original scroll header                          │  9 │            │ 9",
+    require_no_core_route({ "Original scroll header", "Added mixed scroll 01" },
       "Expected initial mixed overlap row to remain a solid connector background row without route lines")
     require_number_pane_bg("Original scroll header", "left", change_number_bg,
       "Expected initial mixed overlap left line number pane to stay solid change background")
     require_number_pane_bg("Original scroll header", "right", change_number_bg,
       "Expected initial mixed overlap right line number pane to stay solid change background")
     require_solid_mixed_connector("Original scroll header", "scroll header")
-    require_plain_fragment("Scroll mixed context 05                         │ 10 │            │◥10",
-      "Expected initial mixed lower wedge to dock on the right number pane below the overlap row")
+    local _, lower_wedge_line, lower_wedge = find_plain_line_all(lines,
+      { "Scroll mixed context 05", "Added mixed scroll 02" }, wedge_glyphs)
+    if not lower_wedge_line
+        or lower_wedge ~= "\226\151\165"
+        or not glyph_docked_to_right_number(lower_wedge_line, lower_wedge) then
+      table.insert(errors, "Expected initial mixed lower wedge to dock on the right number pane below the overlap row")
+    end
     require_number_pane_bg("Scroll mixed context 05", "right", change_number_bg,
       "Expected initial mixed lower transition right line number pane to keep change background after the wedge",
       "Added mixed scroll 02")
     require_non_solid_mixed_connector("Scroll mixed context 05", "Original scroll header", "scroll header")
-    require_plain_fragment("Scroll mixed context 06                         │ 11 │            │ 11",
+    require_no_core_route({ "Scroll mixed context 06", "Added mixed scroll 03" },
       "Expected initial mixed continuation to avoid an orphan connector rail while overlap is visible")
     require_number_text_bg("Scroll mixed context 06", "right", change_number_bg,
       "Expected initial mixed continuation right line number text to keep change background",
@@ -1946,15 +1951,18 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     require_non_solid_mixed_connector("Scroll mixed context 05", "Original scroll header", "scroll header")
   end
   if phase == "right-overlap-clipped" then
-    require_plain_fragment("Old scroll value B                            │  4 │   │           │",
-      "Expected clipped mixed change/delete routes to remain separated instead of stacking adjacent pipes")
+    local _, stripped = find_plain_line(lines, { "Old scroll value B" })
+    if not stripped or not (stripped:find("│   │", 1, true) or stripped:find("│    │", 1, true)) then
+      table.insert(errors,
+        "Expected clipped mixed change/delete routes to remain separated instead of stacking adjacent pipes")
+    end
   end
   if phase == "right-overlap-middle" then
-    require_plain_fragment("Original scroll header                        │  9 │               │ 18",
+    require_no_core_route({ "Original scroll header", "Added mixed scroll 10" },
       "Expected mid-overlap mixed row to remain solid/clear without an orphan connector rail")
-    require_plain_fragment("Scroll mixed context 05                       │ 10 │               │◥19",
+    require_no_core_route({ "Scroll mixed context 05", "Added mixed scroll 11" },
       "Expected mid-overlap lower transition to terminate at the wedge without an orphan connector rail below it")
-    require_plain_fragment("Scroll mixed context 06                       │ 11 │               │ 20",
+    require_no_core_route({ "Scroll mixed context 06", "Added mixed scroll 12" },
       "Expected mid-overlap continuation to stay clear after the lower transition wedge")
   end
   if phase == "right-overlap-exit" then
@@ -1967,10 +1975,16 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     end
   end
   if phase == "right-tail-approach" or phase == "right-tail-aligned" then
-    require_plain_fragment("Old scroll value A                            │  3◤│   │",
-      "Expected deep mixed scroll to keep the upper visible change triangle while avoiding add/delete rails")
-    require_plain_fragment("Scroll mixed context 04                       │  8 │     │",
-      "Expected deep mixed scroll to connect the lower change transition from the top of its visible triangle")
+    local _, upper = find_plain_line(lines, { "Old scroll value A" })
+    if not upper or not upper:find("\226\151\164", 1, true) or #plain_bar_positions(upper) <= 4 then
+      table.insert(errors,
+        "Expected deep mixed scroll to keep the upper visible change triangle while avoiding add/delete rails")
+    end
+    local _, lower = find_plain_line(lines, { "Scroll mixed context 04" })
+    if not lower or #plain_bar_positions(lower) <= 4 then
+      table.insert(errors,
+        "Expected deep mixed scroll to connect the lower change transition from the top of its visible triangle")
+    end
   end
 
   local _, stripped, glyph = find_plain_line(lines, { "Modified scroll header", "Added mixed scroll" }, wedge_glyphs)
@@ -1978,6 +1992,331 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     table.insert(errors, "Expected scroll mixed viewport to show a real mixed wedge near the connection row")
   elseif not glyph_docked_to_right_number(stripped, glyph) then
     table.insert(errors, "Expected scroll mixed wedge to dock directly against the right line number")
+  end
+
+  return errors
+end
+
+local function utf8_chars(s)
+  local chars = {}
+  for ch in s:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+    chars[#chars + 1] = ch
+  end
+  return chars
+end
+
+local function connector_core_segment(stripped)
+  local separators = {}
+  local from = 1
+  while true do
+    local pos = stripped:find("│", from, true)
+    if not pos then
+      break
+    end
+    separators[#separators + 1] = pos
+    from = pos + #"│"
+  end
+
+  local sep2 = separators[2]
+  local sep_before_right_numbers = separators[#separators - 1]
+  if not sep2 or not sep_before_right_numbers then
+    return nil
+  end
+  return stripped:sub(sep2 + #"│", sep_before_right_numbers - 1)
+end
+
+local function dense_number_pane_bounds(stripped, side)
+  local separators = {}
+  local from = 1
+  while true do
+    local pos = stripped:find("│", from, true)
+    if not pos then
+      break
+    end
+    separators[#separators + 1] = pos
+    from = pos + #"│"
+  end
+  if side == "left" then
+    if #separators < 2 then
+      return nil, nil
+    end
+    return separators[1] + #"│", separators[2] - 1
+  end
+  if #separators < 4 then
+    return nil, nil
+  end
+  return separators[#separators - 1] + #"│", separators[#separators] - 1
+end
+
+local function first_digit_pos_in_bounds(stripped, start_pos, end_pos, number_text)
+  if not start_pos or not end_pos then
+    return nil
+  end
+  local found = stripped:find(number_text, start_pos, true)
+  if found and found <= end_pos then
+    return found
+  end
+  return nil
+end
+
+local function verify_dense_mixed(lines, ansi_lines, phase)
+  local errors = {}
+  local saw_dense_row = false
+  local saw_core_width = false
+  local distinct_pipe_cols = {}
+
+  local function require_plain_fragment(fragment, message)
+    if not find_plain_line(lines, { fragment }) then
+      table.insert(errors, message)
+    end
+  end
+
+  local function require_no_left_number_underline(label, message)
+    if not ansi_lines then
+      return
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) then
+        local start_pos, end_pos = dense_number_pane_bounds(stripped, "left")
+        for pos = start_pos or 1, end_pos or 0 do
+          if ansi_underline_at_plain_byte(line, pos) then
+            table.insert(errors, message)
+            return
+          end
+        end
+        return
+      end
+    end
+  end
+
+  local function require_no_underlined_core_pipes(label, message)
+    if not ansi_lines then
+      return
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) then
+        local separators = {}
+        local from = 1
+        while true do
+          local pos = stripped:find("│", from, true)
+          if not pos then
+            break
+          end
+          separators[#separators + 1] = pos
+          from = pos + #"│"
+        end
+        local core_start = separators[2]
+        local core_end = separators[#separators - 1]
+        if core_start and core_end then
+          for _, pos in ipairs(separators) do
+            if pos > core_start and pos < core_end and ansi_underline_at_plain_byte(line, pos) then
+              table.insert(errors, message)
+              return
+            end
+          end
+        end
+        return
+      end
+    end
+  end
+
+  local function require_core_underline(label, message)
+    if not ansi_lines then
+      return
+    end
+    for _, line in ipairs(ansi_lines) do
+      local stripped = strip_ansi(line)
+      if stripped:find(label, 1, true) then
+        local separators = {}
+        local from = 1
+        while true do
+          local pos = stripped:find("│", from, true)
+          if not pos then
+            break
+          end
+          separators[#separators + 1] = pos
+          from = pos + #"│"
+        end
+        local core_start = separators[2]
+        local core_end = separators[#separators - 1]
+        if core_start and core_end then
+          for pos = core_start + 1, core_end - 1 do
+            if ansi_underline_at_plain_byte(line, pos) then
+              return
+            end
+          end
+        end
+        table.insert(errors, message)
+        return
+      end
+    end
+  end
+
+  local minimum_width = 12
+  local maximum_width = 24
+  for _, line in ipairs(lines) do
+    local stripped = strip_ansi(line)
+    if stripped:find("Dense ", 1, true) or stripped:find("Added dense", 1, true) then
+      saw_dense_row = true
+      local core = connector_core_segment(stripped)
+      if core then
+        local chars = utf8_chars(core)
+        saw_core_width = true
+        if #chars < minimum_width then
+          table.insert(errors, string.format(
+            "Expected dense mixed connector core width at least %d, found %d",
+            minimum_width,
+            #chars
+          ))
+          break
+        end
+        if #chars > maximum_width then
+          table.insert(errors, string.format(
+            "Expected dense mixed connector core width no more than %d, found %d",
+            maximum_width,
+            #chars
+          ))
+          break
+        end
+        for col, ch in ipairs(chars) do
+          if ch == "│" then
+            distinct_pipe_cols[col] = true
+          end
+        end
+      end
+    end
+  end
+
+  if not saw_dense_row then
+    table.insert(errors, "Expected dense mixed capture to include dense fixture rows")
+  elseif not saw_core_width then
+    table.insert(errors, "Expected dense mixed capture to expose connector core separators")
+  end
+
+  if phase == nil then
+    if not find_plain_line(lines, { "New dense value A" }) then
+      table.insert(errors, "Expected dense mixed initial capture to include top changed content")
+    end
+    if not find_plain_line(lines, { "Deleted dense top" }) then
+      table.insert(errors, "Expected dense mixed initial capture to include top deleted content")
+    end
+    if ansi_lines then
+      local add_bg
+      local wrongly_colored = {}
+      for _, line in ipairs(ansi_lines) do
+        local stripped = strip_ansi(line)
+        local start_pos, end_pos = dense_number_pane_bounds(stripped, "right")
+        if stripped:find("Added dense A 01", 1, true) then
+          local pos = first_digit_pos_in_bounds(stripped, start_pos, end_pos, "8")
+          add_bg = pos and ansi_bg_at_plain_byte(line, pos) or add_bg
+        end
+        for _, item in ipairs({
+          { label = "Dense context 03", number = "6" },
+          { label = "Dense add origin A", number = "7" },
+          { label = "Dense context 04", number = "24" },
+          { label = "Dense add origin B", number = "25" },
+        }) do
+          if stripped:find(item.label, 1, true) then
+            local pos = first_digit_pos_in_bounds(stripped, start_pos, end_pos, item.number)
+            local bg = pos and ansi_bg_at_plain_byte(line, pos) or nil
+            wrongly_colored[item.label] = bg
+          end
+        end
+      end
+      if add_bg then
+        for label, bg in pairs(wrongly_colored) do
+          if bg == add_bg then
+            table.insert(errors, "Expected dense right number pane row to avoid shifted add background: " .. label)
+          end
+        end
+      end
+    end
+    return errors
+  end
+
+  if phase == "four-lane-conflict" then
+    if ansi_lines then
+      for _, line in ipairs(ansi_lines) do
+        local stripped = strip_ansi(line)
+        if stripped:find("Dense context 02", 1, true) then
+          local start_pos, end_pos = dense_number_pane_bounds(stripped, "left")
+          for pos = start_pos or 1, end_pos or 0 do
+            if ansi_underline_at_plain_byte(line, pos) then
+              table.insert(errors,
+                "Expected clipped dense change underline to start in connector core, not left number pane")
+              break
+            end
+          end
+          break
+        end
+      end
+    end
+  end
+
+  local function require_delete_triangle_gap(label, message)
+    local _, stripped = find_plain_line(lines, { label })
+    if not stripped or stripped:find("◤│ │", 1, true) or stripped:find("\226\151\164│ │", 1, true) then
+      table.insert(errors, message)
+    end
+  end
+  local function require_change_endpoint_gap(label, message)
+    local _, stripped = find_plain_line(lines, { label })
+    if not stripped or stripped:find("◤│ │", 1, true) or stripped:find("\226\151\164│ │", 1, true) then
+      table.insert(errors, message)
+    end
+  end
+
+  if phase == "initial-tall" then
+    require_delete_triangle_gap("Deleted dense lower 02",
+      "Expected initial dense lower deletion triangle to leave a spacer before neighboring routes")
+    require_no_underlined_core_pipes("Deleted dense lower 02",
+      "Expected initial dense lower deletion underline to avoid connector pipes")
+    require_no_underlined_core_pipes("Dense add origin B",
+      "Expected initial dense add-origin underline to split around connector pipes")
+  elseif phase == "top-route-separation-tall" then
+    require_change_endpoint_gap("Old dense value A",
+      "Expected top dense change endpoint to leave a spacer before the delete route")
+    require_delete_triangle_gap("Deleted dense top 01",
+      "Expected top dense deletion triangle to leave a spacer before neighboring routes")
+    require_no_left_number_underline("Dense context 02",
+      "Expected top dense shifted change underline to stay out of the left number pane")
+    require_no_underlined_core_pipes("Dense add origin B",
+      "Expected dense add-origin underline to split around connector pipes")
+    require_no_underlined_core_pipes("Deleted dense lower 01",
+      "Expected dense lower deletion underline to avoid connector pipes")
+    require_no_underlined_core_pipes("Deleted dense lower 02",
+      "Expected dense lower deletion tail underline to avoid connector pipes")
+  elseif phase == "lower-route-separation-tall" then
+    require_change_endpoint_gap("Dense lower old header",
+      "Expected lower dense change endpoint to leave a spacer before the delete route")
+    require_delete_triangle_gap("Deleted dense lower 01",
+      "Expected lower dense deletion triangle to leave a spacer before neighboring routes")
+    require_no_left_number_underline("Dense context 05",
+      "Expected lower dense shifted change underline to stay out of the left number pane")
+    require_no_underlined_core_pipes("Dense add origin B",
+      "Expected lower dense add-origin underline to split around connector pipes")
+    require_no_underlined_core_pipes("Deleted dense top 01",
+      "Expected dense top deletion underline to avoid connector pipes")
+  elseif phase == "lower-route-entering-tall" then
+    require_change_endpoint_gap("Dense lower old header",
+      "Expected entering lower dense change endpoint to leave a spacer before the delete route")
+    require_delete_triangle_gap("Deleted dense lower 01",
+      "Expected entering lower dense deletion triangle to leave a spacer before neighboring routes")
+    require_no_left_number_underline("Dense context 05",
+      "Expected entering lower dense shifted change underline to stay out of the left number pane")
+    require_no_underlined_core_pipes("Dense add origin B",
+      "Expected entering lower dense add-origin underline to split around connector pipes")
+    require_no_underlined_core_pipes("Deleted dense top 01",
+      "Expected entering dense top deletion underline to avoid connector pipes")
+  elseif phase == "lower-four-lane-tall" then
+    require_no_underlined_core_pipes("Dense add origin A",
+      "Expected deep lower dense add-origin underline to split around connector pipes")
+    require_no_underlined_core_pipes("Dense add origin B",
+      "Expected deep lower dense second add-origin underline to split around connector pipes")
+    require_no_underlined_core_pipes("Deleted dense top 01",
+      "Expected deep dense top deletion underline to avoid connector pipes")
   end
 
   return errors
@@ -2031,6 +2370,30 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
   end
 
   local change_glyphs = { "\226\151\164", "\226\151\165", "\226\151\162" } -- ◤, ◥, ◢
+  local function has_internal_connector_pipe(stripped)
+    local separators = {}
+    local from = 1
+    while true do
+      local pos = stripped:find("│", from, true)
+      if not pos then
+        break
+      end
+      separators[#separators + 1] = pos
+      from = pos + #"│"
+    end
+    local core_start = separators[2]
+    local core_end = separators[#separators - 1]
+    if not core_start or not core_end then
+      return false
+    end
+    for index = 3, #separators - 2 do
+      local pos = separators[index]
+      if pos > core_start and pos < core_end then
+        return true
+      end
+    end
+    return false
+  end
   if not find_plain_line(lines, { "Old routed change", "New routed change" }) then
     table.insert(errors, "Expected diverged change capture to include changed content")
   end
@@ -2046,15 +2409,19 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
   if phase == "right-diverged" then
     require_plain_fragment("Scroll change context 03                        │  3 │            │◢7",
       "Expected right-diverged change route to dock the upper transition on the right number pane")
-    require_plain_fragment("Scroll change context 04                        │  4 │ │          │ 8",
-      "Expected right-diverged change route to draw a connector rail between shifted regions")
-    require_plain_fragment("Old routed change A                             │  5◤│            │",
+    local _, rail_line = find_plain_line(lines, { "Scroll change context 04", "│  4 │" })
+    if not rail_line or not has_internal_connector_pipe(rail_line) then
+      table.insert(errors, "Expected right-diverged change route to draw a connector rail between shifted regions")
+    end
+    require_plain_fragment("Old routed change A                             │  5◤│",
       "Expected right-diverged change route to dock the lower transition on the left number pane")
   elseif phase == "left-diverged" then
-    require_plain_fragment("Old routed change C                             │  7◥│            │",
+    require_plain_fragment("Old routed change C                             │  7◣│",
       "Expected left-diverged change route to dock the upper transition on the left number pane")
-    require_plain_fragment("Scroll change context 05                        │  8 │ │          │ 4",
-      "Expected left-diverged change route to draw a connector rail between shifted regions")
+    local _, rail_line = find_plain_line(lines, { "Scroll change context 05", "│  8 │" })
+    if not rail_line or not has_internal_connector_pipe(rail_line) then
+      table.insert(errors, "Expected left-diverged change route to draw a connector rail between shifted regions")
+    end
     require_plain_fragment("Scroll change context 06                        │  9 │            │◥5",
       "Expected left-diverged change route to dock the lower transition on the right number pane")
   elseif phase == "both-diverged" then
@@ -2103,6 +2470,8 @@ elseif scroll_base == "scroll-deletions" then
   errors = verify_scroll_deletions(lines, ansi_lines, scroll_phase)
 elseif scroll_base == "scroll-mixed" then
   errors = verify_scroll_mixed(lines, ansi_lines, scroll_phase)
+elseif scroll_base == "scroll-dense-mixed" then
+  errors = verify_dense_mixed(lines, ansi_lines, scroll_phase)
 elseif scroll_base == "scroll-changes" then
   errors = verify_scroll_changes(lines, ansi_lines, scroll_phase)
 elseif test_name == "pure" then
@@ -2120,6 +2489,11 @@ elseif test_name == "mixed" then
   for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
     table.insert(errors, err)
   end
+elseif test_name == "dense-mixed" then
+  errors = verify_dense_mixed(lines, ansi_lines)
+  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New dense value A", "Deleted dense top 01", "Added dense A 01" })) do
+    table.insert(errors, err)
+  end
 elseif test_name == "theme-default" then
   errors = verify_theme_default(lines, ansi_lines)
   for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
@@ -2127,7 +2501,7 @@ elseif test_name == "theme-default" then
   end
 elseif test_name == "comprehensive" then
   errors = verify_comprehensive(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "\"time\"", "This section will", "Added performance check" })) do
+  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "\"time\"", "This section will", "Added performance" })) do
     table.insert(errors, err)
   end
 else

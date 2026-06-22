@@ -460,7 +460,7 @@ do
     "Adjacent upward delete origin underline should start after the rail column")
 end
 
--- Test Suite 4j: Deletion hidden overlaps use the outer lane
+-- Test Suite 4j: Upward left-side overlaps give the lower route the rightmost lane
 do
   local upper_group = {}
   local lower_group = {}
@@ -493,16 +493,99 @@ do
   end
   local active_bars = paths_mod.compute_active_bars(projected_paths)
 
-  assert_eq(by_group[upper_group].lane, 2,
-    "Hidden projected deletion continuation should step outward around a visible route")
-  assert_eq(by_group[lower_group].lane, 1,
-    "Visible projected deletion route should keep the inner lane")
-  assert_eq(active_bars[3] ~= nil and active_bars[3][2] ~= nil, true,
-    "Hidden upward deletion continuation should include the origin row to avoid a broken corner")
-  assert_eq(active_bars[3] == nil or active_bars[3][1] == nil, true,
-    "Visible lower deletion route should not draw its inner rail on the triangle row")
-  assert_eq(active_bars[7] ~= nil and active_bars[7][1] ~= nil, true,
-    "Visible lower deletion route should terminate on its origin row")
+  assert_eq(by_group[upper_group].lane, 1,
+    "Upper upward deletion continuation should keep the left-side inner lane")
+  assert_eq(by_group[lower_group].lane, 2,
+    "Lower upward deletion route should take the rightmost lane")
+  assert_eq(active_bars[3] ~= nil and active_bars[3][1] ~= nil, true,
+    "Upper upward deletion continuation should include the origin row to avoid a broken corner")
+  assert_eq(active_bars[3] == nil or active_bars[3][2] == nil, true,
+    "Lower upward deletion route should not draw its outer rail on the triangle row")
+  assert_eq(active_bars[7] ~= nil and active_bars[7][2] ~= nil, true,
+    "Lower upward deletion route should terminate on its origin row")
+end
+
+-- Test Suite 4k: Multiple route tails can share one display row
+do
+  local projected_paths = {
+    {
+      kind = "add",
+      origin_display_row = 11,
+      top = 11,
+      display_start_row = 18,
+      triangle_display_row = 18,
+      lane = 2,
+    },
+    {
+      kind = "delete",
+      origin_display_row = 45,
+      top = 45,
+      display_start_row = 17,
+      triangle_display_row = 17,
+      lane = 3,
+      connect_tail_on_triangle_row = true,
+    },
+  }
+  local active_bars = paths_mod.compute_active_bars(projected_paths)
+  local underlines = paths_mod.compute_underlines(projected_paths, active_bars, {
+    left_number_width = 0,
+    connector_core_width = 24,
+    rail_spacing = 1,
+    sidecar_numbers = true,
+  })
+  local row_tails = underlines.tail_underlines[17] and underlines.tail_underlines[17].__items or {}
+  local saw_add = false
+  local saw_delete = false
+  for _, tail in ipairs(row_tails) do
+    saw_add = saw_add or tail.kind == "add"
+    saw_delete = saw_delete or tail.kind == "delete"
+  end
+
+  assert_eq(#row_tails, 2, "Shared tail row should retain both route underlines")
+  assert_eq(saw_add, true, "Shared tail row should retain the add route underline")
+  assert_eq(saw_delete, true, "Shared tail row should retain the delete route underline")
+end
+
+-- Test Suite 4l: Change endpoints do not cross nearby deletion rails
+do
+  local change_group = {}
+  local delete_group = {}
+  local projected_paths = {
+    {
+      kind = "delete",
+      origin_display_row = 2,
+      top = 2,
+      display_start_row = 6,
+      triangle_display_row = 6,
+      route_group = delete_group,
+    },
+    {
+      kind = "change",
+      route_group = change_group,
+      viewport_change_links = {
+        {
+          from_side = "right",
+          from_row = 1,
+          from_glyph = "◢",
+          from_visible = true,
+          to_side = "left",
+          to_row = 3,
+          to_glyph = "◤",
+          to_visible = true,
+        },
+      },
+    },
+  }
+
+  paths_mod.assign_lanes(projected_paths)
+
+  local by_group = {}
+  for _, p in ipairs(projected_paths) do
+    by_group[p.route_group] = p
+  end
+
+  assert_eq(by_group[change_group].lane < by_group[delete_group].lane, true,
+    "Visible change endpoint should not underline through the nearby deletion rail")
 end
 
 -- Test Suite 5: No visual collisions between bars
@@ -532,10 +615,12 @@ do
   for row, lanes_at_row in pairs(active_bars) do
     local cols_used = {}
     for lane, _ in pairs(lanes_at_row) do
-      local col = paths_mod.lane_col(lane, glyph_base, rail_spacing)
-      assert_eq(cols_used[col] == nil, true,
-        "Collision at row " .. row .. " col " .. col .. " (lane " .. lane .. ")")
-      cols_used[col] = true
+      if type(lane) == "number" then
+        local col = paths_mod.lane_col(lane, glyph_base, rail_spacing)
+        assert_eq(cols_used[col] == nil, true,
+          "Collision at row " .. row .. " col " .. col .. " (lane " .. lane .. ")")
+        cols_used[col] = true
+      end
     end
   end
 end
@@ -618,6 +703,49 @@ do
     "Third addition should originate from compact left row 5")
   assert_eq(by_right_start[11].display_start_row, 11,
     "Addition triangle should use compact right target row")
+
+  local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
+  local projected = fake_session:project_paths_for_toplines(paths, 1, 1, 40, 40)
+  local plan = paths_mod.plan_routes(projected, {
+    connector_core_width = 12,
+    viewport_topline = 1,
+    viewport_height = 40,
+  })
+  assert_eq(plan.success, true, "Simple additions should produce a planned route")
+
+  local routes_by_origin = {}
+  for _, route in ipairs(plan.routes or {}) do
+    if route.kind == "add" and route.path and route.path.origin_display_row then
+      routes_by_origin[route.path.origin_display_row] = route
+    end
+  end
+
+  local function count_segments(route, segment_type)
+    local count = 0
+    for _, segment in ipairs(route.segments or {}) do
+      if segment.type == segment_type then
+        count = count + 1
+      end
+    end
+    return count
+  end
+
+  assert_eq(count_segments(routes_by_origin[2], "horizontal"), 1,
+    "Adjacent top addition should be a single straight connector underline")
+  assert_eq(count_segments(routes_by_origin[2], "vertical"), 0,
+    "Adjacent top addition should not introduce a connector pipe")
+  assert_eq(routes_by_origin[2].segments[1].row, 2,
+    "Adjacent top addition should connect along the bottom edge of its origin row")
+  assert_eq(routes_by_origin[2].segments[1].start_col, 0,
+    "Adjacent top addition should start at the connector core left edge")
+  assert_eq(routes_by_origin[2].segments[1].end_col, 11,
+    "Adjacent top addition should reach the right transition edge")
+  assert_eq(count_segments(routes_by_origin[5], "horizontal"), 2,
+    "Lower addition should keep both source and target horizontal segments")
+  assert_eq(count_segments(routes_by_origin[5], "vertical"), 1,
+    "Lower addition should connect those horizontals with one vertical pipe")
+  assert_eq(routes_by_origin[4].rail_col > routes_by_origin[5].rail_col, true,
+    "Middle addition should step outward so the lower addition keeps its source bend")
 end
 
 -- Test Suite 8: Simple deletions (pure_deletions case)
@@ -912,6 +1040,211 @@ do
       assert_eq(longest >= 6, true, fixture.name .. " should include a scrollable route")
     end
   end
+end
+
+-- Test Suite 12b: Dense mixed fixture forces stable multi-lane width
+do
+  local left = read_file(root .. "/tests/files/left_dense_mixed.txt")
+  local right = read_file(root .. "/tests/files/right_dense_mixed.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (dense mixed)")
+
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+  local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
+
+  local counts = { add = 0, delete = 0, change = 0 }
+  local saw_mixed_change = false
+  for _, p in ipairs(paths) do
+    counts[p.kind] = (counts[p.kind] or 0) + 1
+    if p.kind == "change" and p.mixed_add then
+      saw_mixed_change = true
+    end
+  end
+  assert_eq(counts.add >= 3, true, "Dense mixed fixture should include multiple add routes")
+  assert_eq(counts.delete >= 2, true, "Dense mixed fixture should include multiple delete routes")
+  assert_eq(counts.change >= 2, true, "Dense mixed fixture should include multiple change routes")
+  assert_eq(saw_mixed_change, true, "Dense mixed fixture should include a mixed change/add envelope")
+
+  local projected = fake_session:project_paths_for_toplines(paths, 1, 49, 14, 14)
+  local max_lane = paths_mod.max_lane(projected)
+  assert_eq(max_lane, 7, "Dense mixed conflict viewport should reserve seven physical lanes")
+  assert_eq(paths_mod.required_connector_core_width(max_lane, 12), 22,
+    "Seven-lane conflict should expand connector core width from 12 to 22")
+  assert_eq(paths_mod.required_connector_core_width(3, 12), 12,
+    "Three-lane routes should still fit the default connector width")
+  assert_eq(paths_mod.required_connector_core_width(1, 12), 12,
+    "Single-lane routes should keep the default connector width")
+
+  local active_bars = paths_mod.compute_active_bars(projected)
+  local function row_has_bar(row, kind, lane, origin)
+    local row_bars = active_bars[row]
+    if not row_bars or not row_bars.__items then
+      return false
+    end
+    for _, item in ipairs(row_bars.__items) do
+      if item.lane == lane
+          and item.path.kind == kind
+          and item.path.origin_display_row == origin then
+        return true
+      end
+    end
+    return false
+  end
+  assert_eq(row_has_bar(1, "add", 1, 11), true,
+    "Clipped add route from origin 11 should enter from the top edge")
+  assert_eq(row_has_bar(9, "add", 1, 11), true,
+    "Clipped add route from origin 11 should not be overwritten by same-lane delete/add routes")
+  assert_eq(row_has_bar(9, "delete", 7, 5), true,
+    "Dense conflict should keep the lower deletion route active alongside add routes")
+end
+
+-- Test Suite 12c: Planned connector routes are two-turn, collision-free shapes
+do
+  local function assert_clean_plan(plan, label)
+    assert_eq(plan.success, true, label .. " should produce a solvable route plan")
+
+    local occupied = {}
+    local function check_cell(row, col, group, row_margin)
+      occupied[row] = occupied[row] or {}
+      row_margin = row_margin or 0
+      for check_row = row - row_margin, row + row_margin do
+        local row_occupied = occupied[check_row]
+        if row_occupied then
+          for check_col = col - 1, col + 1 do
+            local owner = row_occupied[check_col]
+            assert_eq(owner == nil or owner == group, true,
+              label .. " should not crowd connector cells at row " .. tostring(row) .. ", col " .. tostring(col))
+          end
+        end
+      end
+      occupied[row][col] = group
+    end
+
+    for _, route in ipairs(plan.routes or {}) do
+      local horizontal_count = 0
+      local vertical_count = 0
+      for _, segment in ipairs(route.segments or {}) do
+        if segment.type == "horizontal" then
+          if not segment.continuation then
+            horizontal_count = horizontal_count + 1
+          end
+          for col = segment.start_col, segment.end_col do
+            check_cell(segment.row, col, route.group)
+          end
+        elseif segment.type == "vertical" then
+          vertical_count = vertical_count + 1
+          for row = segment.start_row, segment.end_row do
+            check_cell(row, segment.col, route.group)
+          end
+        end
+      end
+      assert_eq(horizontal_count <= 2, true, label .. " route should have at most two horizontal segments")
+      assert_eq(vertical_count <= 1, true, label .. " route should have at most one vertical segment")
+    end
+  end
+
+  local left = read_file(root .. "/tests/files/left_dense_mixed.txt")
+  local right = read_file(root .. "/tests/files/right_dense_mixed.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (dense mixed planner)")
+
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+  local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
+  local projections = {
+    { 1, 1, "dense initial" },
+    { 1, 38, "dense pre-conflict" },
+    { 1, 46, "dense four-route conflict" },
+    { 1, 49, "dense lower-route entering" },
+    { 1, 53, "dense post-conflict" },
+    { 8, 46, "dense lane reuse" },
+  }
+
+  for _, projection in ipairs(projections) do
+    local projected = fake_session:project_paths_for_toplines(paths, projection[1], projection[2], 14, 14)
+    local width, plan = paths_mod.required_connector_core_width_for_paths(projected, 12, 24)
+    assert_eq(width <= 24, true, projection[3] .. " should not require an excessive connector width")
+    assert_clean_plan(plan, projection[3])
+  end
+
+  local upward = {
+    {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 5,
+      triangle_display_row = 1,
+      route_group = {},
+    },
+    {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 6,
+      triangle_display_row = 2,
+      route_group = {},
+    },
+  }
+  local upward_plan = paths_mod.plan_routes(upward, { connector_core_width = 12 })
+  assert_clean_plan(upward_plan, "upward priority")
+  assert_eq(upward[1].planned_rail_col < upward[2].planned_rail_col, true,
+    "Top-edge upward route should take the leftmost rail")
+
+  local downward = {
+    {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 1,
+      triangle_display_row = 5,
+      route_group = {},
+    },
+    {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 2,
+      triangle_display_row = 6,
+      route_group = {},
+    },
+  }
+  local downward_plan = paths_mod.plan_routes(downward, { connector_core_width = 12 })
+  assert_clean_plan(downward_plan, "downward priority")
+  assert_eq(downward[2].planned_rail_col < downward[1].planned_rail_col, true,
+    "Bottom-edge downward route should take the leftmost rail")
+
+  local overflow = {}
+  local overflow_group = {}
+  for i = 1, 10 do
+    overflow[i] = {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 12,
+      triangle_display_row = 1 - i,
+      route_group = overflow_group,
+    }
+  end
+  local overflow_plan = paths_mod.plan_routes(overflow, {
+    connector_core_width = 24,
+    viewport_topline = 1,
+    viewport_height = 14,
+  })
+  assert_clean_plan(overflow_plan, "overflow cap")
+  assert_eq(#overflow_plan.routes, paths_mod.MAX_VISIBLE_CONNECTOR_ROUTES,
+    "Overflow planner should keep at most eight vertical routes")
+  assert_eq(#overflow_plan.hidden_routes, 2,
+    "Overflow planner should hide routes beyond the eight-route cap")
+  assert_eq(overflow[10].overflow_hidden, true,
+    "Overflow planner should hide the farthest top-docked route first")
+  assert_eq(overflow[9].overflow_hidden, true,
+    "Overflow planner should hide the second farthest top-docked route")
+  assert_eq(overflow[1].overflow_hidden == true, false,
+    "Overflow planner should keep the nearest visible route")
+
+  assert_eq(paths_mod.required_connector_core_width(99, 12), 24,
+    "Connector width should cap at the eight-route width")
 end
 
 -- Test Suite 13: Chunk navigation anchors align semantic origins and targets

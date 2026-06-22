@@ -1,0 +1,22 @@
+Dense context 01
+Dense context 02
+Old dense value A
+Old dense value B
+Dense delete origin top
+Deleted dense top 01
+Deleted dense top 02
+Dense context 03
+Dense add origin A
+Dense context 04
+Dense add origin B
+Dense context 05
+Dense lower old header
+Dense lower old detail
+Dense delete origin lower
+Deleted dense lower 01
+Deleted dense lower 02
+Dense context 06
+Dense context 07
+Dense context 08
+Dense context 09
+Dense context 10
