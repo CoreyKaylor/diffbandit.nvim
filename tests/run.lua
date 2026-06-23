@@ -10,6 +10,7 @@ local highlights = require("diffbandit.highlights")
 local view = require("diffbandit.view")
 local paths_mod = require("diffbandit.paths")
 local Session = require("diffbandit.session")
+local git_mod = require("diffbandit.git")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -1403,6 +1404,227 @@ do
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   assert_eq(get_hl("DiffBanditAdd").bg, 0x304050,
     "ColorScheme refresh should rederive add color")
+end
+
+-- ==============================================================================
+-- GIT PROVIDER TESTS
+-- ==============================================================================
+
+local function git_test_command(args, cwd)
+  if vim.system then
+    local cmd = vim.list_extend({ "git" }, args)
+    local result = vim.system(cmd, { cwd = cwd, text = true }):wait()
+    if result.code ~= 0 then
+      error("git command failed: git " .. table.concat(args, " ") .. "\n" .. tostring(result.stderr or result.stdout))
+    end
+    return result.stdout or ""
+  end
+
+  local uv = vim.uv or vim.loop
+  local old_cwd = uv.cwd()
+  if cwd then
+    uv.chdir(cwd)
+  end
+  local output = vim.fn.system(vim.list_extend({ "git" }, args))
+  local code = vim.v.shell_error
+  if cwd then
+    uv.chdir(old_cwd)
+  end
+  if code ~= 0 then
+    error("git command failed: git " .. table.concat(args, " ") .. "\n" .. tostring(output))
+  end
+  return output
+end
+
+local function make_git_repo()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  git_test_command({ "init" }, dir)
+  git_test_command({ "config", "user.email", "diffbandit@example.test" }, dir)
+  git_test_command({ "config", "user.name", "DiffBandit Test" }, dir)
+  return dir
+end
+
+local function write_repo_file(root_dir, path, lines)
+  local full = root_dir .. "/" .. path
+  vim.fn.mkdir(vim.fn.fnamemodify(full, ":h"), "p")
+  vim.fn.writefile(lines, full)
+end
+
+local function commit_baseline(root_dir)
+  git_test_command({ "add", "." }, root_dir)
+  git_test_command({ "commit", "-m", "baseline" }, root_dir)
+end
+
+do
+  local entries = git_mod._private.parse_name_status("M\0space name.txt\0R100\0old path.txt\0new path.txt\0")
+  assert_eq(#entries, 2, "NUL name-status parser should read modified and renamed entries")
+  assert_eq(entries[1].path, "space name.txt", "Parser should preserve spaces in paths")
+  assert_eq(entries[2].old_path, "old path.txt", "Parser should capture rename old path")
+  assert_eq(entries[2].path, "new path.txt", "Parser should capture rename new path")
+end
+
+if vim.fn.executable("git") == 1 then
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "alpha.txt", { "one" })
+    commit_baseline(repo)
+    write_repo_file(repo, "alpha.txt", { "one changed" })
+    write_repo_file(repo, "new file.txt", { "new content" })
+
+    local queue, err = git_mod.queue({
+      root = repo,
+      mode = "unstaged",
+      include_untracked = true,
+    }, config.git)
+    assert_eq(err, nil, "Unstaged queue should load")
+    assert_eq(#queue.entries, 2, "Unstaged queue should include modified and untracked files")
+
+    local alpha
+    local untracked
+    for index, entry in ipairs(queue.entries) do
+      if entry.path == "alpha.txt" then
+        alpha = select(1, queue.load(index))
+      elseif entry.path == "new file.txt" then
+        untracked = select(1, queue.load(index))
+      end
+    end
+
+    assert_eq(alpha.left.text, "one\n", "Unstaged left source should read index content")
+    assert_eq(alpha.right.text, "one changed\n", "Unstaged right source should read working tree content")
+    assert_eq(untracked.left.text, "", "Untracked left source should be empty")
+    assert_eq(untracked.left.label, "new file.txt (not tracked)", "Untracked left source should explain missing base")
+    assert_eq(untracked.left.git_state, "untracked", "Untracked left source should carry git state")
+    assert_eq(untracked.left.empty_reason, "New untracked file", "Untracked left source should carry empty notice text")
+    assert_eq(untracked.right.text, "new content\n", "Untracked right source should read working tree content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "staged.txt", { "old" })
+    commit_baseline(repo)
+    write_repo_file(repo, "staged.txt", { "new" })
+    git_test_command({ "add", "staged.txt" }, repo)
+
+    local queue, err = git_mod.queue({
+      root = repo,
+      mode = "staged",
+    }, config.git)
+    assert_eq(err, nil, "Staged queue should load")
+    assert_eq(#queue.entries, 1, "Staged queue should include staged file")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.text, "old\n", "Staged left source should read HEAD content")
+    assert_eq(loaded.right.text, "new\n", "Staged right source should read index content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "baseline.txt", { "base" })
+    commit_baseline(repo)
+    write_repo_file(repo, "added.txt", { "new" })
+    git_test_command({ "add", "added.txt" }, repo)
+
+    local queue, err = git_mod.queue({
+      root = repo,
+      mode = "staged",
+      pathspecs = { "added.txt" },
+    }, config.git)
+    assert_eq(err, nil, "Staged added-file queue should load")
+    assert_eq(#queue.entries, 1, "Staged added-file queue should include one file")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.text, "", "Staged added left source should be empty")
+    assert_eq(loaded.left.label, "added.txt (HEAD: absent)", "Staged added left source should explain missing HEAD version")
+    assert_eq(loaded.left.git_state, "absent", "Staged added left source should carry absent git state")
+    assert_eq(loaded.left.empty_reason, "New file", "Staged added left source should carry empty notice text")
+    assert_eq(loaded.right.text, "new\n", "Staged added right source should read index content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "gone.txt", { "old" })
+    commit_baseline(repo)
+    git_test_command({ "rm", "gone.txt" }, repo)
+
+    local queue, err = git_mod.queue({
+      root = repo,
+      mode = "staged",
+    }, config.git)
+    assert_eq(err, nil, "Staged deleted-file queue should load")
+    assert_eq(#queue.entries, 1, "Staged deleted-file queue should include one file")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.text, "old\n", "Staged deleted left source should read HEAD content")
+    assert_eq(loaded.right.text, "", "Staged deleted right source should be empty")
+    assert_eq(loaded.right.label, "gone.txt (index: deleted)", "Staged deleted right source should explain missing index version")
+    assert_eq(loaded.right.git_state, "deleted", "Staged deleted right source should carry deleted git state")
+    assert_eq(loaded.right.empty_reason, "Deleted file", "Staged deleted right source should carry empty notice text")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "buffer.txt", { "saved" })
+    commit_baseline(repo)
+
+    local bufnr = vim.api.nvim_create_buf(false, false)
+    vim.api.nvim_set_option_value("swapfile", false, { buf = bufnr })
+    vim.api.nvim_buf_set_name(bufnr, repo .. "/buffer.txt")
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "unsaved" })
+
+    local queue, err = git_mod.queue({
+      root = repo,
+      mode = "unstaged",
+      scope = "current",
+      path = repo .. "/buffer.txt",
+      use_buffer = true,
+    }, config.git)
+    assert_eq(err, nil, "Current-file queue should include unsaved buffer changes")
+    assert_eq(#queue.entries, 1, "Current-file queue should synthesize one buffer-only entry")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.text, "saved\n", "Buffer diff left source should read index content")
+    assert_eq(loaded.right.text, "unsaved\n", "Buffer diff right source should read live buffer content")
+
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end
+end
+
+do
+  local original_notify = vim.notify
+  vim.notify = function() end
+  local fake = setmetatable({
+    file_queue = { entries = { { path = "one" }, { path = "two" } } },
+    file_queue_index = 1,
+    transitions = {},
+  }, Session)
+  fake.goto_queue_file = function(self, index, chunk_position)
+    self.transitions[#self.transitions + 1] = {
+      index = index,
+      chunk_position = chunk_position,
+    }
+    self.file_queue_index = index
+    return true
+  end
+
+  assert_eq(fake:confirm_file_boundary("next"), true,
+    "First next boundary press should be handled")
+  assert_eq(#fake.transitions, 0,
+    "First next boundary press should only arm the transition")
+  assert_eq(fake.pending_file_boundary.direction, "next",
+    "First next boundary press should remember direction")
+  assert_eq(fake:confirm_file_boundary("next"), true,
+    "Second next boundary press should be handled")
+  assert_eq(#fake.transitions, 1,
+    "Second next boundary press should open the next file")
+  assert_eq(fake.transitions[1].index, 2,
+    "Second next boundary press should target the next file")
+  assert_eq(fake.transitions[1].chunk_position, "first",
+    "Next file transition should land on the first hunk")
+
+  fake.pending_file_boundary = { direction = "next", file_index = 2 }
+  fake:confirm_file_boundary("prev")
+  assert_eq(fake.pending_file_boundary.direction, "prev",
+    "Opposite boundary direction should replace the pending transition")
+  assert_eq(#fake.transitions, 1,
+    "First previous boundary press should not immediately transition")
+  vim.notify = original_notify
 end
 
 vim.api.nvim_out_write("OK\n")

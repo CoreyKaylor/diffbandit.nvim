@@ -1,5 +1,51 @@
 local diffbandit = require("diffbandit")
 
+local function parse_git_args(args, defaults)
+  local opts = vim.tbl_extend("force", {}, defaults or {})
+  opts.pathspecs = {}
+
+  local i = 1
+  while i <= #args do
+    local arg = args[i]
+    if arg == "--current" then
+      opts.scope = "current"
+    elseif arg == "--staged" or arg == "--cached" then
+      opts.mode = "staged"
+    elseif arg == "--all" then
+      opts.mode = "all"
+    elseif arg == "--no-untracked" then
+      opts.include_untracked = false
+    elseif arg == "--base" then
+      opts.mode = "all"
+      opts.base = args[i + 1]
+      i = i + 1
+    elseif arg == "--rev" then
+      opts.mode = "rev"
+      local spec = args[i + 1]
+      if spec and spec:find("%.%.") then
+        local left, right = spec:match("^(.-)%.%.(.+)$")
+        opts.base = left
+        opts.target = right
+        i = i + 1
+      else
+        opts.base = args[i + 1]
+        opts.target = args[i + 2]
+        i = i + 2
+      end
+    elseif arg == "--" then
+      for j = i + 1, #args do
+        opts.pathspecs[#opts.pathspecs + 1] = args[j]
+      end
+      break
+    else
+      opts.pathspecs[#opts.pathspecs + 1] = arg
+    end
+    i = i + 1
+  end
+
+  return opts
+end
+
 vim.api.nvim_create_user_command("DiffBandit", function(opts)
   local args = opts.fargs
   if #args < 2 then
@@ -54,4 +100,33 @@ end, {
     return items
   end,
   desc = "Open DiffBandit diff view for two buffers",
+})
+
+vim.api.nvim_create_user_command("DiffBanditGit", function(opts)
+  local git_opts = parse_git_args(opts.fargs, {})
+  local session, err = diffbandit.git(git_opts)
+  if not session and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "*",
+  complete = "file",
+  desc = "Open DiffBandit git diff view",
+})
+
+vim.api.nvim_create_user_command("DiffBanditGitCurrent", function(opts)
+  local git_opts = parse_git_args(opts.fargs, { scope = "current" })
+  local path
+  if #git_opts.pathspecs > 0 then
+    path = git_opts.pathspecs[1]
+    git_opts.pathspecs = {}
+  end
+  local session, err = diffbandit.git_file(path, git_opts)
+  if not session and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "*",
+  complete = "file",
+  desc = "Open DiffBandit git diff view for the current file",
 })

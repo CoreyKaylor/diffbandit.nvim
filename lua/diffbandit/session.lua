@@ -40,6 +40,21 @@ local function build_display_lines(session)
   return left_lines, right_lines
 end
 
+local function render_empty_source_notice(buf, namespace, source)
+  if not source or not source.empty_reason or #(source.lines or {}) > 0 then
+    return
+  end
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  vim.api.nvim_buf_set_extmark(buf, namespace, 0, 0, {
+    virt_text = { { "  " .. source.empty_reason, "DiffBanditEmptyNotice" } },
+    virt_text_pos = "overlay",
+    priority = 20,
+  })
+end
+
 local function set_win_view_topline(win, topline)
   if not win or not vim.api.nvim_win_is_valid(win) then
     return
@@ -95,13 +110,33 @@ local function set_window_width(win, width)
   end
 end
 
-function Session.start(sources, config)
+local function build_view_for_sources(sources, config)
   local hunks, err = diff_mod.compute_hunks(sources.left.text, sources.right.text, config.diff)
   if err then
     return nil, err
   end
 
   local view = view_builder.build(sources.left.lines, sources.right.lines, hunks, config)
+  return hunks, view
+end
+
+local function connector_core_base_width(view, config)
+  local width = math.max(config.ui.connector_width or 0, 0)
+  for _, text in ipairs(view.connectors) do
+    local display_width = vim.fn.strdisplaywidth(text)
+    if display_width > width then
+      width = display_width
+    end
+  end
+  return width
+end
+
+function Session.start(sources, config, opts)
+  opts = opts or {}
+  local hunks, view = build_view_for_sources(sources, config)
+  if not hunks then
+    return nil, view
+  end
 
   local self = setmetatable({}, Session)
   self.id = state.next_session_id()
@@ -111,6 +146,9 @@ function Session.start(sources, config)
   self.hunks = hunks
   self.view = view
   self.current_chunk = view.chunks[1] and 1 or 0
+  self.file_queue = opts.queue
+  self.file_queue_index = opts.queue and (opts.queue.index or 1) or nil
+  self.pending_file_boundary = nil
   self.left_number_width = math.max(2, digits_of(#sources.left.lines))
   self.right_number_width = digits_of(#sources.right.lines)
   self.right_number_padding = self.config.ui.right_number_padding or 2
@@ -120,13 +158,7 @@ function Session.start(sources, config)
   self.autocmd_group = nil
   self.disposed = false
 
-  self.connector_core_width = math.max(self.config.ui.connector_width or 0, 0)
-  for _, text in ipairs(view.connectors) do
-    local width = vim.fn.strdisplaywidth(text)
-    if width > self.connector_core_width then
-      self.connector_core_width = width
-    end
-  end
+  self.connector_core_width = connector_core_base_width(view, self.config)
   self.left_number_pane_width = self.left_number_width + 1
   self.right_number_pane_width = self.right_number_width + 1
   self.gutter_width = self.connector_core_width
@@ -506,6 +538,7 @@ function Session:setup_keymaps()
   end
   local navigation = self.config.navigation or {}
   local document_keys = navigation.document_keys or {}
+  local git_keys = ((self.config.git or {}).file_keys or {})
 
   local function buffer_maps(buf)
     map(buf, "]c", function()
@@ -525,6 +558,16 @@ function Session:setup_keymaps()
     if document_keys.bottom then
       map(buf, document_keys.bottom, function()
         self:goto_document_edge("bottom")
+      end)
+    end
+    if self.file_queue and git_keys.next then
+      map(buf, git_keys.next, function()
+        self:goto_next_file()
+      end)
+    end
+    if self.file_queue and git_keys.prev then
+      map(buf, git_keys.prev, function()
+        self:goto_prev_file()
       end)
     end
   end
@@ -687,6 +730,7 @@ function Session:align_chunk_viewports(chunk)
 end
 
 function Session:goto_document_edge(edge)
+  self:reset_pending_file_boundary()
   local focused_win = vim.api.nvim_get_current_win()
   local left_line_count = math.max(1, #self.view.left)
   local right_line_count = math.max(1, #self.view.right)
@@ -770,6 +814,64 @@ function Session:close()
   else
     self:dispose()
   end
+end
+
+function Session:reset_pending_file_boundary()
+  self.pending_file_boundary = nil
+end
+
+function Session:update_title()
+  if not (self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage)) then
+    return
+  end
+  local left_name = self.left.label or self.left.path or ""
+  local right_name = self.right.label or self.right.path or ""
+  self.title = string.format("DiffBandit: %s ↔ %s", left_name, right_name)
+  vim.api.nvim_tabpage_set_var(self.tabpage, "diffbandit_title", self.title)
+end
+
+function Session:replace_sources(sources, opts)
+  opts = opts or {}
+  local hunks, view = build_view_for_sources(sources, self.config)
+  if not hunks then
+    return nil, view
+  end
+
+  self.left = sources.left
+  self.right = sources.right
+  self.hunks = hunks
+  self.view = view
+  self.current_chunk = view.chunks[1] and 1 or 0
+  self.left_number_width = math.max(2, digits_of(#sources.left.lines))
+  self.right_number_width = digits_of(#sources.right.lines)
+  self.left_number_pane_width = self.left_number_width + 1
+  self.right_number_pane_width = self.right_number_width + 1
+  self.connector_core_width = connector_core_base_width(view, self.config)
+  self.gutter_width = self.connector_core_width
+  self:reset_pending_file_boundary()
+
+  set_buffer_options(self.left_buf, { filetype = self.left.filetype })
+  set_buffer_options(self.right_buf, { filetype = self.right.filetype })
+  self:update_title()
+  self:resize_layout()
+  self:precompute_connector_core_width()
+  self:render()
+
+  pcall(vim.api.nvim_win_set_cursor, self.left_win, { 1, 0 })
+  pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { 1, 0 })
+  pcall(vim.api.nvim_win_set_cursor, self.right_win, { 1, 0 })
+  pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { 1, 0 })
+  self:set_viewport_toplines_preserve_cursors(1, 1, 1, 1)
+
+  if opts.chunk_position == "last" and #self.view.chunks > 0 then
+    self:goto_chunk(#self.view.chunks)
+  elseif #self.view.chunks > 0 then
+    self:goto_chunk(1)
+  else
+    self:clear_active_chunk()
+  end
+
+  return true, nil
 end
 
 -- Highlight lookup tables for left/right/connector panes
@@ -1734,6 +1836,9 @@ function Session:render()
   vim.api.nvim_buf_clear_namespace(self.connector_buf, self.linenum_ns, 0, -1)
   vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.linenum_ns, 0, -1)
 
+  render_empty_source_notice(self.left_buf, self.extmark_ns, self.left)
+  render_empty_source_notice(self.right_buf, self.extmark_ns, self.right)
+
   -- Apply highlights to left and right buffers (pane-wide backgrounds)
   for _, meta in ipairs(self.view.line_meta) do
     local left_hl = highlight_for_left(meta)
@@ -2292,6 +2397,7 @@ function Session:goto_chunk(index)
   if #self.view.chunks == 0 then
     return
   end
+  self:reset_pending_file_boundary()
   if index < 1 then
     index = 1
   elseif index > #self.view.chunks then
@@ -2301,6 +2407,103 @@ function Session:goto_chunk(index)
   local chunk = self.view.chunks[self.current_chunk]
   self:highlight_active_chunk(chunk)
   self:align_chunk_viewports(chunk)
+end
+
+function Session:load_queue_sources(index, step)
+  local queue = self.file_queue
+  if not queue or type(queue.load) ~= "function" then
+    return nil, nil, "no file queue configured"
+  end
+
+  local count = #(queue.entries or {})
+  local current = index
+  while current >= 1 and current <= count do
+    local loaded, err = queue.load(current)
+    if loaded and loaded.left and loaded.right then
+      return { left = loaded.left, right = loaded.right }, current, nil
+    end
+    vim.notify("DiffBandit: skipping " .. tostring(err or "unreadable git file"), vim.log.levels.WARN)
+    current = current + step
+  end
+
+  return nil, nil, "no readable changed file"
+end
+
+function Session:goto_queue_file(index, chunk_position)
+  local current = self.file_queue_index or 1
+  local step = index >= current and 1 or -1
+  local sources, resolved_index, err = self:load_queue_sources(index, step)
+  if not sources then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.INFO)
+    self:reset_pending_file_boundary()
+    return false
+  end
+
+  self.file_queue_index = resolved_index
+  if self.file_queue then
+    self.file_queue.index = resolved_index
+  end
+  local ok, replace_err = self:replace_sources(sources, { chunk_position = chunk_position })
+  if not ok then
+    vim.notify("DiffBandit: " .. replace_err, vim.log.levels.ERROR)
+    return false
+  end
+  return true
+end
+
+function Session:goto_next_file()
+  if not self.file_queue then
+    vim.notify("DiffBandit: no changed file queue configured", vim.log.levels.INFO)
+    return
+  end
+  self:reset_pending_file_boundary()
+  self:goto_queue_file((self.file_queue_index or 1) + 1, "first")
+end
+
+function Session:goto_prev_file()
+  if not self.file_queue then
+    vim.notify("DiffBandit: no changed file queue configured", vim.log.levels.INFO)
+    return
+  end
+  self:reset_pending_file_boundary()
+  self:goto_queue_file((self.file_queue_index or 1) - 1, "last")
+end
+
+function Session:confirm_file_boundary(direction)
+  local queue = self.file_queue
+  if not queue then
+    return false
+  end
+
+  local current = self.file_queue_index or 1
+  local step = direction == "next" and 1 or -1
+  local target = current + step
+  local count = #(queue.entries or {})
+  if target < 1 or target > count then
+    self:reset_pending_file_boundary()
+    local label = direction == "next" and "last" or "first"
+    vim.notify("DiffBandit: already at " .. label .. " changed file", vim.log.levels.INFO)
+    return true
+  end
+
+  local pending = self.pending_file_boundary
+  if pending and pending.direction == direction and pending.file_index == current then
+    self:reset_pending_file_boundary()
+    self:goto_queue_file(target, direction == "next" and "first" or "last")
+    return true
+  end
+
+  self.pending_file_boundary = {
+    direction = direction,
+    file_index = current,
+  }
+
+  if direction == "next" then
+    vim.notify("DiffBandit: end of this file; press ]c again for next changed file", vim.log.levels.INFO)
+  else
+    vim.notify("DiffBandit: start of this file; press [c again for previous changed file", vim.log.levels.INFO)
+  end
+  return true
 end
 
 function Session:prompt_next_file()
@@ -2326,6 +2529,9 @@ function Session:goto_next_chunk()
     return
   end
   if self.current_chunk >= #self.view.chunks then
+    if self:confirm_file_boundary("next") then
+      return
+    end
     self:prompt_next_file()
     return
   end
@@ -2337,6 +2543,9 @@ function Session:goto_prev_chunk()
     return
   end
   if self.current_chunk <= 1 then
+    if self:confirm_file_boundary("prev") then
+      return
+    end
     vim.notify("DiffBandit: already at first change", vim.log.levels.INFO)
     return
   end

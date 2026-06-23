@@ -1,0 +1,519 @@
+local M = {}
+
+local function to_text(lines)
+  if #lines == 0 then
+    return ""
+  end
+  return table.concat(lines, "\n") .. "\n"
+end
+
+local function split_lines(text)
+  if not text or text == "" then
+    return {}
+  end
+  local lines = vim.split(text, "\n", { plain = true })
+  if lines[#lines] == "" then
+    table.remove(lines, #lines)
+  end
+  return lines
+end
+
+local function detect_filetype(path)
+  if not path or path == "" then
+    return nil
+  end
+  return vim.filetype.match({ filename = path })
+end
+
+local function source_from_text(text, path, label, metadata)
+  if text and text:find("%z") then
+    return nil, string.format("binary file skipped: %s", path or label or "")
+  end
+  local lines = split_lines(text or "")
+  local source = {
+    path = path,
+    label = label or path,
+    lines = lines,
+    text = to_text(lines),
+    filetype = detect_filetype(path),
+  }
+  for key, value in pairs(metadata or {}) do
+    source[key] = value
+  end
+  return source
+end
+
+local function run_command(cmd)
+  if vim.system then
+    local result = vim.system(cmd, { text = false }):wait()
+    if result.code ~= 0 then
+      return nil, vim.trim(result.stderr or result.stdout or "")
+    end
+    return result.stdout or "", nil
+  end
+
+  local output = vim.fn.system(cmd)
+  local code = vim.v.shell_error
+  if code ~= 0 then
+    return nil, vim.trim(output or "")
+  end
+  return output or "", nil
+end
+
+local function git_output(root, args)
+  local cmd = { "git" }
+  if root and root ~= "" then
+    cmd[#cmd + 1] = "-C"
+    cmd[#cmd + 1] = root
+  end
+  for _, arg in ipairs(args) do
+    cmd[#cmd + 1] = arg
+  end
+
+  return run_command(cmd)
+end
+
+local function git_lines(root, args)
+  local output, err = git_output(root, args)
+  if not output then
+    return nil, err
+  end
+
+  return split_lines(output), nil
+end
+
+local function split_nul(text)
+  local items = {}
+  if not text or text == "" then
+    return items
+  end
+  local start = 1
+  while start <= #text do
+    local stop = text:find("\0", start, true)
+    if not stop then
+      stop = #text + 1
+    end
+    local item = text:sub(start, stop - 1)
+    if item ~= "" then
+      items[#items + 1] = item
+    end
+    start = stop + 1
+  end
+  return items
+end
+
+local function normalize_path(path)
+  if not path or path == "" then
+    return nil
+  end
+  return path:gsub("\\", "/")
+end
+
+local function realpath(path)
+  if not path or path == "" then
+    return nil
+  end
+  local uv = vim.uv or vim.loop
+  return uv.fs_realpath(path) or vim.fn.fnamemodify(path, ":p")
+end
+
+local function is_absolute(path)
+  return path and path:sub(1, 1) == "/"
+end
+
+local function path_dir(path)
+  if not path or path == "" then
+    local uv = vim.uv or vim.loop
+    return uv.cwd()
+  end
+  local expanded = vim.fn.fnamemodify(path, ":p")
+  if vim.fn.isdirectory(expanded) == 1 then
+    return expanded
+  end
+  return vim.fn.fnamemodify(expanded, ":h")
+end
+
+function M.find_root(start)
+  local dir = path_dir(start)
+  local lines, err = git_lines(dir, { "rev-parse", "--show-toplevel" })
+  if not lines or not lines[1] or lines[1] == "" then
+    return nil, err ~= "" and err or "not inside a git repository"
+  end
+  return vim.fn.fnamemodify(lines[1], ":p"):gsub("/$", ""), nil
+end
+
+local function current_buffer_path()
+  local name = vim.api.nvim_buf_get_name(0)
+  if name ~= "" then
+    return name
+  end
+  return nil
+end
+
+local function relpath(root, path)
+  if not path or path == "" then
+    return nil
+  end
+  local abs = realpath(path) or vim.fn.fnamemodify(path, ":p")
+  local root_abs = realpath(root) or vim.fn.fnamemodify(root, ":p")
+  root_abs = root_abs:gsub("/$", "")
+  if abs == root_abs then
+    return ""
+  end
+  local prefix = root_abs .. "/"
+  if abs:sub(1, #prefix) == prefix then
+    return normalize_path(abs:sub(#prefix + 1))
+  end
+  return normalize_path(path)
+end
+
+local function append_pathspecs(args, pathspecs)
+  args[#args + 1] = "--"
+  for _, pathspec in ipairs(pathspecs or {}) do
+    args[#args + 1] = pathspec
+  end
+end
+
+local function diff_args(opts)
+  local mode = opts.mode or "unstaged"
+  local args = { "diff", "--name-status", "-z", "--no-ext-diff" }
+  if opts.find_renames ~= false then
+    args[#args + 1] = "-M"
+  end
+
+  if mode == "staged" then
+    args[#args + 1] = "--cached"
+  elseif mode == "all" then
+    args[#args + 1] = opts.base or "HEAD"
+  elseif mode == "rev" then
+    args[#args + 1] = opts.base
+    args[#args + 1] = opts.target
+  elseif mode ~= "unstaged" then
+    return nil, string.format("unsupported git diff mode: %s", tostring(mode))
+  end
+
+  append_pathspecs(args, opts.pathspecs)
+  return args, nil
+end
+
+local function parse_name_status(output)
+  local tokens = split_nul(output)
+  local entries = {}
+  local i = 1
+  while i <= #tokens do
+    local status = tokens[i]
+    local code = status and status:sub(1, 1) or ""
+    if code == "R" or code == "C" then
+      local old_path = tokens[i + 1]
+      local new_path = tokens[i + 2]
+      if old_path and new_path then
+        entries[#entries + 1] = {
+          status = code,
+          raw_status = status,
+          path = normalize_path(new_path),
+          old_path = normalize_path(old_path),
+        }
+      end
+      i = i + 3
+    else
+      local path = tokens[i + 1]
+      if path then
+        entries[#entries + 1] = {
+          status = code,
+          raw_status = status,
+          path = normalize_path(path),
+        }
+      end
+      i = i + 2
+    end
+  end
+  return entries
+end
+
+local function list_untracked(root, pathspecs)
+  local args = { "ls-files", "--others", "--exclude-standard", "-z" }
+  append_pathspecs(args, pathspecs)
+  local output, err = git_output(root, args)
+  if not output then
+    return nil, err
+  end
+  local entries = {}
+  for _, path in ipairs(split_nul(output)) do
+    entries[#entries + 1] = {
+      status = "A",
+      raw_status = "??",
+      path = normalize_path(path),
+      untracked = true,
+    }
+  end
+  return entries, nil
+end
+
+local function list_entries(root, opts)
+  local args, arg_err = diff_args(opts)
+  if not args then
+    return nil, arg_err
+  end
+
+  local output, err = git_output(root, args)
+  if not output then
+    return nil, err
+  end
+  local entries = parse_name_status(output)
+
+  if opts.include_untracked ~= false and (opts.mode == "unstaged" or opts.mode == "all") then
+    local untracked, untracked_err = list_untracked(root, opts.pathspecs)
+    if not untracked then
+      return nil, untracked_err
+    end
+    for _, entry in ipairs(untracked) do
+      entries[#entries + 1] = entry
+    end
+  end
+
+  table.sort(entries, function(a, b)
+    return (a.path or "") < (b.path or "")
+  end)
+  return entries, nil
+end
+
+local function abs_path(root, path)
+  if is_absolute(path) then
+    return path
+  end
+  return root .. "/" .. path
+end
+
+local function find_loaded_buffer(path)
+  local abs = realpath(path) or vim.fn.fnamemodify(path, ":p")
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(bufnr) then
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      local buffer_path = realpath(name) or vim.fn.fnamemodify(name, ":p")
+      if name ~= "" and buffer_path == abs then
+        return bufnr
+      end
+    end
+  end
+  return nil
+end
+
+local function has_modified_loaded_buffer(root, path)
+  local bufnr = find_loaded_buffer(abs_path(root, path))
+  return bufnr ~= nil and vim.api.nvim_get_option_value("modified", { buf = bufnr }) == true
+end
+
+local function read_worktree(root, path, use_buffer)
+  local full_path = abs_path(root, path)
+  if use_buffer ~= false then
+    local bufnr = find_loaded_buffer(full_path)
+    if bufnr and vim.api.nvim_get_option_value("modified", { buf = bufnr }) then
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      return to_text(lines), nil, "buffer"
+    end
+  end
+
+  local ok, lines = pcall(vim.fn.readfile, full_path)
+  if not ok then
+    return nil, string.format("unable to read worktree file: %s", full_path)
+  end
+  return to_text(lines), nil, "working tree"
+end
+
+local function read_blob(root, spec)
+  local output, err = git_output(root, { "show", "--no-ext-diff", spec })
+  if not output then
+    return nil, err
+  end
+  return output, nil
+end
+
+local function empty_source(path, label, metadata)
+  return source_from_text("", path, label, metadata)
+end
+
+local function git_source(root, path, label, reader)
+  local text, err, label_suffix = reader()
+  if not text then
+    return nil, err
+  end
+  return source_from_text(text, abs_path(root, path), label_suffix and string.format("%s (%s)", path, label_suffix) or label)
+end
+
+local function source_from_kind(queue, entry, side)
+  local root = queue.root
+  local opts = queue.opts
+  local mode = opts.mode
+  local path = side == "left" and (entry.old_path or entry.path) or entry.path
+  local label_path = path
+
+  if side == "left" then
+    if entry.untracked or (entry.status == "A" and (mode == "staged" or mode == "all" or mode == "rev")) then
+      local label
+      if entry.untracked then
+        label = string.format("%s (not tracked)", label_path)
+      elseif mode == "rev" then
+        label = string.format("%s (%s: absent)", label_path, opts.base)
+      else
+        label = string.format("%s (%s: absent)", label_path, opts.base or "HEAD")
+      end
+      return empty_source(abs_path(root, path), label, {
+        git_state = entry.untracked and "untracked" or "absent",
+        empty_reason = entry.untracked and "New untracked file" or "New file",
+      })
+    end
+    if mode == "unstaged" then
+      return git_source(root, path, string.format("%s (index)", label_path), function()
+        return read_blob(root, ":" .. path)
+      end)
+    elseif mode == "staged" then
+      return git_source(root, path, string.format("%s (HEAD)", label_path), function()
+        return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
+      end)
+    elseif mode == "all" then
+      return git_source(root, path, string.format("%s (%s)", label_path, opts.base or "HEAD"), function()
+        return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
+      end)
+    elseif mode == "rev" then
+      return git_source(root, path, string.format("%s (%s)", label_path, opts.base), function()
+        return read_blob(root, opts.base .. ":" .. path)
+      end)
+    end
+  end
+
+  if entry.status == "D" then
+    local label
+    if mode == "staged" then
+      label = string.format("%s (index: deleted)", label_path)
+    elseif mode == "rev" then
+      label = string.format("%s (%s: absent)", label_path, opts.target)
+    else
+      label = string.format("%s (working tree: deleted)", label_path)
+    end
+    return empty_source(abs_path(root, path), label, {
+      git_state = "deleted",
+      empty_reason = "Deleted file",
+    })
+  end
+  if mode == "staged" then
+    return git_source(root, path, string.format("%s (index)", label_path), function()
+      return read_blob(root, ":" .. path)
+    end)
+  elseif mode == "rev" then
+    return git_source(root, path, string.format("%s (%s)", label_path, opts.target), function()
+      return read_blob(root, opts.target .. ":" .. path)
+    end)
+  end
+
+  return git_source(root, path, string.format("%s (working tree)", label_path), function()
+    return read_worktree(root, path, opts.use_buffer)
+  end)
+end
+
+local function normalize_opts(opts, config)
+  opts = vim.tbl_extend("force", {}, config or {}, opts or {})
+  opts.mode = opts.mode or opts.default_mode or "unstaged"
+  opts.scope = opts.scope or opts.default_scope or "repo"
+  if opts.mode == "cached" then
+    opts.mode = "staged"
+  end
+  if opts.mode == "rev" and (not opts.base or not opts.target) then
+    return nil, "revision mode requires both base and target revisions"
+  end
+  if opts.mode == "all" then
+    opts.base = opts.base or "HEAD"
+  end
+  opts.pathspecs = opts.pathspecs or {}
+  return opts, nil
+end
+
+function M.queue(opts, config)
+  local normalized, normalize_err = normalize_opts(opts, config)
+  if not normalized then
+    return nil, normalize_err
+  end
+
+  local uv = vim.uv or vim.loop
+  local start = normalized.root
+    or normalized.path
+    or (normalized.scope == "current" and normalized.pathspecs and normalized.pathspecs[1])
+    or current_buffer_path()
+    or uv.cwd()
+  local root, root_err = M.find_root(start)
+  if not root then
+    return nil, root_err
+  end
+  normalized.root = root
+
+  if normalized.scope == "current" then
+    local target = normalized.path or (normalized.pathspecs and normalized.pathspecs[1]) or current_buffer_path()
+    if not target then
+      return nil, "no current file for git diff"
+    end
+    normalized.pathspecs = { relpath(root, target) }
+  end
+
+  local entries, entries_err = list_entries(root, normalized)
+  if not entries then
+    return nil, entries_err
+  end
+  if #entries == 0 and normalized.scope == "current" and normalized.use_buffer ~= false then
+    local current_path = normalized.pathspecs and normalized.pathspecs[1]
+    if current_path and has_modified_loaded_buffer(root, current_path) then
+      entries[#entries + 1] = {
+        status = "M",
+        raw_status = "buffer",
+        path = normalize_path(current_path),
+        buffer_only = true,
+      }
+    end
+  end
+  if #entries == 0 then
+    return nil, "no git changes"
+  end
+
+  local queue = {
+    kind = "git",
+    root = root,
+    opts = normalized,
+    entries = entries,
+    index = 1,
+  }
+
+  function queue.load(index)
+    return M.sources_for_entry(queue, index)
+  end
+
+  return queue, nil
+end
+
+function M.sources_for_entry(queue, index)
+  local entry = queue.entries[index]
+  if not entry then
+    return nil, "no changed file at queue index " .. tostring(index)
+  end
+
+  local left, left_err = source_from_kind(queue, entry, "left")
+  if not left then
+    return nil, left_err
+  end
+  local right, right_err = source_from_kind(queue, entry, "right")
+  if not right then
+    return nil, right_err
+  end
+
+  return {
+    left = left,
+    right = right,
+    entry = entry,
+    index = index,
+  }, nil
+end
+
+M._private = {
+  parse_name_status = parse_name_status,
+  split_nul = split_nul,
+  normalize_opts = normalize_opts,
+}
+
+return M

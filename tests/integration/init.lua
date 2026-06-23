@@ -83,6 +83,23 @@ function _G.DiffBanditTestWriteState(path)
   vim.fn.writefile({ state }, path)
 end
 
+function _G.DiffBanditTestWriteGitState(path)
+  local session = _G.DiffBanditTestSession()
+  if not session then
+    vim.fn.writefile({ "missing_session" }, path)
+    return
+  end
+  local queue = session.file_queue or {}
+  local lines = {
+    string.format("queue_index=%d", session.file_queue_index or -1),
+    string.format("queue_count=%d", #(queue.entries or {})),
+    string.format("chunk=%d", session.current_chunk or -1),
+    string.format("left_label=%s", session.left and (session.left.label or session.left.path or "") or ""),
+    string.format("right_label=%s", session.right and (session.right.label or session.right.path or "") or ""),
+  }
+  vim.fn.writefile(lines, path)
+end
+
 vim.api.nvim_create_user_command("DBViewport", function(opts)
   local left_topline = tonumber(opts.fargs[1])
   local right_topline = tonumber(opts.fargs[2])
@@ -97,5 +114,10 @@ end, { nargs = "*" })
 
 vim.api.nvim_create_user_command("DBWriteState", function(opts)
   _G.DiffBanditTestWriteState(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBWriteGitState", function(opts)
+  _G.DiffBanditTestWriteGitState(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = 1, complete = "file" })

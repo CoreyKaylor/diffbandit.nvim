@@ -46,6 +46,17 @@ local defaults = {
     prompt_message = "Reached final change in this diff. Open next file with changes?",
     on_request_next_file = nil,
   },
+  git = {
+    default_mode = "unstaged",
+    default_scope = "repo",
+    use_buffer = true,
+    include_untracked = true,
+    find_renames = true,
+    file_keys = {
+      next = "]f",
+      prev = "[f",
+    },
+  },
 }
 
 function M.defaults()

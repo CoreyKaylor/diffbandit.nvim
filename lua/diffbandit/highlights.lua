@@ -277,6 +277,12 @@ local function apply_diff_variants(config)
     fg = get_foreground_color("Comment", "#808080"),
   })
 
+  apply_group("DiffBanditEmptyNotice", {
+    bg = normal_bg,
+    fg = get_foreground_color("Comment", "#808080"),
+    italic = true,
+  })
+
   -- Connector backgrounds (full-line) - these will be applied to entire connector lines
   apply_group("DiffBanditConnectorAdd", {
     bg = add_bg,

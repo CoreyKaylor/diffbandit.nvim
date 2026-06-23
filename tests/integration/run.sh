@@ -3,7 +3,7 @@
 # Usage: ./run.sh [test_name]
 #   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'dense-mixed',
 #              'theme-default', 'comprehensive',
-#              'navigation',
+#              'navigation', 'git',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
 
@@ -397,6 +397,182 @@ run_navigation_test() {
     echo "  States: $case_dir"
 }
 
+write_git_fixture() {
+    local repo="$1"
+
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+
+    cat > "$repo/alpha_modified.txt" <<'EOF'
+alpha old one
+alpha stable two
+EOF
+    cat > "$repo/delete_me.txt" <<'EOF'
+deleted line one
+deleted line two
+EOF
+    git -C "$repo" add .
+    git -C "$repo" commit -m baseline >/dev/null
+
+    cat > "$repo/alpha_modified.txt" <<'EOF'
+alpha new one
+alpha stable two
+EOF
+    rm "$repo/delete_me.txt"
+    cat > "$repo/beta_added_staged.txt" <<'EOF'
+staged added line one
+staged added line two
+EOF
+    git -C "$repo" add beta_added_staged.txt
+    cat > "$repo/z_new_file.txt" <<'EOF'
+brand new content one
+brand new content two
+EOF
+}
+
+start_git_session() {
+    local repo="$1"
+    local height="${2:-16}"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y "$height"
+    tmux send-keys -t "$TMUX_SESSION" "cd '$repo' && nvim -n -u '$SCRIPT_DIR/init.lua'" Enter
+    sleep 1
+}
+
+capture_git_command() {
+    local repo="$1"
+    local test_name="$2"
+    local command="$3"
+    local case_dir="$CAPTURE_ROOT/git"
+    local plain_capture="$case_dir/${test_name}.txt"
+    local ansi_capture="$case_dir/${test_name}.ansi"
+
+    echo "  phase: $test_name"
+    start_git_session "$repo" 16
+    tmux send-keys -t "$TMUX_SESSION" "$command" C-m
+    sleep 2
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+    tmux capture-pane -t "$TMUX_SESSION" -e -p > "$ansi_capture"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "git:${test_name#git-}" "$ansi_capture"
+}
+
+assert_git_state_contains() {
+    local file="$1"
+    local expected="$2"
+    local label="$3"
+    local state
+    state="$(cat "$file")"
+    if [[ "$state" != *"$expected"* ]]; then
+        echo "Git navigation state failed ($label): expected '$expected'"
+        echo "$state"
+        exit 1
+    fi
+}
+
+run_git_queue_navigation_test() {
+    local repo="$1"
+    local case_dir="$CAPTURE_ROOT/git"
+    local initial_state="$case_dir/queue-initial.state"
+    local first_boundary_state="$case_dir/queue-after-first-boundary.state"
+    local second_boundary_state="$case_dir/queue-after-second-boundary.state"
+    local next_file_state="$case_dir/queue-after-next-file.state"
+    local prev_file_state="$case_dir/queue-after-prev-file.state"
+
+    echo "  phase: git-queue-navigation"
+    start_git_session "$repo" 12
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit" C-m
+    sleep 2
+
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $initial_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $first_boundary_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $second_boundary_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "f"
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $next_file_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "[" "f"
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $prev_file_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    assert_git_state_contains "$initial_state" "queue_index=1" "initial index"
+    assert_git_state_contains "$initial_state" "queue_count=3" "initial count"
+    assert_git_state_contains "$initial_state" "alpha_modified.txt (index)" "initial left label"
+    assert_git_state_contains "$initial_state" "alpha_modified.txt (working tree)" "initial right label"
+
+    assert_git_state_contains "$first_boundary_state" "queue_index=1" "first ]c should only arm boundary"
+    assert_git_state_contains "$second_boundary_state" "queue_index=2" "second ]c should open next file"
+    assert_git_state_contains "$second_boundary_state" "delete_me.txt" "second ]c next file label"
+
+    assert_git_state_contains "$next_file_state" "queue_index=3" "]f should open third file"
+    assert_git_state_contains "$next_file_state" "z_new_file.txt" "]f third file label"
+    assert_git_state_contains "$prev_file_state" "queue_index=2" "[f should return to second file"
+    assert_git_state_contains "$prev_file_state" "delete_me.txt" "[f second file label"
+}
+
+run_git_live_buffer_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/live-buffer-repo"
+    local plain_capture="$case_dir/git-live-buffer.txt"
+    local ansi_capture="$case_dir/git-live-buffer.ansi"
+
+    echo "  phase: git-live-buffer"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/live_buffer.txt" <<'EOF'
+saved buffer line
+stable buffer line
+EOF
+    git -C "$repo" add live_buffer.txt
+    git -C "$repo" commit -m baseline >/dev/null
+
+    start_git_session "$repo" 16
+    tmux send-keys -t "$TMUX_SESSION" ":edit live_buffer.txt" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":call setline(1, 'unsaved buffer line')" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGitCurrent" C-m
+    sleep 2
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+    tmux capture-pane -t "$TMUX_SESSION" -e -p > "$ansi_capture"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "git:live-buffer" "$ansi_capture"
+}
+
+run_git_test() {
+    local test_name="git"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+    local repo="$case_dir/repo"
+
+    echo "Running integration test: $test_name"
+    mkdir -p "$case_dir"
+    write_git_fixture "$repo"
+
+    capture_git_command "$repo" "git-untracked" ":DiffBanditGit -- z_new_file.txt"
+    capture_git_command "$repo" "git-deleted" ":DiffBanditGit -- delete_me.txt"
+    capture_git_command "$repo" "git-staged-added" ":DiffBanditGit --staged -- beta_added_staged.txt"
+    run_git_queue_navigation_test "$repo"
+    run_git_live_buffer_test
+
+    echo "  PASSED: $test_name"
+    echo "  Captures: $case_dir"
+}
+
 # Parse arguments
 TEST_TO_RUN="${1:-all}"
 
@@ -438,6 +614,9 @@ case "$TEST_TO_RUN" in
         ;;
     navigation)
         run_navigation_test
+        ;;
+    git)
+        run_git_test
         ;;
     scroll-additions)
         run_scroll_test "scroll-additions" \
@@ -495,10 +674,12 @@ case "$TEST_TO_RUN" in
 
         run_navigation_test
 
+        run_git_test
+
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|git|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac

@@ -839,6 +839,51 @@ local function plain_fragment_requirements(errors, lines)
   return require_plain_fragment, forbid_plain_fragment
 end
 
+local function verify_git(lines, ansi_lines, phase)
+  local errors = {}
+  local require_plain_fragment, forbid_plain_fragment = plain_fragment_requirements(errors, lines)
+
+  if phase == "untracked" then
+    require_plain_fragment("New untracked file",
+      "Expected untracked Git file capture to show a helpful missing-base notice")
+    require_plain_fragment("brand new content one",
+      "Expected untracked Git file capture to show working tree content")
+    forbid_plain_fragment("git add",
+      "Untracked Git file capture should not show raw Git advice text")
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "brand new content one" })) do
+      table.insert(errors, err)
+    end
+  elseif phase == "deleted" then
+    require_plain_fragment("Deleted file",
+      "Expected deleted Git file capture to show a helpful missing-current notice")
+    require_plain_fragment("deleted line one",
+      "Expected deleted Git file capture to show deleted source content")
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "deleted line one" })) do
+      table.insert(errors, err)
+    end
+  elseif phase == "staged-added" then
+    require_plain_fragment("New file",
+      "Expected staged added Git file capture to show a helpful missing-base notice")
+    require_plain_fragment("staged added line one",
+      "Expected staged added Git file capture to show index content")
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "staged added line one" })) do
+      table.insert(errors, err)
+    end
+  elseif phase == "live-buffer" then
+    require_plain_fragment("saved buffer line",
+      "Expected live-buffer Git capture to show the saved index/base text")
+    require_plain_fragment("unsaved buffer line",
+      "Expected live-buffer Git capture to show unsaved buffer text")
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "unsaved buffer line" })) do
+      table.insert(errors, err)
+    end
+  else
+    table.insert(errors, "Unknown Git integration phase: " .. tostring(phase))
+  end
+
+  return errors
+end
+
 local function nth_plain_pos(line, needle, n)
   local from = 1
   local pos
@@ -2474,6 +2519,8 @@ elseif scroll_base == "scroll-dense-mixed" then
   errors = verify_dense_mixed(lines, ansi_lines, scroll_phase)
 elseif scroll_base == "scroll-changes" then
   errors = verify_scroll_changes(lines, ansi_lines, scroll_phase)
+elseif scroll_base == "git" then
+  errors = verify_git(lines, ansi_lines, scroll_phase)
 elseif test_name == "pure" then
   errors = verify_pure_additions(lines, ansi_lines)
   for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New line 1", "New line 6" })) do

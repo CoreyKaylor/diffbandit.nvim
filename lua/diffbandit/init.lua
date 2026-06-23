@@ -2,6 +2,7 @@ local state = require("diffbandit.state")
 local diff_mod = require("diffbandit.diff")
 local Session = require("diffbandit.session")
 local highlights = require("diffbandit.highlights")
+local git_mod = require("diffbandit.git")
 
 local M = {}
 
@@ -82,15 +83,30 @@ local function make_source_from_buffer(bufnr, label)
   }
 end
 
-local function start_session(left_source, right_source)
+local function start_session(left_source, right_source, opts)
   local config = state.get_config()
   ensure_highlights(config)
-  local session, err = Session.start({ left = left_source, right = right_source }, config)
+  local session, err = Session.start({ left = left_source, right = right_source }, config, opts)
   if not session then
     return nil, err
   end
   state.register(session)
   return session
+end
+
+local function load_queue_entry(queue, start_index, step)
+  local index = start_index
+  local count = #(queue.entries or {})
+  while index >= 1 and index <= count do
+    local loaded, err = queue.load(index)
+    if loaded and loaded.left and loaded.right then
+      queue.index = index
+      return loaded, nil
+    end
+    vim.notify("DiffBandit: skipping " .. tostring(err or "unreadable git file"), vim.log.levels.WARN)
+    index = index + step
+  end
+  return nil, "no readable changed file"
 end
 
 function M.files(left_path, right_path, opts)
@@ -113,6 +129,30 @@ function M.buffers(bufnr_a, bufnr_b, opts)
   local left_source = make_source_from_buffer(bufnr_a, opts.left_label)
   local right_source = make_source_from_buffer(bufnr_b, opts.right_label)
   return start_session(left_source, right_source)
+end
+
+function M.git(opts)
+  local config = state.get_config()
+  ensure_highlights(config)
+  local queue, err = git_mod.queue(opts or {}, config.git or {})
+  if not queue then
+    return nil, err
+  end
+
+  local loaded, load_err = load_queue_entry(queue, queue.index or 1, 1)
+  if not loaded then
+    return nil, load_err
+  end
+
+  return start_session(loaded.left, loaded.right, { queue = queue })
+end
+
+function M.git_file(path, opts)
+  opts = vim.tbl_extend("force", {}, opts or {}, {
+    scope = "current",
+    path = path,
+  })
+  return M.git(opts)
 end
 
 return M
