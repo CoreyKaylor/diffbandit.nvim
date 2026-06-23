@@ -47,7 +47,7 @@ local defaults = {
     on_request_next_file = nil,
   },
   git = {
-    default_mode = "unstaged",
+    default_mode = "all",
     default_scope = "repo",
     use_buffer = true,
     include_untracked = true,
@@ -55,6 +55,18 @@ local defaults = {
     file_keys = {
       next = "]f",
       prev = "[f",
+    },
+  },
+  actions = {
+    keys = {
+      toggle_stage = "<Space>",
+      apply_left = ">>",
+      apply_right = "<<",
+      undo = "u",
+    },
+    staged_indicator = {
+      unstaged = "□",
+      staged = "▣",
     },
   },
 }

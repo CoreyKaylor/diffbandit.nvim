@@ -874,8 +874,26 @@ local function verify_git(lines, ansi_lines, phase)
       "Expected live-buffer Git capture to show the saved index/base text")
     require_plain_fragment("unsaved buffer line",
       "Expected live-buffer Git capture to show unsaved buffer text")
+    require_plain_fragment("□",
+      "Expected live-buffer Git capture to show unstaged hunk marker")
     for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "unsaved buffer line" })) do
       table.insert(errors, err)
+    end
+  elseif phase == "action-unstaged-marker" then
+    require_plain_fragment("action changed line",
+      "Expected action Git capture to show unstaged changed content")
+    require_plain_fragment("□",
+      "Expected action Git capture to show unstaged hunk marker")
+    if count_occurrences(lines, "□") ~= 1 then
+      table.insert(errors, "Expected unstaged hunk marker to render once on the mutable side")
+    end
+  elseif phase == "action-staged-marker" then
+    require_plain_fragment("action changed line",
+      "Expected staged action Git capture to show staged changed content")
+    require_plain_fragment("▣",
+      "Expected staged action Git capture to show staged hunk marker")
+    if count_occurrences(lines, "▣") ~= 1 then
+      table.insert(errors, "Expected staged hunk marker to render once on the mutable side")
     end
   else
     table.insert(errors, "Unknown Git integration phase: " .. tostring(phase))

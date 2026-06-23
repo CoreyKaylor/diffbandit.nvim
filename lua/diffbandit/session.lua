@@ -2,6 +2,7 @@ local diff_mod = require("diffbandit.diff")
 local view_builder = require("diffbandit.view")
 local state = require("diffbandit.state")
 local paths_mod = require("diffbandit.paths")
+local actions = require("diffbandit.actions")
 
 local Session = {}
 Session.__index = Session
@@ -25,6 +26,10 @@ local function format_line_number_left(num, width)
   -- Left-align number (pad on right) so numbers expand rightward toward center
   local fmt = string.format("%%-%dd", width)
   return string.format(fmt, num)
+end
+
+local function is_git_queue(queue)
+  return queue and queue.kind == "git"
 end
 
 local function build_display_lines(session)
@@ -159,9 +164,14 @@ function Session.start(sources, config, opts)
   self.disposed = false
 
   self.connector_core_width = connector_core_base_width(view, self.config)
-  self.left_number_pane_width = self.left_number_width + 1
-  self.right_number_pane_width = self.right_number_width + 1
+  self.stage_marker_width = is_git_queue(self.file_queue) and 1 or 0
+  self.left_stage_marker_width = 0
+  self.right_stage_marker_width = self.stage_marker_width
+  self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
+  self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
   self.gutter_width = self.connector_core_width
+  self.connector_width_cache = {}
+  self.staged_chunk_states = actions.staged_chunk_states(self)
 
   self:open_layout()
   self:precompute_connector_core_width()
@@ -181,6 +191,14 @@ function Session.start(sources, config, opts)
   end
 
   return self
+end
+
+function Session:left_triangle_col()
+  return self.left_number_pane_width - 1
+end
+
+function Session:left_number_text_end_col()
+  return self:left_triangle_col()
 end
 
 function Session:open_layout()
@@ -212,7 +230,7 @@ function Session:open_layout()
   set_buffer_options(right_buf, {
     buftype = "nofile",
     swapfile = false,
-    modifiable = false,
+    modifiable = true,
     filetype = self.right.filetype,
   })
 
@@ -536,9 +554,17 @@ function Session:setup_keymaps()
   local function map(buf, lhs, rhs)
     vim.keymap.set("n", lhs, rhs, vim.tbl_extend("force", opts, { buffer = buf }))
   end
+  local function action_map(buf, lhs, command, fallback)
+    if vim.fn.exists(":" .. command) == 2 then
+      map(buf, lhs, "<Cmd>" .. command .. "<CR>")
+    else
+      map(buf, lhs, fallback)
+    end
+  end
   local navigation = self.config.navigation or {}
   local document_keys = navigation.document_keys or {}
   local git_keys = ((self.config.git or {}).file_keys or {})
+  local action_keys = ((self.config.actions or {}).keys or {})
 
   local function buffer_maps(buf)
     map(buf, "]c", function()
@@ -570,9 +596,32 @@ function Session:setup_keymaps()
         self:goto_prev_file()
       end)
     end
+    if action_keys.toggle_stage then
+      action_map(buf, action_keys.toggle_stage, "DiffBanditToggleStageHunk", function()
+        self:toggle_stage_hunk()
+      end)
+    end
+    if action_keys.apply_left then
+      action_map(buf, action_keys.apply_left, "DiffBanditApplyLeftHunk", function()
+        self:apply_left_hunk()
+      end)
+    end
+    if action_keys.apply_right then
+      action_map(buf, action_keys.apply_right, "DiffBanditApplyRightHunk", function()
+        self:apply_right_hunk()
+      end)
+    end
+    if action_keys.undo then
+      action_map(buf, action_keys.undo, "DiffBanditUndo", function()
+        self:undo_action()
+      end)
+    end
   end
 
   buffer_maps(self.left_buf)
+  buffer_maps(self.left_num_buf)
+  buffer_maps(self.connector_buf)
+  buffer_maps(self.right_num_buf)
   buffer_maps(self.right_buf)
   map(self.left_buf, "<C-w>l", function()
     if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
@@ -702,6 +751,54 @@ function Session:chunk_navigation_anchors(chunk)
   return left_anchor, right_anchor
 end
 
+function Session:chunk_cursor_rows(chunk)
+  local meta_list = self.view and self.view.line_meta or {}
+  local start_idx = chunk and chunk.display_start or 1
+  local end_idx = chunk and chunk.display_end or start_idx
+  local left_cursor
+  local right_cursor
+
+  if chunk and chunk.type == "add" then
+    local origin_meta = meta_list[start_idx - 1]
+    left_cursor = origin_meta and origin_meta.left_index or nil
+    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.right_index ~= nil
+    end)
+    right_cursor = right_meta and right_meta.right_index or nil
+  elseif chunk and chunk.type == "delete" then
+    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.left_index ~= nil
+    end)
+    left_cursor = left_meta and left_meta.left_index or nil
+    local origin_meta = meta_list[start_idx - 1]
+    right_cursor = origin_meta and origin_meta.right_index or nil
+  else
+    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.left_index ~= nil
+    end)
+    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.right_index ~= nil
+    end)
+    left_cursor = left_meta and left_meta.left_index or nil
+    right_cursor = right_meta and right_meta.right_index or nil
+  end
+
+  if not left_cursor then
+    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.left_index ~= nil
+    end)
+    left_cursor = left_meta and left_meta.left_index or nil
+  end
+  if not right_cursor then
+    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
+      return meta.right_index ~= nil
+    end)
+    right_cursor = right_meta and right_meta.right_index or nil
+  end
+
+  return left_cursor, right_cursor
+end
+
 function Session:align_chunk_viewports(chunk)
   local navigation = self.config.navigation or {}
   if navigation.align_on_jump == false then
@@ -719,8 +816,11 @@ function Session:align_chunk_viewports(chunk)
   local context = math.max(0, tonumber(navigation.jump_context) or 0)
   local left_topline = math.max(1, left_anchor - context)
   local right_topline = math.max(1, right_anchor - context)
+  local left_cursor, right_cursor = self:chunk_cursor_rows(chunk)
+  left_cursor = left_cursor or left_topline
+  right_cursor = right_cursor or right_topline
 
-  self:set_viewport_toplines(left_topline, right_topline)
+  self:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_cursor, right_cursor)
 
   if focused_win == self.left_win or focused_win == self.right_win then
     pcall(vim.api.nvim_set_current_win, focused_win)
@@ -832,6 +932,18 @@ end
 
 function Session:replace_sources(sources, opts)
   opts = opts or {}
+  local preserve_view = opts.preserve_view == true
+  local preserved_left_topline = preserve_view and get_win_view_topline(self.left_win) or nil
+  local preserved_right_topline = preserve_view and get_win_view_topline(self.right_win) or nil
+  local preserved_left_cursor = 1
+  local preserved_right_cursor = 1
+  if preserve_view then
+    local ok_left, left_cursor = pcall(vim.api.nvim_win_get_cursor, self.left_win)
+    local ok_right, right_cursor = pcall(vim.api.nvim_win_get_cursor, self.right_win)
+    preserved_left_cursor = ok_left and left_cursor[1] or preserved_left_topline or 1
+    preserved_right_cursor = ok_right and right_cursor[1] or preserved_right_topline or 1
+  end
+
   local hunks, view = build_view_for_sources(sources, self.config)
   if not hunks then
     return nil, view
@@ -844,11 +956,15 @@ function Session:replace_sources(sources, opts)
   self.current_chunk = view.chunks[1] and 1 or 0
   self.left_number_width = math.max(2, digits_of(#sources.left.lines))
   self.right_number_width = digits_of(#sources.right.lines)
-  self.left_number_pane_width = self.left_number_width + 1
-  self.right_number_pane_width = self.right_number_width + 1
+  self.stage_marker_width = is_git_queue(self.file_queue) and 1 or 0
+  self.left_stage_marker_width = 0
+  self.right_stage_marker_width = self.stage_marker_width
+  self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
+  self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
   self.connector_core_width = connector_core_base_width(view, self.config)
   self.gutter_width = self.connector_core_width
   self:reset_pending_file_boundary()
+  self.staged_chunk_states = actions.staged_chunk_states(self)
 
   set_buffer_options(self.left_buf, { filetype = self.left.filetype })
   set_buffer_options(self.right_buf, { filetype = self.right.filetype })
@@ -856,14 +972,39 @@ function Session:replace_sources(sources, opts)
   self:resize_layout()
   self:precompute_connector_core_width()
   self:render()
+  self:setup_keymaps()
 
-  pcall(vim.api.nvim_win_set_cursor, self.left_win, { 1, 0 })
-  pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { 1, 0 })
-  pcall(vim.api.nvim_win_set_cursor, self.right_win, { 1, 0 })
-  pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { 1, 0 })
-  self:set_viewport_toplines_preserve_cursors(1, 1, 1, 1)
+  if preserve_view then
+    local left_cursor = math.max(1, math.min(preserved_left_cursor, math.max(1, #self.left.lines)))
+    local right_cursor = math.max(1, math.min(preserved_right_cursor, math.max(1, #self.right.lines)))
+    pcall(vim.api.nvim_win_set_cursor, self.left_win, { left_cursor, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { left_cursor, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.right_win, { right_cursor, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_cursor, 0 })
+    self:set_viewport_toplines_preserve_cursors(
+      preserved_left_topline or 1,
+      preserved_right_topline or 1,
+      left_cursor,
+      right_cursor
+    )
+  else
+    pcall(vim.api.nvim_win_set_cursor, self.left_win, { 1, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { 1, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.right_win, { 1, 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { 1, 0 })
+    self:set_viewport_toplines_preserve_cursors(1, 1, 1, 1)
+  end
 
-  if opts.chunk_position == "last" and #self.view.chunks > 0 then
+  if opts.chunk_position == "preserve" then
+    if #self.view.chunks > 0 then
+      self.current_chunk = math.min(opts.preferred_chunk or self.current_chunk or 1, #self.view.chunks)
+      self:highlight_active_chunk(self.view.chunks[self.current_chunk], { position_cursor = false })
+    else
+      self:clear_active_chunk()
+    end
+  elseif opts.chunk_position == "nearest" and opts.preferred_chunk and #self.view.chunks > 0 then
+    self:goto_chunk(math.min(opts.preferred_chunk, #self.view.chunks))
+  elseif opts.chunk_position == "last" and #self.view.chunks > 0 then
     self:goto_chunk(#self.view.chunks)
   elseif #self.view.chunks > 0 then
     self:goto_chunk(1)
@@ -1281,7 +1422,31 @@ local function add_topline_candidate(candidates, index, height, line_count)
   end
 end
 
+local function connector_width_cache_key(session)
+  local left = session.left or {}
+  local right = session.right or {}
+  return table.concat({
+    left.label or left.path or "",
+    right.label or right.path or "",
+    tostring(#(left.lines or {})),
+    tostring(#(right.lines or {})),
+    tostring(#(session.view.chunks or {})),
+    tostring(#(session.view.line_meta or {})),
+  }, "\0")
+end
+
 function Session:precompute_connector_core_width()
+  local cache_key = connector_width_cache_key(self)
+  local cached = self.connector_width_cache and self.connector_width_cache[cache_key]
+  if cached then
+    if cached > self.connector_core_width then
+      self.connector_core_width = cached
+      self.gutter_width = cached
+      self:resize_layout()
+    end
+    return cached
+  end
+
   local paths = paths_mod.compute_paths(self.view.chunks, self.view.line_meta)
   local minimum_width = self.connector_core_width
   local required_core = minimum_width
@@ -1313,12 +1478,21 @@ function Session:precompute_connector_core_width()
 
   local left_toplines = sorted_keys(left_candidates)
   local right_toplines = sorted_keys(right_candidates)
-  for _, left_topline in ipairs(left_toplines) do
-    for _, right_topline in ipairs(right_toplines) do
-      local projected = self:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
-      required_core = paths_mod.required_connector_core_width(paths_mod.max_lane(projected), required_core)
+  local max_combinations = tonumber(((self.config.ui or {}).max_connector_precompute_combinations)) or 400
+  local combinations = #left_toplines * #right_toplines
+  if combinations > max_combinations then
+    required_core = paths_mod.required_connector_core_width(math.min(8, #paths), required_core)
+  else
+    for _, left_topline in ipairs(left_toplines) do
+      for _, right_topline in ipairs(right_toplines) do
+        local projected = self:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
+        required_core = paths_mod.required_connector_core_width(paths_mod.max_lane(projected), required_core)
+      end
     end
   end
+
+  self.connector_width_cache = self.connector_width_cache or {}
+  self.connector_width_cache[cache_key] = required_core
 
   if required_core > self.connector_core_width then
     self.connector_core_width = required_core
@@ -1786,6 +1960,67 @@ function Session:render()
     return occupied
   end
 
+  local right_stage_markers = {}
+  if (self.right_stage_marker_width or 0) > 0 then
+    local indicator = ((self.config.actions or {}).staged_indicator or {})
+    local staged_glyph = indicator.staged or "▣"
+    local unstaged_glyph = indicator.unstaged or "□"
+    local staged_states = self.staged_chunk_states or {}
+
+    local function marker_for_chunk(chunk_index)
+      return staged_states[chunk_index] and staged_glyph or unstaged_glyph
+    end
+
+    local function mark_right(row, chunk_index)
+      if row and row >= 1 and row <= #right_lines then
+        right_stage_markers[row] = marker_for_chunk(chunk_index)
+      end
+    end
+
+    local function right_index_for_connector_row(row)
+      local index = right_topline + (row - left_topline)
+      if index >= 1 and index <= #right_lines then
+        return index
+      end
+      return nil
+    end
+
+    local function mark_right_connector_row(row, chunk_index)
+      mark_right(right_index_for_connector_row(row), chunk_index)
+    end
+
+    for _, p in ipairs(route_paths) do
+      if p.kind == "add" and not p.embedded_in_change and not p.hide_triangle and not p.overflow_hidden then
+        mark_right(p.target_start_index, p.chunk)
+      elseif p.kind == "delete" and not p.hide_triangle and not p.overflow_hidden then
+        mark_right(p.origin_right_index, p.chunk)
+        mark_right_connector_row(p.origin_display_row or p.target_start_index, p.chunk)
+      elseif p.kind == "change" then
+        for _, edge in ipairs(p.viewport_change_edges or {}) do
+          if edge.side == "right" then
+            mark_right(right_index_for_connector_row(edge.row), p.chunk)
+          end
+        end
+        for _, link in ipairs(p.viewport_change_links or {}) do
+          if not link.overflow_hidden and link.from_visible then
+            if link.from_side == "right" then
+              mark_right(right_index_for_connector_row(link.from_row), p.chunk)
+            end
+          end
+          if not link.overflow_hidden and link.to_visible then
+            if link.to_side == "right" then
+              mark_right(right_index_for_connector_row(link.to_row), p.chunk)
+            end
+          end
+        end
+        if p.viewport_solid_start and p.viewport_solid_end then
+          mark_right(right_index_for_connector_row(p.viewport_solid_start), p.chunk)
+          mark_right(right_index_for_connector_row(p.viewport_solid_end), p.chunk)
+        end
+      end
+    end
+  end
+
   -- Left and right buffers now have different line counts
   local left_num_lines = {}
   for i = 1, #left_lines do
@@ -1797,10 +2032,22 @@ function Session:render()
   end
   for _, meta in ipairs(self.view.line_meta) do
     if meta.left_index then
-      left_num_lines[meta.left_index] = format_line_number(meta.left_line, self.left_number_width) .. " "
+      if (self.left_stage_marker_width or 0) > 0 then
+        left_num_lines[meta.left_index] = " "
+          .. format_line_number(meta.left_line, self.left_number_width)
+          .. " "
+      else
+        left_num_lines[meta.left_index] = format_line_number(meta.left_line, self.left_number_width) .. " "
+      end
     end
     if meta.right_index then
-      right_num_lines[meta.right_index] = " " .. format_line_number_left(meta.right_line, self.right_number_width)
+      if (self.right_stage_marker_width or 0) > 0 then
+        right_num_lines[meta.right_index] = " "
+          .. format_line_number_left(meta.right_line, self.right_number_width)
+          .. (right_stage_markers[meta.right_index] or " ")
+      else
+        right_num_lines[meta.right_index] = " " .. format_line_number_left(meta.right_line, self.right_number_width)
+      end
     end
   end
 
@@ -1812,7 +2059,7 @@ function Session:render()
 
   set_buffer_options(self.left_buf, { modifiable = false })
   set_buffer_options(self.left_num_buf, { modifiable = false })
-  set_buffer_options(self.right_buf, { modifiable = false })
+  set_buffer_options(self.right_buf, { modifiable = true })
   set_buffer_options(self.right_num_buf, { modifiable = false })
   set_buffer_options(self.connector_buf, { modifiable = false })
 
@@ -1892,7 +2139,7 @@ function Session:render()
       if row < 0 or row >= connector_height then
         return
       end
-      vim.api.nvim_buf_set_extmark(self.left_num_buf, self.linenum_ns, row, self.left_number_width, {
+      vim.api.nvim_buf_set_extmark(self.left_num_buf, self.linenum_ns, row, self:left_triangle_col(), {
         virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
         virt_text_pos = "overlay",
       })
@@ -1936,11 +2183,11 @@ function Session:render()
         left_num_hl = "DiffBanditLineNumberLeft"
       end
 
-      vim.api.nvim_buf_add_highlight(self.left_num_buf, self.linenum_ns, left_num_hl, row, 0, self.left_number_width)
+      vim.api.nvim_buf_add_highlight(self.left_num_buf, self.linenum_ns, left_num_hl, row, 0, self:left_number_text_end_col())
       if meta.kind == "delete" then
-        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", row, 0, self.left_number_width)
+        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", row, 0, self:left_number_text_end_col())
       elseif change_number_left_indexes[meta.left_index] then
-        local end_col = solid_change_number_left_indexes[meta.left_index] and -1 or self.left_number_width
+        local end_col = solid_change_number_left_indexes[meta.left_index] and -1 or self:left_number_text_end_col()
         vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorChange", row, 0, end_col)
       end
       if not embedded_add_origin_left_indexes[meta.left_index] then
@@ -1991,7 +2238,7 @@ function Session:render()
       end
     elseif p.kind == "delete" then
       for left_index = p.target_start_index or p.display_start_row, p.target_end_index or p.display_end_row do
-        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", left_index - 1, 0, self.left_number_width)
+        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", left_index - 1, 0, self:left_number_text_end_col())
       end
     end
   end
@@ -2260,7 +2507,7 @@ function Session:render()
       return
     end
     if side == "left" then
-      vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, row - 1, self.left_number_width, {
+      vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, row - 1, self:left_triangle_col(), {
         virt_text = { { glyph, "DiffBanditConnectorExpansionChange" } },
         virt_text_pos = "overlay",
       })
@@ -2315,7 +2562,7 @@ function Session:render()
             virt_text_pos = "overlay",
           })
         elseif p.kind == "delete" and p.target_start_index then
-          vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, p.target_start_index - 1, self.left_number_width, {
+          vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, p.target_start_index - 1, self:left_triangle_col(), {
             virt_text = { { glyph, expansion_hl } },
             virt_text_pos = "overlay",
           })
@@ -2346,7 +2593,8 @@ function Session:clear_active_chunk()
   vim.api.nvim_buf_clear_namespace(self.connector_buf, self.active_ns, 0, -1)
 end
 
-function Session:highlight_active_chunk(chunk)
+function Session:highlight_active_chunk(chunk, opts)
+  opts = opts or {}
   self:clear_active_chunk()
 
   local active_hl = "DiffBanditActiveChunk"
@@ -2379,14 +2627,15 @@ function Session:highlight_active_chunk(chunk)
     end
   end
 
-  -- Position cursor at the start of the chunk
-  local first_meta = self.view.line_meta[chunk.display_start]
-  if first_meta then
-    if first_meta.left_index then
-      vim.api.nvim_win_set_cursor(self.left_win, { first_meta.left_index, 0 })
+  if opts.position_cursor ~= false then
+    -- Position source cursors on real hunk content where possible, while
+    -- keeping the opposite side on the contextual origin for pure add/delete hunks.
+    local left_cursor, right_cursor = self:chunk_cursor_rows(chunk)
+    if left_cursor then
+      vim.api.nvim_win_set_cursor(self.left_win, { left_cursor, 0 })
     end
-    if first_meta.right_index then
-      vim.api.nvim_win_set_cursor(self.right_win, { first_meta.right_index, 0 })
+    if right_cursor then
+      vim.api.nvim_win_set_cursor(self.right_win, { right_cursor, 0 })
     end
     vim.api.nvim_win_set_cursor(self.connector_win, { chunk.display_start, 0 })
   end
@@ -2550,6 +2799,40 @@ function Session:goto_prev_chunk()
     return
   end
   self:goto_chunk(self.current_chunk - 1)
+end
+
+local function notify_action_result(ok, err)
+  if not ok and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.INFO)
+  end
+end
+
+function Session:toggle_stage_hunk()
+  notify_action_result(actions.toggle_stage(self))
+end
+
+function Session:stage_hunk()
+  notify_action_result(actions.stage(self))
+end
+
+function Session:unstage_hunk()
+  notify_action_result(actions.unstage(self))
+end
+
+function Session:discard_hunk()
+  notify_action_result(actions.discard(self))
+end
+
+function Session:apply_left_hunk()
+  notify_action_result(actions.apply_left(self))
+end
+
+function Session:apply_right_hunk()
+  notify_action_result(actions.apply_right(self))
+end
+
+function Session:undo_action()
+  notify_action_result(actions.undo(self))
 end
 
 return Session

@@ -130,3 +130,45 @@ end, {
   complete = "file",
   desc = "Open DiffBandit git diff view for the current file",
 })
+
+vim.api.nvim_create_user_command("DiffBanditToggleStageHunk", function()
+  diffbandit.toggle_stage_hunk()
+end, {
+  desc = "Toggle staged state for the current DiffBandit Git hunk",
+})
+
+vim.api.nvim_create_user_command("DiffBanditStageHunk", function()
+  diffbandit.stage_hunk()
+end, {
+  desc = "Stage the current DiffBandit Git hunk",
+})
+
+vim.api.nvim_create_user_command("DiffBanditUnstageHunk", function()
+  diffbandit.unstage_hunk()
+end, {
+  desc = "Unstage the current DiffBandit Git hunk",
+})
+
+vim.api.nvim_create_user_command("DiffBanditDiscardHunk", function()
+  diffbandit.discard_hunk()
+end, {
+  desc = "Discard the current DiffBandit Git hunk",
+})
+
+vim.api.nvim_create_user_command("DiffBanditApplyLeftHunk", function()
+  diffbandit.apply_left_hunk()
+end, {
+  desc = "Apply the left DiffBandit hunk side to the right target",
+})
+
+vim.api.nvim_create_user_command("DiffBanditApplyRightHunk", function()
+  diffbandit.apply_right_hunk()
+end, {
+  desc = "Apply the right DiffBandit hunk side to the left target",
+})
+
+vim.api.nvim_create_user_command("DiffBanditUndo", function()
+  diffbandit.undo()
+end, {
+  desc = "Undo the last DiffBandit action for the current file",
+})

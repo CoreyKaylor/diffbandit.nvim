@@ -94,6 +94,23 @@ local function start_session(left_source, right_source, opts)
   return session
 end
 
+local function current_session()
+  return state.sessions[vim.api.nvim_get_current_tabpage()]
+end
+
+local function call_current_session(method)
+  local session = current_session()
+  if not session then
+    vim.notify("DiffBandit: no active DiffBandit session", vim.log.levels.INFO)
+    return nil
+  end
+  if type(session[method]) ~= "function" then
+    vim.notify("DiffBandit: unsupported action " .. method, vim.log.levels.ERROR)
+    return nil
+  end
+  return session[method](session)
+end
+
 local function load_queue_entry(queue, start_index, step)
   local index = start_index
   local count = #(queue.entries or {})
@@ -153,6 +170,34 @@ function M.git_file(path, opts)
     path = path,
   })
   return M.git(opts)
+end
+
+function M.toggle_stage_hunk()
+  return call_current_session("toggle_stage_hunk")
+end
+
+function M.stage_hunk()
+  return call_current_session("stage_hunk")
+end
+
+function M.unstage_hunk()
+  return call_current_session("unstage_hunk")
+end
+
+function M.discard_hunk()
+  return call_current_session("discard_hunk")
+end
+
+function M.apply_left_hunk()
+  return call_current_session("apply_left_hunk")
+end
+
+function M.apply_right_hunk()
+  return call_current_session("apply_right_hunk")
+end
+
+function M.undo()
+  return call_current_session("undo_action")
 end
 
 return M

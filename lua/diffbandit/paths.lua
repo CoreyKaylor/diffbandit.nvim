@@ -191,6 +191,8 @@ end
 local function build_paths(chunks, line_meta)
   local paths = {}
 
+  local current_chunk_index = nil
+
   local function push_segment(seg_kind, seg_start_idx, seg_end_idx)
     local start_meta = line_meta[seg_start_idx]
     local end_meta = line_meta[seg_end_idx]
@@ -214,6 +216,7 @@ local function build_paths(chunks, line_meta)
         end
         paths[#paths + 1] = {
           kind = "add",
+          chunk = current_chunk_index,
           top = visual_origin,
           origin_side = "left",
           target_side = "right",
@@ -256,6 +259,7 @@ local function build_paths(chunks, line_meta)
         end
         paths[#paths + 1] = {
           kind = "delete",
+          chunk = current_chunk_index,
           top = visual_origin,
           origin_side = "right",
           target_side = "left",
@@ -286,6 +290,8 @@ local function build_paths(chunks, line_meta)
   end
 
   for _, chunk in ipairs(chunks) do
+    current_chunk_index = chunk.index
+
     -- Build add/delete paths from contiguous segments regardless of chunk.type
     local i = chunk.display_start
     while i <= chunk.display_end do
@@ -331,6 +337,7 @@ local function build_paths(chunks, line_meta)
       if display_s and display_e then
         paths[#paths + 1] = {
           kind = "change",
+          chunk = chunk.index,
           display_start_row = display_s,
           display_end_row = display_e,
           block_display_start = display_s,
@@ -899,23 +906,18 @@ local function route_preferred_columns(route, connector_core_width)
   if has_vertical_span
       and ((route.source_visible ~= false and route.suppress_source ~= true and route.source_side == "left")
         or (route.target_visible ~= false and route.suppress_target ~= true and route.target_side == "left"))
-      and min_col + 2 <= max_col then
-    min_col = min_col + 2
+      and min_col + 1 <= max_col then
+    min_col = min_col + 1
   end
-  if route.avoid_change_inner_rail and min_col + 2 <= max_col then
-    min_col = min_col + 2
+  if route.avoid_change_inner_rail and min_col + 1 <= max_col then
+    min_col = min_col + 1
   end
   if max_col < min_col then
     return cols
   end
 
-  for col = min_col, max_col, 2 do
+  for col = min_col, max_col do
     cols[#cols + 1] = col
-  end
-  for col = min_col + 1, max_col do
-    if (col - min_col) % 2 ~= 0 then
-      cols[#cols + 1] = col
-    end
   end
 
   return cols

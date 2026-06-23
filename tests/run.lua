@@ -11,6 +11,7 @@ local view = require("diffbandit.view")
 local paths_mod = require("diffbandit.paths")
 local Session = require("diffbandit.session")
 local git_mod = require("diffbandit.git")
+local actions_mod = require("diffbandit.actions")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -1457,6 +1458,13 @@ local function commit_baseline(root_dir)
 end
 
 do
+  local replaced = actions_mod._private.replace_range({ "a", "c" }, 1, 0, { "b" })
+  assert_eq(to_text(replaced), "a\nb\nc\n", "Zero-count replacement should insert after the anchor line")
+  replaced = actions_mod._private.replace_range({ "a", "b", "c" }, 2, 1, { "B" })
+  assert_eq(to_text(replaced), "a\nB\nc\n", "Positive-count replacement should replace the target range")
+end
+
+do
   local entries = git_mod._private.parse_name_status("M\0space name.txt\0R100\0old path.txt\0new path.txt\0")
   assert_eq(#entries, 2, "NUL name-status parser should read modified and renamed entries")
   assert_eq(entries[1].path, "space name.txt", "Parser should preserve spaces in paths")
@@ -1583,6 +1591,210 @@ if vim.fn.executable("git") == 1 then
     assert_eq(loaded.right.text, "unsaved\n", "Buffer diff right source should read live buffer content")
 
     pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end
+
+  local function make_action_session(queue)
+    local loaded = select(1, queue.load(queue.index or 1))
+    local hunks, err = diff.compute_hunks(loaded.left.text, loaded.right.text, config.diff)
+    assert_eq(err, nil, "Action session diff should compute")
+    local v = view.build(loaded.left.lines, loaded.right.lines, hunks, config)
+    local fake = setmetatable({
+      config = config,
+      file_queue = queue,
+      file_queue_index = queue.index or 1,
+      left = loaded.left,
+      right = loaded.right,
+      hunks = hunks,
+      view = v,
+      current_chunk = v.chunks[1] and 1 or 0,
+    }, Session)
+    function fake:replace_sources(sources, opts)
+      local next_hunks, next_err = diff.compute_hunks(sources.left.text, sources.right.text, config.diff)
+      assert_eq(next_err, nil, "Action refresh diff should compute")
+      self.left = sources.left
+      self.right = sources.right
+      self.hunks = next_hunks
+      self.view = view.build(sources.left.lines, sources.right.lines, next_hunks, config)
+      self.current_chunk = self.view.chunks[1] and math.min((opts and opts.preferred_chunk) or 1, #self.view.chunks) or 0
+      return true, nil
+    end
+    return fake
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "stage.txt", { "one", "two", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "stage.txt", { "one", "TWO", "three" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "unstaged", pathspecs = { "stage.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local ok, err = actions_mod.stage(session)
+    assert_eq(err, nil, "Stage hunk action should not error")
+    assert_eq(ok, true, "Stage hunk action should succeed")
+    assert_eq(#(session.file_queue.entries or {}), 1, "Stage refresh should keep the original queue")
+    assert_eq(git_mod.read_index(repo, "stage.txt"), "one\nTWO\nthree\n", "Stage hunk should update the index")
+    assert_eq(table.concat(read_file(repo .. "/stage.txt"), "\n") .. "\n", "one\nTWO\nthree\n", "Stage hunk should not rewrite worktree content")
+
+    ok, err = actions_mod.undo(session)
+    assert_eq(err, nil, "Undo stage hunk should not error")
+    assert_eq(ok, true, "Undo stage hunk should succeed")
+    assert_eq(git_mod.read_index(repo, "stage.txt"), "one\ntwo\nthree\n", "Undo should restore previous index content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "discard.txt", { "one", "two", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "discard.txt", { "one", "TWO", "three" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "unstaged", pathspecs = { "discard.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local ok, err = actions_mod.discard(session)
+    assert_eq(err, nil, "Discard hunk action should not error")
+    assert_eq(ok, true, "Discard hunk action should succeed")
+    assert_eq(table.concat(read_file(repo .. "/discard.txt"), "\n") .. "\n", "one\ntwo\nthree\n", "Discard should restore worktree content from index")
+
+    ok, err = actions_mod.undo(session)
+    assert_eq(err, nil, "Undo discard hunk should not error")
+    assert_eq(ok, true, "Undo discard hunk should succeed")
+    assert_eq(table.concat(read_file(repo .. "/discard.txt"), "\n") .. "\n", "one\nTWO\nthree\n", "Undo should restore discarded worktree content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "scratch-shadow.txt", { "one", "two", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "scratch-shadow.txt", { "one", "TWO", "three" })
+
+    local shadow = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_option_value("buftype", "nofile", { buf = shadow })
+    vim.api.nvim_buf_set_name(shadow, repo .. "/scratch-shadow.txt")
+    vim.api.nvim_set_option_value("modifiable", false, { buf = shadow })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "unstaged", pathspecs = { "scratch-shadow.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local ok, err = actions_mod.discard(session)
+    assert_eq(err, nil, "Discard with path-shadowing scratch buffer should not error")
+    assert_eq(ok, true, "Discard with path-shadowing scratch buffer should succeed")
+
+    ok, err = actions_mod.undo(session)
+    assert_eq(err, nil, "Undo discard should ignore path-shadowing scratch buffer")
+    assert_eq(ok, true, "Undo discard should restore the worktree file")
+    assert_eq(table.concat(read_file(repo .. "/scratch-shadow.txt"), "\n") .. "\n", "one\nTWO\nthree\n",
+      "Undo discard should restore the file on disk when only a scratch buffer shadows the path")
+
+    pcall(vim.api.nvim_buf_delete, shadow, { force = true })
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "unstage.txt", { "one", "two", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "unstage.txt", { "one", "TWO", "three" })
+    git_test_command({ "add", "unstage.txt" }, repo)
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "staged", pathspecs = { "unstage.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local ok, err = actions_mod.unstage(session)
+    assert_eq(err, nil, "Unstage hunk action should not error")
+    assert_eq(ok, true, "Unstage hunk action should succeed")
+    assert_eq(git_mod.read_index(repo, "unstage.txt"), "one\ntwo\nthree\n", "Unstage should restore index content from HEAD")
+
+    ok, err = actions_mod.undo(session)
+    assert_eq(err, nil, "Undo unstage hunk should not error")
+    assert_eq(ok, true, "Undo unstage hunk should succeed")
+    assert_eq(git_mod.read_index(repo, "unstage.txt"), "one\nTWO\nthree\n", "Undo should restore staged index content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "add_all.txt", { "one", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "add_all.txt", { "one", "two", "three" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "add_all.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local before_states = actions_mod.staged_chunk_states(session)
+    assert_eq(before_states[1], nil, "All-mode pure addition should start unstaged")
+
+    local ok, err = actions_mod.stage(session)
+    assert_eq(err, nil, "All-mode pure addition stage should not error")
+    assert_eq(ok, true, "All-mode pure addition stage should succeed")
+    local after_states = actions_mod.staged_chunk_states(session)
+    assert_eq(after_states[1], true, "All-mode pure addition should show staged marker after staging")
+    assert_eq(git_mod.read_index(repo, "add_all.txt"), "one\ntwo\nthree\n",
+      "All-mode pure addition should update the index")
+
+    ok, err = actions_mod.toggle_stage(session)
+    assert_eq(err, nil, "All-mode pure addition toggle unstage should not error")
+    assert_eq(ok, true, "All-mode pure addition toggle unstage should succeed")
+    local unstaged_states = actions_mod.staged_chunk_states(session)
+    assert_eq(unstaged_states[1], nil, "All-mode pure addition should show unstaged marker after toggling again")
+    assert_eq(git_mod.read_index(repo, "add_all.txt"), "one\nthree\n",
+      "All-mode pure addition toggle unstage should restore the index")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "tracked.txt", { "baseline" })
+    commit_baseline(repo)
+    write_repo_file(repo, "new_file.txt", { "new one", "new two" })
+    git_test_command({ "add", "new_file.txt" }, repo)
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "new_file.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local before_states = actions_mod.staged_chunk_states(session)
+    assert_eq(before_states[1], true, "All-mode staged new file should start staged")
+
+    local ok, err = actions_mod.toggle_stage(session)
+    assert_eq(err, nil, "All-mode staged new file toggle unstage should not error")
+    assert_eq(ok, true, "All-mode staged new file toggle unstage should succeed")
+    assert_eq(git_mod.read_index(repo, "new_file.txt"), nil,
+      "All-mode staged new file toggle unstage should remove the index entry")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "already_staged_add.txt", { "one", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "already_staged_add.txt", { "one", "two", "three" })
+    git_test_command({ "add", "already_staged_add.txt" }, repo)
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "already_staged_add.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local before_states = actions_mod.staged_chunk_states(session)
+    assert_eq(before_states[1], true, "All-mode staged added hunk should start staged")
+
+    local ok, err = actions_mod.toggle_stage(session)
+    assert_eq(err, nil, "All-mode staged added hunk toggle unstage should not error")
+    assert_eq(ok, true, "All-mode staged added hunk toggle unstage should succeed")
+    assert_eq(git_mod.read_index(repo, "already_staged_add.txt"), "one\nthree\n",
+      "All-mode staged added hunk toggle unstage should restore the index")
+    assert_eq(table.concat(read_file(repo .. "/already_staged_add.txt"), "\n") .. "\n", "one\ntwo\nthree\n",
+      "All-mode staged added hunk toggle unstage should leave the worktree content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "mixed_staged_add.txt", { "one", "three", "four" })
+    commit_baseline(repo)
+    write_repo_file(repo, "mixed_staged_add.txt", { "one", "two", "three", "four" })
+    git_test_command({ "add", "mixed_staged_add.txt" }, repo)
+    write_repo_file(repo, "mixed_staged_add.txt", { "one", "two", "THREE", "four" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "mixed_staged_add.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    local before_states = actions_mod.staged_chunk_states(session)
+    assert_eq(before_states[1], true, "All-mode mixed staged added hunk should start staged")
+
+    local ok, err = actions_mod.toggle_stage(session)
+    assert_eq(err, nil, "All-mode mixed staged added hunk toggle unstage should not error")
+    assert_eq(ok, true, "All-mode mixed staged added hunk toggle unstage should succeed")
+    assert_eq(git_mod.read_index(repo, "mixed_staged_add.txt"), "one\nthree\nfour\n",
+      "All-mode mixed staged added hunk toggle unstage should restore only the index hunk")
+    assert_eq(table.concat(read_file(repo .. "/mixed_staged_add.txt"), "\n") .. "\n", "one\ntwo\nTHREE\nfour\n",
+      "All-mode mixed staged added hunk toggle unstage should leave nearby worktree edits")
   end
 end
 

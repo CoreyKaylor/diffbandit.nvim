@@ -289,8 +289,9 @@ local function find_loaded_buffer(path)
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(bufnr) then
       local name = vim.api.nvim_buf_get_name(bufnr)
+      local buftype = vim.api.nvim_get_option_value("buftype", { buf = bufnr })
       local buffer_path = realpath(name) or vim.fn.fnamemodify(name, ":p")
-      if name ~= "" and buffer_path == abs then
+      if buftype == "" and name ~= "" and buffer_path == abs then
         return bufnr
       end
     end
@@ -332,12 +333,17 @@ local function empty_source(path, label, metadata)
   return source_from_text("", path, label, metadata)
 end
 
-local function git_source(root, path, label, reader)
+local function git_source(root, path, label, reader, metadata)
   local text, err, label_suffix = reader()
   if not text then
     return nil, err
   end
-  return source_from_text(text, abs_path(root, path), label_suffix and string.format("%s (%s)", path, label_suffix) or label)
+  return source_from_text(
+    text,
+    abs_path(root, path),
+    label_suffix and string.format("%s (%s)", path, label_suffix) or label,
+    metadata
+  )
 end
 
 local function source_from_kind(queue, entry, side)
@@ -360,24 +366,27 @@ local function source_from_kind(queue, entry, side)
       return empty_source(abs_path(root, path), label, {
         git_state = entry.untracked and "untracked" or "absent",
         empty_reason = entry.untracked and "New untracked file" or "New file",
+        git_side = side,
+        git_target = "absent",
+        git_relpath = path,
       })
     end
     if mode == "unstaged" then
       return git_source(root, path, string.format("%s (index)", label_path), function()
         return read_blob(root, ":" .. path)
-      end)
+      end, { git_side = side, git_target = "index", git_relpath = path })
     elseif mode == "staged" then
       return git_source(root, path, string.format("%s (HEAD)", label_path), function()
         return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
-      end)
+      end, { git_side = side, git_target = "head", git_relpath = path })
     elseif mode == "all" then
       return git_source(root, path, string.format("%s (%s)", label_path, opts.base or "HEAD"), function()
         return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
-      end)
+      end, { git_side = side, git_target = "head", git_relpath = path })
     elseif mode == "rev" then
       return git_source(root, path, string.format("%s (%s)", label_path, opts.base), function()
         return read_blob(root, opts.base .. ":" .. path)
-      end)
+      end, { git_side = side, git_target = "rev", git_relpath = path })
     end
   end
 
@@ -393,21 +402,24 @@ local function source_from_kind(queue, entry, side)
     return empty_source(abs_path(root, path), label, {
       git_state = "deleted",
       empty_reason = "Deleted file",
+      git_side = side,
+      git_target = "absent",
+      git_relpath = path,
     })
   end
   if mode == "staged" then
     return git_source(root, path, string.format("%s (index)", label_path), function()
       return read_blob(root, ":" .. path)
-    end)
+    end, { git_side = side, git_target = "index", git_relpath = path })
   elseif mode == "rev" then
     return git_source(root, path, string.format("%s (%s)", label_path, opts.target), function()
       return read_blob(root, opts.target .. ":" .. path)
-    end)
+    end, { git_side = side, git_target = "rev", git_relpath = path })
   end
 
   return git_source(root, path, string.format("%s (working tree)", label_path), function()
     return read_worktree(root, path, opts.use_buffer)
-  end)
+  end, { git_side = side, git_target = "worktree", git_relpath = path })
 end
 
 local function normalize_opts(opts, config)
@@ -510,10 +522,134 @@ function M.sources_for_entry(queue, index)
   }, nil
 end
 
+function M.read_index(root, path)
+  return read_blob(root, ":" .. path)
+end
+
+function M.read_head(root, path, base)
+  return read_blob(root, (base or "HEAD") .. ":" .. path)
+end
+
+function M.read_worktree(root, path, use_buffer)
+  return read_worktree(root, path, use_buffer)
+end
+
+function M.find_loaded_buffer(root, path)
+  return find_loaded_buffer(abs_path(root, path))
+end
+
+function M.abs_path(root, path)
+  return abs_path(root, path)
+end
+
+function M.relpath(root, path)
+  return relpath(root, path)
+end
+
+function M.git_output(root, args)
+  return git_output(root, args)
+end
+
+function M.has_staged_changes(root, path)
+  local output, err = git_output(root, { "diff", "--cached", "--name-only", "--", path })
+  if not output then
+    return false, err
+  end
+  return vim.trim(output) ~= "", nil
+end
+
+local function index_mode(root, path)
+  local output = git_output(root, { "ls-files", "-s", "--", path })
+  if output and output ~= "" then
+    local mode = output:match("^(%d+)%s")
+    if mode and mode ~= "" then
+      return mode
+    end
+  end
+
+  local stat = (vim.uv or vim.loop).fs_stat(abs_path(root, path))
+  if stat and stat.mode and (stat.mode % 128) >= 64 then
+    return "100755"
+  end
+  return "100644"
+end
+
+function M.write_index(root, path, text)
+  if text == nil then
+    local _, err = git_output(root, { "update-index", "--force-remove", "--", path })
+    return err == nil, err
+  end
+
+  local tmp = vim.fn.tempname()
+  local lines = split_lines(text)
+  local ok, write_err = pcall(vim.fn.writefile, lines, tmp)
+  if not ok then
+    return false, tostring(write_err)
+  end
+
+  local hash, hash_err = git_output(root, { "hash-object", "-w", tmp })
+  pcall(os.remove, tmp)
+  if not hash then
+    return false, hash_err
+  end
+  hash = vim.trim(hash)
+
+  local mode = index_mode(root, path)
+  local _, update_err = git_output(root, { "update-index", "--add", "--cacheinfo", mode .. "," .. hash .. "," .. path })
+  if update_err then
+    return false, update_err
+  end
+  return true, nil
+end
+
+function M.write_worktree(root, path, text, use_buffer)
+  local full_path = abs_path(root, path)
+  if use_buffer ~= false then
+    local bufnr = find_loaded_buffer(full_path)
+    if bufnr then
+      local was_modifiable = vim.api.nvim_get_option_value("modifiable", { buf = bufnr })
+      if not was_modifiable then
+        local mod_ok, mod_err = pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = bufnr })
+        if not mod_ok then
+          return false, tostring(mod_err)
+        end
+      end
+      local lines = text == nil and {} or split_lines(text)
+      local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
+      if not was_modifiable then
+        pcall(vim.api.nvim_set_option_value, "modifiable", false, { buf = bufnr })
+      end
+      if not ok then
+        return false, tostring(err)
+      end
+      return true, nil
+    end
+  end
+
+  if text == nil then
+    if vim.fn.filereadable(full_path) == 1 then
+      local ok, err = os.remove(full_path)
+      if not ok then
+        return false, err
+      end
+    end
+    return true, nil
+  end
+
+  vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
+  local ok, err = pcall(vim.fn.writefile, split_lines(text), full_path)
+  if not ok then
+    return false, tostring(err)
+  end
+  return true, nil
+end
+
 M._private = {
   parse_name_status = parse_name_status,
   split_nul = split_nul,
   normalize_opts = normalize_opts,
+  split_lines = split_lines,
+  to_text = to_text,
 }
 
 return M

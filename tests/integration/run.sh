@@ -356,7 +356,7 @@ run_navigation_test() {
         echo "Navigation initial state failed: $initial"
         exit 1
     fi
-    if [[ "$next" != *"focus=right"* || "$next" != *"left_top=6"* || "$next" != *"right_top=6"* || "$next" != *"chunk=2"* ]]; then
+    if [[ "$next" != *"focus=right"* || "$next" != *"left_top=6"* || "$next" != *"right_top=6"* || "$next" != *"left_cursor=6"* || "$next" != *"right_cursor=7"* || "$next" != *"chunk=2"* ]]; then
         echo "Navigation next-change state failed: $next"
         exit 1
     fi
@@ -364,15 +364,15 @@ run_navigation_test() {
         echo "Navigation final-change state failed: $final"
         exit 1
     fi
-    if [[ "$prev_delete" != *"focus=right"* || "$prev_delete" != *"left_top=9"* || "$prev_delete" != *"right_top=9"* || "$prev_delete" != *"chunk=3"* ]]; then
+    if [[ "$prev_delete" != *"focus=right"* || "$prev_delete" != *"left_top=9"* || "$prev_delete" != *"right_top=9"* || "$prev_delete" != *"left_cursor=9"* || "$prev_delete" != *"right_cursor=9"* || "$prev_delete" != *"chunk=3"* ]]; then
         echo "Navigation prev-delete state failed: $prev_delete"
         exit 1
     fi
-    if [[ "$prev_add" != *"focus=right"* || "$prev_add" != *"left_top=6"* || "$prev_add" != *"right_top=6"* || "$prev_add" != *"chunk=2"* ]]; then
+    if [[ "$prev_add" != *"focus=right"* || "$prev_add" != *"left_top=6"* || "$prev_add" != *"right_top=6"* || "$prev_add" != *"left_cursor=6"* || "$prev_add" != *"right_cursor=7"* || "$prev_add" != *"chunk=2"* ]]; then
         echo "Navigation prev-add state failed: $prev_add"
         exit 1
     fi
-    if [[ "$prev_change" != *"focus=right"* || "$prev_change" != *"left_top=3"* || "$prev_change" != *"right_top=3"* || "$prev_change" != *"chunk=1"* ]]; then
+    if [[ "$prev_change" != *"focus=right"* || "$prev_change" != *"left_top=3"* || "$prev_change" != *"right_top=3"* || "$prev_change" != *"left_cursor=3"* || "$prev_change" != *"right_cursor=3"* || "$prev_change" != *"chunk=1"* ]]; then
         echo "Navigation prev-change state failed: $prev_change"
         exit 1
     fi
@@ -508,18 +508,18 @@ run_git_queue_navigation_test() {
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 
     assert_git_state_contains "$initial_state" "queue_index=1" "initial index"
-    assert_git_state_contains "$initial_state" "queue_count=3" "initial count"
-    assert_git_state_contains "$initial_state" "alpha_modified.txt (index)" "initial left label"
+    assert_git_state_contains "$initial_state" "queue_count=4" "initial count"
+    assert_git_state_contains "$initial_state" "alpha_modified.txt (HEAD)" "initial left label"
     assert_git_state_contains "$initial_state" "alpha_modified.txt (working tree)" "initial right label"
 
     assert_git_state_contains "$first_boundary_state" "queue_index=1" "first ]c should only arm boundary"
     assert_git_state_contains "$second_boundary_state" "queue_index=2" "second ]c should open next file"
-    assert_git_state_contains "$second_boundary_state" "delete_me.txt" "second ]c next file label"
+    assert_git_state_contains "$second_boundary_state" "beta_added_staged.txt" "second ]c next file label"
 
     assert_git_state_contains "$next_file_state" "queue_index=3" "]f should open third file"
-    assert_git_state_contains "$next_file_state" "z_new_file.txt" "]f third file label"
+    assert_git_state_contains "$next_file_state" "delete_me.txt" "]f third file label"
     assert_git_state_contains "$prev_file_state" "queue_index=2" "[f should return to second file"
-    assert_git_state_contains "$prev_file_state" "delete_me.txt" "[f second file label"
+    assert_git_state_contains "$prev_file_state" "beta_added_staged.txt" "[f second file label"
 }
 
 run_git_live_buffer_test() {
@@ -554,6 +554,231 @@ EOF
     lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "git:live-buffer" "$ansi_capture"
 }
 
+assert_git_diff_contains() {
+    local repo="$1"
+    local mode="$2"
+    local file="$3"
+    local expected="$4"
+    local label="$5"
+    local output
+
+    if [[ "$mode" == "cached" ]]; then
+        output="$(git -C "$repo" diff --cached -- "$file")"
+    else
+        output="$(git -C "$repo" diff -- "$file")"
+    fi
+    if [[ "$output" != *"$expected"* ]]; then
+        echo "Git action state failed ($label): expected '$expected'"
+        echo "$output"
+        exit 1
+    fi
+}
+
+assert_git_diff_clean() {
+    local repo="$1"
+    local mode="$2"
+    local file="$3"
+    local label="$4"
+
+    if [[ "$mode" == "cached" ]]; then
+        if ! git -C "$repo" diff --cached --quiet -- "$file"; then
+            echo "Git action state failed ($label): cached diff not clean"
+            git -C "$repo" diff --cached -- "$file"
+            exit 1
+        fi
+    else
+        if ! git -C "$repo" diff --quiet -- "$file"; then
+            echo "Git action state failed ($label): worktree diff not clean"
+            git -C "$repo" diff -- "$file"
+            exit 1
+        fi
+    fi
+}
+
+run_git_actions_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/actions-repo"
+    local initial_capture="$case_dir/git-action-unstaged-marker.txt"
+    local initial_ansi="$case_dir/git-action-unstaged-marker.ansi"
+    local staged_capture="$case_dir/git-action-staged-marker.txt"
+    local staged_ansi="$case_dir/git-action-staged-marker.ansi"
+
+    echo "  phase: git-actions"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/action.txt" <<'EOF'
+action base line
+stable action line
+EOF
+    git -C "$repo" add action.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    cat > "$repo/action.txt" <<'EOF'
+action changed line
+stable action line
+EOF
+
+    start_git_session "$repo" 14
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- action.txt" C-m
+    sleep 2
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$initial_capture"
+    tmux capture-pane -t "$TMUX_SESSION" -e -p > "$initial_ansi"
+    lua "$SCRIPT_DIR/verify.lua" "$initial_capture" "git:action-unstaged-marker" "$initial_ansi"
+
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    assert_git_diff_contains "$repo" "cached" "action.txt" "action changed line" "space should stage hunk"
+    assert_git_diff_clean "$repo" "worktree" "action.txt" "space should leave no unstaged diff"
+
+    tmux send-keys -t "$TMUX_SESSION" ":DBFocus right" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" u
+    sleep 1
+    assert_git_diff_clean "$repo" "cached" "action.txt" "u should undo staged hunk"
+    assert_git_diff_contains "$repo" "worktree" "action.txt" "action changed line" "u should restore unstaged hunk"
+
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    assert_git_diff_contains "$repo" "cached" "action.txt" "action changed line" "second space should stage hunk"
+    assert_git_diff_clean "$repo" "worktree" "action.txt" "second space should leave no unstaged diff"
+
+    tmux send-keys -t "$TMUX_SESSION" ">" ">"
+    sleep 1
+    assert_git_diff_contains "$repo" "worktree" "action.txt" "action base line" ">> should discard worktree side while staged change remains"
+
+    tmux send-keys -t "$TMUX_SESSION" u
+    sleep 1
+    assert_git_diff_contains "$repo" "cached" "action.txt" "action changed line" "u after >> should leave staged hunk intact"
+    assert_git_diff_clean "$repo" "worktree" "action.txt" "u after >> should restore worktree to staged content"
+
+    tmux send-keys -t "$TMUX_SESSION" u
+    sleep 1
+    assert_git_diff_clean "$repo" "cached" "action.txt" "second u should undo the staged hunk"
+    assert_git_diff_contains "$repo" "worktree" "action.txt" "action changed line" "second u should restore unstaged hunk"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    git -C "$repo" add action.txt
+    start_git_session "$repo" 14
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit --staged -- action.txt" C-m
+    sleep 2
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$staged_capture"
+    tmux capture-pane -t "$TMUX_SESSION" -e -p > "$staged_ansi"
+    lua "$SCRIPT_DIR/verify.lua" "$staged_capture" "git:action-staged-marker" "$staged_ansi"
+
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    assert_git_diff_clean "$repo" "cached" "action.txt" "space should unstage staged hunk"
+    assert_git_diff_contains "$repo" "worktree" "action.txt" "action changed line" "unstage should leave worktree change"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+}
+
+run_git_staged_added_toggle_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/staged-added-toggle-repo"
+
+    echo "  phase: git-staged-added-toggle"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/tracked.txt" <<'EOF'
+baseline line
+EOF
+    git -C "$repo" add tracked.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    cat > "$repo/already_staged_added.txt" <<'EOF'
+already staged added one
+already staged added two
+EOF
+    git -C "$repo" add already_staged_added.txt
+
+    start_git_session "$repo" 14
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- already_staged_added.txt" C-m
+    sleep 2
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    assert_git_diff_clean "$repo" "cached" "already_staged_added.txt" "space should unstage an already staged added file"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+}
+
+run_git_staged_added_hunk_toggle_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/staged-added-hunk-toggle-repo"
+
+    echo "  phase: git-staged-added-hunk-toggle"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/already_staged_added_hunk.txt" <<'EOF'
+one
+three
+EOF
+    git -C "$repo" add already_staged_added_hunk.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    cat > "$repo/already_staged_added_hunk.txt" <<'EOF'
+one
+two
+three
+EOF
+    git -C "$repo" add already_staged_added_hunk.txt
+
+    start_git_session "$repo" 14
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- already_staged_added_hunk.txt" C-m
+    sleep 2
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    assert_git_diff_clean "$repo" "cached" "already_staged_added_hunk.txt" "space should unstage an already staged added hunk"
+    assert_git_diff_contains "$repo" "worktree" "already_staged_added_hunk.txt" "two" "unstage should leave staged added hunk in the worktree"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+}
+
+run_git_mixed_staged_added_hunk_toggle_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/mixed-staged-added-hunk-toggle-repo"
+
+    echo "  phase: git-mixed-staged-added-hunk-toggle"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/mixed_staged_added_hunk.txt" <<'EOF'
+one
+three
+four
+EOF
+    git -C "$repo" add mixed_staged_added_hunk.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    cat > "$repo/mixed_staged_added_hunk.txt" <<'EOF'
+one
+two
+three
+four
+EOF
+    git -C "$repo" add mixed_staged_added_hunk.txt
+    cat > "$repo/mixed_staged_added_hunk.txt" <<'EOF'
+one
+two
+THREE
+four
+EOF
+
+    start_git_session "$repo" 14
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- mixed_staged_added_hunk.txt" C-m
+    sleep 2
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    assert_git_diff_clean "$repo" "cached" "mixed_staged_added_hunk.txt" "space should unstage only the staged added hunk"
+    assert_git_diff_contains "$repo" "worktree" "mixed_staged_added_hunk.txt" "two" "unstage should leave the added worktree line"
+    assert_git_diff_contains "$repo" "worktree" "mixed_staged_added_hunk.txt" "THREE" "unstage should leave nearby worktree edits"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+}
+
 run_git_test() {
     local test_name="git"
     local case_dir="$CAPTURE_ROOT/$test_name"
@@ -567,6 +792,10 @@ run_git_test() {
     capture_git_command "$repo" "git-deleted" ":DiffBanditGit -- delete_me.txt"
     capture_git_command "$repo" "git-staged-added" ":DiffBanditGit --staged -- beta_added_staged.txt"
     run_git_queue_navigation_test "$repo"
+    run_git_actions_test
+    run_git_staged_added_toggle_test
+    run_git_staged_added_hunk_toggle_test
+    run_git_mixed_staged_added_hunk_toggle_test
     run_git_live_buffer_test
 
     echo "  PASSED: $test_name"
