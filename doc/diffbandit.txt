@@ -1,0 +1,370 @@
+*diffbandit.txt*              DiffBandit Neovim diff viewer
+
+==============================================================================
+CONTENTS                                                     *diffbandit*
+
+  1. Overview                                      |diffbandit-overview|
+  2. Installation                                  |diffbandit-installation|
+  3. Commands                                      |diffbandit-commands|
+  4. Default mappings                              |diffbandit-mappings|
+  5. Git diffs                                     |diffbandit-git|
+  6. Commit panel                                  |diffbandit-commit-panel|
+  7. Hunk actions                                  |diffbandit-hunk-actions|
+  8. Configuration                                 |diffbandit-configuration|
+  9. Lua API                                       |diffbandit-lua-api|
+ 10. Testing                                       |diffbandit-testing|
+
+==============================================================================
+OVERVIEW                                            *diffbandit-overview*
+
+DiffBandit is a Neovim diff viewer with independent source panes, docked line
+number panes, compact connector geometry, Git-aware navigation, hunk actions,
+a commit panel, binary hex diffs, and theme-adaptive highlights.
+
+The layout is designed around source buffers that keep natural scrolling while
+the gutter explains how changed regions relate. Line numbers stay attached to
+their corresponding document, and the connector pane draws routes between
+additions, deletions, changes, mixed hunks, and scroll-clipped regions.
+
+Core features:
+
+- Three-part diff layout with visual connector gutter.
+- Independent scrolling for left and right content.
+- Git queue navigation with |diffbandit-]f| and |diffbandit-[f|.
+- Hunk staging, unstaging, apply/discard actions, and undo.
+- Optional commit panel with file staging and commit message entry.
+- One-column overview gutters at the outer document edges.
+- Read-only binary hex comparison view.
+- Theme-friendly colors derived from the active colorscheme.
+
+==============================================================================
+INSTALLATION                                      *diffbandit-installation*
+
+With lazy.nvim:
+>
+  {
+    "CoreyKaylor/diffbandit.nvim",
+    config = function()
+      require("diffbandit").setup()
+    end,
+  }
+<
+
+Requirements:
+
+- Neovim 0.10 or newer.
+- Git for Git diff workflows and hunk actions.
+- tmux only for running integration tests.
+- Nerd Fonts are optional.
+
+==============================================================================
+COMMANDS                                            *diffbandit-commands*
+
+                                                        *:DiffBandit*
+:DiffBandit {left} {right}
+        Open a DiffBandit view comparing two files.
+
+                                                 *:DiffBanditBuffers*
+:DiffBanditBuffers {left-bufnr} {right-bufnr}
+        Open a DiffBandit view comparing two loaded buffers.
+
+                                                     *:DiffBanditGit*
+:DiffBanditGit [flags] [--] [pathspec...]
+        Open a Git diff queue for the current repository. By default this uses
+        all changes, including staged, unstaged, and untracked files.
+
+                                              *:DiffBanditGitCurrent*
+:DiffBanditGitCurrent [flags] [path]
+        Open a Git diff for the current buffer, or for the supplied path.
+
+                                             *:DiffBanditCommitPanel*
+:DiffBanditCommitPanel [flags] [--] [pathspec...]
+        Toggle the Git commit panel. When used outside an active Git diff
+        session, it opens as a standalone side panel.
+
+                                           *:DiffBanditToggleStageHunk*
+:DiffBanditToggleStageHunk
+        Toggle the staged state of the active Git hunk.
+
+                                                  *:DiffBanditStageHunk*
+:DiffBanditStageHunk
+        Stage the active Git hunk.
+
+                                                *:DiffBanditUnstageHunk*
+:DiffBanditUnstageHunk
+        Unstage the active Git hunk.
+
+                                                *:DiffBanditDiscardHunk*
+:DiffBanditDiscardHunk
+        Discard the active Git hunk from the worktree.
+
+                                              *:DiffBanditApplyLeftHunk*
+:DiffBanditApplyLeftHunk
+        Apply the left side of the active hunk to the right target.
+
+                                             *:DiffBanditApplyRightHunk*
+:DiffBanditApplyRightHunk
+        Apply the right side of the active hunk to the left target.
+
+                                                        *:DiffBanditUndo*
+:DiffBanditUndo
+        Undo the last DiffBandit action for the current file.
+
+==============================================================================
+DEFAULT MAPPINGS                                  *diffbandit-mappings*
+
+Mappings are buffer-local inside DiffBandit buffers.
+
+Diff view mappings:
+
+                                                        *diffbandit-]c*
+  ]c            Jump to the next hunk.
+
+                                                        *diffbandit-[c*
+  [c            Jump to the previous hunk.
+
+                                                        *diffbandit-]f*
+  ]f            Jump to the next changed file in a Git queue.
+
+                                                        *diffbandit-[f*
+  [f            Jump to the previous changed file in a Git queue.
+
+                                                        *diffbandit-[d*
+  [d            Align both panes to the top of their documents.
+
+                                                        *diffbandit-]d*
+  ]d            Align both panes to the bottom of their documents.
+
+                                                        *diffbandit-C*
+  C             Open or focus the commit panel for the current Git file.
+
+                                                  *diffbandit-<Space>*
+  <Space>       Toggle staged state for the active Git hunk.
+
+                                                       *diffbandit->>*
+  >>            Apply the left side to the right target.
+
+                                                       *diffbandit-<<*
+  <<            Apply the right side to the left target.
+
+                                                        *diffbandit-u*
+  u             Undo the last DiffBandit hunk action for the current file.
+
+                                                        *diffbandit-q*
+  q             Close the diff session.
+
+At a file boundary, |diffbandit-]c| and |diffbandit-[c| first notify that the
+next press will move to the next or previous file. This keeps file navigation
+deliberate while reviewing a Git queue.
+
+==============================================================================
+GIT DIFFS                                                *diffbandit-git*
+
+Git flags supported by |:DiffBanditGit|, |:DiffBanditGitCurrent|, and
+|:DiffBanditCommitPanel|:
+
+  --staged        Show staged changes only.
+  --cached        Alias for --staged.
+  --all           Show staged and unstaged changes.
+  --current       Scope the Git queue to the current file.
+  --base {rev}    Compare all changes against {rev}.
+  --rev {spec}    Compare revisions. Supports A..B or A B forms.
+  --no-untracked  Exclude untracked files.
+  --              Treat remaining arguments as pathspecs.
+
+Examples:
+>
+  :DiffBanditGit
+  :DiffBanditGit --staged
+  :DiffBanditGit --base main
+  :DiffBanditGit --rev main..HEAD
+  :DiffBanditGit -- -- lua/diffbandit
+  :DiffBanditGitCurrent
+<
+
+Binary files render as read-only hex diffs by default. Disable that behavior
+with:
+>
+  require("diffbandit").setup({
+    ui = {
+      hex = {
+        enabled = false,
+      },
+    },
+  })
+<
+
+==============================================================================
+COMMIT PANEL                                  *diffbandit-commit-panel*
+
+Open the panel with |:DiffBanditCommitPanel| or press |diffbandit-C| from a
+Git diff opened by |:DiffBanditGit|.
+
+Panel mappings:
+
+  j / k         Move through changed files and preview the selected file.
+  <CR>          Focus the diff for the selected file.
+  ]c / [c       Navigate hunks in the selected file preview.
+  <Space>       Toggle staged state for the selected file.
+  cc            Focus the commit message window.
+  R             Refresh the panel.
+  q             Close the panel.
+
+Commit message window mappings:
+
+  <Space>       Toggle amend mode.
+  :w            Commit staged changes using the buffer contents as the message.
+
+The panel validates empty commit messages and missing staged changes before
+committing. In amend mode, the panel compares against the previous commit so
+the file state reflects what the amended commit would contain.
+
+==============================================================================
+HUNK ACTIONS                                    *diffbandit-hunk-actions*
+
+Git hunk actions operate on the active hunk in Git diff sessions:
+
+  <Space>       Stage an unstaged hunk or unstage a staged hunk in all mode.
+  >>            Apply the left side of the hunk to the right target.
+  <<            Apply the right side of the hunk to the left target.
+  u             Undo DiffBandit apply/stage actions in reverse order.
+
+Staged hunks show an indicator next to the right-side line numbers. Defaults
+use plain Unicode squares so patched fonts are optional.
+
+==============================================================================
+CONFIGURATION                                  *diffbandit-configuration*
+
+                                                        *diffbandit.setup()*
+Call setup once from your plugin manager or init.lua:
+>
+  require("diffbandit").setup()
+<
+
+Common configuration:
+>
+  require("diffbandit").setup({
+    diff = {
+      algorithm = "myers",
+      linematch = 60,
+      ignore_whitespace = false,
+    },
+    navigation = {
+      initial_focus = "right",
+      align_on_jump = true,
+      align_strategy = "change_top",
+      document_keys = {
+        top = "[d",
+        bottom = "]d",
+      },
+    },
+    git = {
+      default_mode = "all",
+      include_untracked = true,
+      find_renames = true,
+      file_keys = {
+        next = "]f",
+        prev = "[f",
+      },
+      panel = {
+        width = 42,
+        commit_height = 10,
+        preview_on_cursor = true,
+        keys = {
+          toggle_stage = "<Space>",
+          focus_diff = "<CR>",
+          focus_panel = "C",
+          focus_commit = "cc",
+          toggle_amend = "<Space>",
+          refresh = "R",
+          close = "q",
+        },
+      },
+    },
+    ui = {
+      connector_width = 12,
+      split_blend = 0.3,
+      overview = {
+        enabled = true,
+        width = 1,
+        cursor = true,
+      },
+      status = {
+        enabled = true,
+        icons = "auto",
+      },
+      theme = {
+        auto_refresh = true,
+        semantic_blend = 0.3,
+        change_emphasis_strength = 0.16,
+        min_background_delta = 0.08,
+        colors = {
+          add = nil,
+          delete = nil,
+          change = nil,
+          change_emphasis = nil,
+        },
+        highlights = {},
+      },
+      hex = {
+        enabled = true,
+        bytes_per_row = 16,
+        max_bytes = 65536,
+        show_ascii = true,
+        show_offsets = true,
+      },
+    },
+    actions = {
+      staged_indicator = {
+        unstaged = "□",
+        staged = "▣",
+      },
+    },
+  })
+<
+
+Theme colors are derived from the active colorscheme's DiffAdd, DiffDelete,
+and DiffChange highlight groups. Use ui.theme.colors for semantic color
+overrides, or ui.theme.highlights to override specific DiffBandit* groups.
+
+==============================================================================
+LUA API                                              *diffbandit-lua-api*
+
+>
+  local diffbandit = require("diffbandit")
+
+  diffbandit.setup({})
+  diffbandit.files("left.txt", "right.txt")
+  diffbandit.buffers(left_bufnr, right_bufnr)
+  diffbandit.git({ mode = "all" })
+  diffbandit.git_file(nil, { mode = "all" })
+  diffbandit.commit_panel({})
+
+  diffbandit.toggle_stage_hunk()
+  diffbandit.stage_hunk()
+  diffbandit.unstage_hunk()
+  diffbandit.discard_hunk()
+  diffbandit.apply_left_hunk()
+  diffbandit.apply_right_hunk()
+  diffbandit.undo()
+<
+
+==============================================================================
+TESTING                                              *diffbandit-testing*
+
+Run the unit/spec suite:
+>
+  nvim --headless -u tests/run.lua
+<
+
+Run the tmux integration suite:
+>
+  tests/integration/run.sh
+<
+
+The integration tests capture terminal output, including ANSI highlights, so
+they can verify connector geometry, backgrounds, underline spans, Git actions,
+commit panel behavior, binary diffs, and scrolling behavior.
+
+==============================================================================
+ vim:tw=78:ts=8:ft=help:norl:
