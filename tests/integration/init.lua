@@ -5,6 +5,7 @@ local root = vim.fn.fnamemodify(script_dir .. "/../..", ":p")
 
 -- Set up runtime path
 vim.opt.runtimepath:prepend(root)
+vim.opt.termguicolors = true
 
 -- Load the plugin
 require("diffbandit").setup({})

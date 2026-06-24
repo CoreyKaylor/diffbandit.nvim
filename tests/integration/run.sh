@@ -13,12 +13,28 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMUX_SESSION="diffbandit_test_$$"
 CAPTURE_ROOT="/tmp/diffbandit_visual"
+TEST_TERM="screen-256color"
+TEST_COLORTERM="truecolor"
 
 # Cleanup function
 cleanup() {
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+configure_tmux() {
+    tmux start-server
+    tmux set-option -g default-terminal "$TEST_TERM"
+    tmux set-option -ga terminal-overrides ",*:Tc" 2>/dev/null || true
+    tmux set-option -ga terminal-overrides ",*:RGB" 2>/dev/null || true
+}
+
+start_test_nvim() {
+    local command="$1"
+    tmux send-keys -t "$TMUX_SESSION" "TERM=$TEST_TERM COLORTERM=$TEST_COLORTERM $command" Enter
+}
+
+configure_tmux
 
 # Function to run a single test
 run_test() {
@@ -36,7 +52,7 @@ run_test() {
     tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 48
 
     # Start neovim with minimal config
-    tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
+    start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
 
     # Wait for nvim to start
     sleep 1
@@ -73,7 +89,7 @@ run_scroll_test() {
     start_phase_session() {
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
         tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 14
-        tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
+        start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
         sleep 1
         tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
         sleep 2
@@ -109,7 +125,7 @@ run_scroll_test() {
         echo "  phase: $phase ($left_top,$right_top tall)"
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
         tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 40
-        tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
+        start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
         sleep 1
         tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
         sleep 2
@@ -282,7 +298,7 @@ run_navigation_test() {
 
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
     tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 8
-    tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
+    start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
     sleep 1
     tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
     sleep 2
@@ -438,7 +454,7 @@ start_git_session() {
     local height="${2:-16}"
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
     tmux new-session -d -s "$TMUX_SESSION" -x 120 -y "$height"
-    tmux send-keys -t "$TMUX_SESSION" "cd '$repo' && nvim -n -u '$SCRIPT_DIR/init.lua'" Enter
+    start_test_nvim "cd '$repo' && nvim -n -u '$SCRIPT_DIR/init.lua'"
     sleep 1
 }
 
