@@ -3,7 +3,7 @@
 -- Usage: lua verify.lua <capture_file> [test_name]
 
 local function strip_ansi(s)
-  return s:gsub("\27%[[%d;]*m", "")
+  return s:gsub("\27%[[%d;:]*m", "")
 end
 
 local function read_capture(filepath)
@@ -57,15 +57,65 @@ local function sgr_has(codes, wanted)
   return false
 end
 
+local function sgr_background(codes)
+  if sgr_has(codes, "0") or sgr_has(codes, "49") then
+    return false
+  end
+
+  local parts = {}
+  for code in codes:gmatch("%d+") do
+    parts[#parts + 1] = code
+  end
+
+  local i = 1
+  while i <= #parts do
+    local code = tonumber(parts[i])
+    if code == 48 then
+      local mode = parts[i + 1]
+      if mode == "2" then
+        local r, g, b = parts[i + 2], parts[i + 3], parts[i + 4]
+        if r and g and b then
+          return table.concat({ r, g, b }, ";")
+        end
+        i = i + 5
+      elseif mode == "5" then
+        local color = parts[i + 2]
+        if color then
+          return "idx:" .. color
+        end
+        i = i + 3
+      else
+        i = i + 1
+      end
+    elseif code and ((code >= 40 and code <= 47) or (code >= 100 and code <= 107)) then
+      return "ansi:" .. tostring(code)
+    else
+      i = i + 1
+    end
+  end
+
+  return nil
+end
+
 local function has_ansi_background(line)
-  return line:match("\27%[[%d;]*4[0-9]m") ~= nil
-    or line:match("\27%[[%d;]*48;[%d;]*m") ~= nil
+  local pos = 1
+  while pos <= #line do
+    local esc_start, esc_end, codes = line:find("\27%[([%d;:]*)m", pos)
+    if not esc_start then
+      return false
+    end
+    if type(sgr_background(codes)) == "string" then
+      return true
+    end
+    pos = esc_end + 1
+  end
+  return false
 end
 
 local function has_ansi_underline(line)
   local pos = 1
   while pos <= #line do
-    local esc_start, esc_end, codes = line:find("\27%[([%d;]*)m", pos)
+    local esc_start, esc_end, codes = line:find("\27%[([%d;:]*)m", pos)
     if not esc_start then
       return false
     end
@@ -135,7 +185,7 @@ local function ansi_bg_for_text(line, label)
   local current_bg = nil
   local pos = 1
   while pos <= #line do
-    local esc_start, esc_end, codes = line:find("\27%[([%d;]*)m", pos)
+    local esc_start, esc_end, codes = line:find("\27%[([%d;:]*)m", pos)
     local chunk_end = (esc_start or (#line + 1)) - 1
     if chunk_end >= pos then
       local chunk = line:sub(pos, chunk_end)
@@ -147,12 +197,11 @@ local function ansi_bg_for_text(line, label)
       break
     end
 
-    if sgr_has(codes, "0") or sgr_has(codes, "49") then
+    local bg = sgr_background(codes)
+    if bg == false then
       current_bg = nil
-    end
-    local r, g, b = codes:match("48;2;(%d+);(%d+);(%d+)")
-    if r then
-      current_bg = table.concat({ r, g, b }, ";")
+    elseif bg then
+      current_bg = bg
     end
     pos = esc_end + 1
   end
@@ -164,7 +213,7 @@ local function ansi_bg_for_text_after(line, label, after_label)
   local seen_after = false
   local pos = 1
   while pos <= #line do
-    local esc_start, esc_end, codes = line:find("\27%[([%d;]*)m", pos)
+    local esc_start, esc_end, codes = line:find("\27%[([%d;:]*)m", pos)
     local chunk_end = (esc_start or (#line + 1)) - 1
     if chunk_end >= pos then
       local chunk = line:sub(pos, chunk_end)
@@ -179,12 +228,11 @@ local function ansi_bg_for_text_after(line, label, after_label)
       break
     end
 
-    if sgr_has(codes, "0") or sgr_has(codes, "49") then
+    local bg = sgr_background(codes)
+    if bg == false then
       current_bg = nil
-    end
-    local r, g, b = codes:match("48;2;(%d+);(%d+);(%d+)")
-    if r then
-      current_bg = table.concat({ r, g, b }, ";")
+    elseif bg then
+      current_bg = bg
     end
     pos = esc_end + 1
   end
@@ -196,7 +244,7 @@ local function ansi_bg_at_plain_byte(line, plain_byte_pos)
   local plain_pos = 1
   local pos = 1
   while pos <= #line do
-    local esc_start, esc_end, codes = line:find("\27%[([%d;]*)m", pos)
+    local esc_start, esc_end, codes = line:find("\27%[([%d;:]*)m", pos)
     local chunk_end = (esc_start or (#line + 1)) - 1
     if chunk_end >= pos then
       local chunk = line:sub(pos, chunk_end)
@@ -211,12 +259,11 @@ local function ansi_bg_at_plain_byte(line, plain_byte_pos)
       break
     end
 
-    if sgr_has(codes, "0") or sgr_has(codes, "49") then
+    local bg = sgr_background(codes)
+    if bg == false then
       current_bg = nil
-    end
-    local r, g, b = codes:match("48;2;(%d+);(%d+);(%d+)")
-    if r then
-      current_bg = table.concat({ r, g, b }, ";")
+    elseif bg then
+      current_bg = bg
     end
     pos = esc_end + 1
   end
@@ -227,16 +274,15 @@ local function ansi_final_bg(line)
   local current_bg = nil
   local pos = 1
   while pos <= #line do
-    local esc_start, esc_end, codes = line:find("\27%[([%d;]*)m", pos)
+    local esc_start, esc_end, codes = line:find("\27%[([%d;:]*)m", pos)
     if not esc_start then
       break
     end
-    if sgr_has(codes, "0") or sgr_has(codes, "49") then
+    local bg = sgr_background(codes)
+    if bg == false then
       current_bg = nil
-    end
-    local r, g, b = codes:match("48;2;(%d+);(%d+);(%d+)")
-    if r then
-      current_bg = table.concat({ r, g, b }, ";")
+    elseif bg then
+      current_bg = bg
     end
     pos = esc_end + 1
   end
@@ -248,7 +294,7 @@ local function ansi_underline_at_plain_byte(line, plain_byte_pos)
   local plain_pos = 1
   local pos = 1
   while pos <= #line do
-    local esc_start, esc_end, codes = line:find("\27%[([%d;]*)m", pos)
+    local esc_start, esc_end, codes = line:find("\27%[([%d;:]*)m", pos)
     local chunk_end = (esc_start or (#line + 1)) - 1
     if chunk_end >= pos then
       local chunk = line:sub(pos, chunk_end)
