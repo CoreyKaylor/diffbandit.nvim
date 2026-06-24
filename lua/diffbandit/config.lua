@@ -70,6 +70,28 @@ local defaults = {
       next = "]f",
       prev = "[f",
     },
+    panel = {
+      width = 42,
+      commit_height = 10,
+      preview_on_cursor = true,
+      preview_debounce_ms = 50,
+      focus_on_open = "panel",
+      icons = "auto",
+      staged_indicator = {
+        unstaged = "□",
+        partial = "◧",
+        staged = "▣",
+      },
+      keys = {
+        toggle_stage = "<Space>",
+        focus_diff = "<CR>",
+        focus_panel = "<leader>e",
+        focus_commit = "cc",
+        toggle_amend = "<Space>",
+        refresh = "R",
+        close = "q",
+      },
+    },
   },
   actions = {
     keys = {

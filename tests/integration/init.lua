@@ -15,6 +15,14 @@ function _G.DiffBanditTestSession()
   return session
 end
 
+function _G.DiffBanditTestPanel()
+  local panel = require("diffbandit.state").panels[vim.api.nvim_get_current_tabpage()]
+  if panel and not panel.disposed then
+    return panel
+  end
+  return nil
+end
+
 function _G.DiffBanditTestSetViewports(left_topline, right_topline)
   local session = _G.DiffBanditTestSession()
   if session then
@@ -103,6 +111,52 @@ function _G.DiffBanditTestWriteGitState(path)
   vim.fn.writefile(lines, path)
 end
 
+function _G.DiffBanditTestWritePanelState(path)
+  local standalone = _G.DiffBanditTestPanel()
+  local session = standalone or _G.DiffBanditTestSession()
+  if not session then
+    vim.fn.writefile({ "missing_session" }, path)
+    return
+  end
+  local queue = session.file_queue or {}
+  local panel = session.panel or {}
+  local focus = focused_side(session)
+  local current_win = vim.api.nvim_get_current_win()
+  if panel.nav_win and current_win == panel.nav_win then
+    focus = "panel"
+  elseif panel.commit_win and current_win == panel.commit_win then
+    focus = "commit"
+  end
+  local row_text = ""
+  local selected_path = ""
+  if panel.nav_win and vim.api.nvim_win_is_valid(panel.nav_win) then
+    local row = vim.api.nvim_win_get_cursor(panel.nav_win)[1]
+    row_text = (vim.api.nvim_buf_get_lines(panel.nav_buf, row - 1, row, false)[1] or "")
+    local model = panel.rows and panel.rows[row]
+    if model and model.entry then
+      selected_path = model.entry.path or ""
+    end
+  end
+  local stage_parts = {}
+  for index, state in pairs(panel.stage_states or {}) do
+    stage_parts[#stage_parts + 1] = tostring(index) .. ":" .. tostring(state)
+  end
+  table.sort(stage_parts)
+  local lines = {
+    string.format("surface=%s", standalone and "panel" or "session"),
+    string.format("panel_visible=%s", tostring(panel.visible == true)),
+    string.format("focus=%s", focus),
+    string.format("queue_index=%d", session.file_queue_index or -1),
+    string.format("queue_count=%d", #(queue.entries or {})),
+    string.format("chunk=%d", session.current_chunk or -1),
+    string.format("amend=%s", tostring(panel.amend == true)),
+    string.format("selected_path=%s", selected_path),
+    string.format("row=%s", row_text),
+    string.format("stage_states=%s", table.concat(stage_parts, ",")),
+  }
+  vim.fn.writefile(lines, path)
+end
+
 vim.api.nvim_create_user_command("DBViewport", function(opts)
   local left_topline = tonumber(opts.fargs[1])
   local right_topline = tonumber(opts.fargs[2])
@@ -122,5 +176,10 @@ end, { nargs = 1, complete = "file" })
 
 vim.api.nvim_create_user_command("DBWriteGitState", function(opts)
   _G.DiffBanditTestWriteGitState(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBWritePanelState", function(opts)
+  _G.DiffBanditTestWritePanelState(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = 1, complete = "file" })

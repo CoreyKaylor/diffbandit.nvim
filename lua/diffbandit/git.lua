@@ -101,6 +101,25 @@ local function git_output(root, args)
   return run_command(cmd)
 end
 
+local function git_exit_code(root, args)
+  local cmd = { "git" }
+  if root and root ~= "" then
+    cmd[#cmd + 1] = "-C"
+    cmd[#cmd + 1] = root
+  end
+  for _, arg in ipairs(args) do
+    cmd[#cmd + 1] = arg
+  end
+
+  if vim.system then
+    local result = vim.system(cmd, { text = true }):wait()
+    return result.code, result.stdout or "", result.stderr or ""
+  end
+
+  local output = vim.fn.system(cmd)
+  return vim.v.shell_error, output or "", ""
+end
+
 local function git_lines(root, args)
   local output, err = git_output(root, args)
   if not output then
@@ -980,12 +999,175 @@ function M.git_output(root, args)
   return git_output(root, args)
 end
 
-function M.has_staged_changes(root, path)
-  local output, err = git_output(root, { "diff", "--cached", "--name-only", "--", path })
+function M.amend_base(root)
+  if not has_head(root) then
+    return nil, "cannot amend before the first commit"
+  end
+  local _, parent_err = git_output(root, { "rev-parse", "--verify", "HEAD^" })
+  if not parent_err then
+    return "HEAD^", nil
+  end
+  return empty_tree, nil
+end
+
+function M.has_staged_changes(root, path, base)
+  local args = { "diff", "--cached", "--name-only" }
+  if type(base) == "string" and base ~= "" then
+    args[#args + 1] = base
+  end
+  append_pathspecs(args, { path })
+  local output, err = git_output(root, args)
   if not output then
     return false, err
   end
   return vim.trim(output) ~= "", nil
+end
+
+local function stage_base_from_opts(opts)
+  if type(opts) == "table" then
+    return opts.stage_base
+  elseif type(opts) == "string" then
+    return opts
+  end
+  return nil
+end
+
+local function has_untracked_file(root, path)
+  local output = git_output(root, { "ls-files", "--others", "--exclude-standard", "--", path })
+  return output and vim.trim(output) ~= ""
+end
+
+local function has_worktree_changes(root, path)
+  local code = git_exit_code(root, { "diff", "--quiet", "--", path })
+  return code == 1 or has_untracked_file(root, path)
+end
+
+function M.file_stage_state(root, entry, opts)
+  if not root or not entry or not entry.path then
+    return "unstaged"
+  end
+  local stage_base = stage_base_from_opts(opts)
+  local staged = M.has_staged_changes(root, entry.path, stage_base)
+  if not staged and entry.old_path then
+    staged = M.has_staged_changes(root, entry.old_path, stage_base)
+  end
+  local unstaged = has_worktree_changes(root, entry.path)
+  if not unstaged and entry.old_path then
+    unstaged = has_worktree_changes(root, entry.old_path)
+  end
+  if staged and unstaged then
+    return "partial"
+  elseif staged then
+    return "staged"
+  end
+  return "unstaged"
+end
+
+function M.file_stage_states(root, entries, opts)
+  local states = {}
+  for index, entry in ipairs(entries or {}) do
+    states[index] = M.file_stage_state(root, entry, opts)
+  end
+  return states
+end
+
+local function entry_paths(entry)
+  local paths = {}
+  if entry and entry.old_path and entry.old_path ~= entry.path then
+    paths[#paths + 1] = entry.old_path
+  end
+  if entry and entry.path then
+    paths[#paths + 1] = entry.path
+  end
+  return paths
+end
+
+function M.stage_file(root, entry)
+  if not root or not entry or not entry.path then
+    return false, "no Git file entry to stage"
+  end
+  local args = { "add", "-A" }
+  append_pathspecs(args, entry_paths(entry))
+  local _, err = git_output(root, args)
+  return err == nil, err
+end
+
+function M.unstage_file(root, entry, opts)
+  if not root or not entry or not entry.path then
+    return false, "no Git file entry to unstage"
+  end
+
+  local paths = entry_paths(entry)
+  local args = { "restore", "--staged" }
+  local stage_base = stage_base_from_opts(opts)
+  if stage_base and stage_base ~= "" then
+    args[#args + 1] = "--source=" .. stage_base
+  end
+  append_pathspecs(args, paths)
+  local _, err = git_output(root, args)
+  if not err then
+    return true, nil
+  end
+
+  -- In an unborn repository there is no HEAD to restore from. Removing the
+  -- path from the index is the equivalent of unstaging the file.
+  local rm_args = { "rm", "--cached", "-r", "--ignore-unmatch" }
+  append_pathspecs(rm_args, paths)
+  local _, rm_err = git_output(root, rm_args)
+  return rm_err == nil, rm_err or err
+end
+
+function M.toggle_file_stage(root, entry, opts)
+  local state = M.file_stage_state(root, entry, opts)
+  if state == "staged" or state == "partial" then
+    return M.unstage_file(root, entry, opts)
+  end
+  return M.stage_file(root, entry)
+end
+
+function M.has_any_staged_changes(root)
+  local code = git_exit_code(root, { "diff", "--cached", "--quiet" })
+  return code == 1
+end
+
+function M.last_commit_message(root)
+  local output, err = git_output(root, { "log", "-1", "--pretty=%B" })
+  if not output then
+    return nil, err
+  end
+  return vim.trim(output), nil
+end
+
+function M.commit(root, message, opts)
+  opts = opts or {}
+  message = message or ""
+  if vim.trim(message) == "" then
+    return false, "commit message cannot be empty"
+  end
+  if opts.amend then
+    if not has_head(root) then
+      return false, "cannot amend before the first commit"
+    end
+  elseif not M.has_any_staged_changes(root) then
+    return false, "no staged changes to commit"
+  end
+
+  local tmp = vim.fn.tempname()
+  local lines = vim.split(message, "\n", { plain = true })
+  local ok, write_err = pcall(vim.fn.writefile, lines, tmp)
+  if not ok then
+    return false, tostring(write_err)
+  end
+
+  local args = { "commit" }
+  if opts.amend then
+    args[#args + 1] = "--amend"
+  end
+  args[#args + 1] = "-F"
+  args[#args + 1] = tmp
+  local _, err = git_output(root, args)
+  pcall(os.remove, tmp)
+  return err == nil, err
 end
 
 local function index_mode(root, path)

@@ -3,6 +3,7 @@ local config_mod = require("diffbandit.config")
 local State = {
   _config = config_mod.defaults(),
   sessions = {},
+  panels = {},
   _session_seq = 0,
 }
 
@@ -26,6 +27,14 @@ end
 
 function State.unregister(tabpage)
   State.sessions[tabpage] = nil
+end
+
+function State.register_panel(panel)
+  State.panels[panel.tabpage] = panel
+end
+
+function State.unregister_panel(tabpage)
+  State.panels[tabpage] = nil
 end
 
 return State

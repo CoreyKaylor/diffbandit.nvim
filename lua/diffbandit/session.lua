@@ -4,6 +4,8 @@ local state = require("diffbandit.state")
 local paths_mod = require("diffbandit.paths")
 local actions = require("diffbandit.actions")
 local status = require("diffbandit.status")
+local panel_mod = require("diffbandit.panel")
+local git_mod = require("diffbandit.git")
 
 local Session = {}
 Session.__index = Session
@@ -80,7 +82,7 @@ local function git_action_markers_enabled(queue, index)
     return false
   end
   local entry = queue.entries and queue.entries[index or queue.index or 1]
-  return not entry or entry.actions_enabled ~= false
+  return entry ~= nil and entry.actions_enabled ~= false
 end
 
 local function build_display_lines(session)
@@ -144,6 +146,35 @@ local function shallow_copy(tbl)
     copy[key] = value
   end
   return copy
+end
+
+local function clear_amend_opts(opts)
+  local clean = vim.tbl_extend("force", {}, opts or {})
+  clean.stage_base = nil
+  clean.amend_mode = nil
+  return clean
+end
+
+local function lines_equal(left, right)
+  left = left or {}
+  right = right or {}
+  if #left ~= #right then
+    return false
+  end
+  for index, line in ipairs(left) do
+    if line ~= right[index] then
+      return false
+    end
+  end
+  return true
+end
+
+local function capture_panel_message_lines(session)
+  local panel = session.panel or {}
+  if panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) then
+    panel.message_lines = vim.api.nvim_buf_get_lines(panel.commit_buf, 2, -1, false)
+  end
+  return panel.message_lines or { "" }
 end
 
 local function set_buffer_options(buf, opts)
@@ -230,8 +261,19 @@ function Session.start(sources, config, opts)
   self.connector_width_cache = {}
   self.staged_chunk_states = actions.staged_chunk_states(self)
   self.status_enabled = status.enabled(self.config)
+  self.panel_enabled = opts.panel == true
+  self.panel_initial_selection = opts.panel_initial_selection
+  self.panel_message_lines = opts.panel_message_lines
+  self.panel_amend = opts.panel_amend == true
+  self.normal_queue_opts = opts.panel_normal_queue_opts or (self.file_queue and self.file_queue.normal_opts)
 
   self:open_layout()
+  if self.panel_enabled then
+    panel_mod.attach(self, {
+      initial_selection = self.panel_initial_selection,
+      no_initial_selection = not self.panel_initial_selection,
+    })
+  end
   self:precompute_connector_core_width()
   self:render()
   self:setup_autocmds()
@@ -273,6 +315,11 @@ function Session:open_layout()
   local left_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
   local center_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
   local right_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
+  local panel_nav_buf = self.panel_enabled and vim.api.nvim_create_buf(false, true) or nil
+  local panel_commit_buf = self.panel_enabled and vim.api.nvim_create_buf(false, true) or nil
+  if panel_commit_buf then
+    pcall(vim.api.nvim_buf_set_name, panel_commit_buf, "diffbandit-commit-" .. tostring(self.id))
+  end
 
   self.left_buf = left_buf
   self.left_num_buf = left_num_buf
@@ -282,6 +329,15 @@ function Session:open_layout()
   self.left_header_buf = left_header_buf
   self.center_header_buf = center_header_buf
   self.right_header_buf = right_header_buf
+  if self.panel_enabled then
+    self.panel = {
+      nav_buf = panel_nav_buf,
+      commit_buf = panel_commit_buf,
+      message_lines = self.panel_message_lines or { "" },
+      amend = self.panel_amend == true,
+      visible = false,
+    }
+  end
 
   -- Set non-destructive options first
   set_buffer_options(left_buf, {
@@ -326,6 +382,21 @@ function Session:open_layout()
     end
   end
 
+  if panel_nav_buf then
+    set_buffer_options(panel_nav_buf, {
+      buftype = "nofile",
+      swapfile = false,
+      modifiable = false,
+    })
+  end
+  if panel_commit_buf then
+    set_buffer_options(panel_commit_buf, {
+      buftype = "acwrite",
+      swapfile = false,
+      modifiable = false,
+    })
+  end
+
   -- Put buffers in windows BEFORE setting bufhidden=wipe.
   -- Final order:
   -- LEFT CONTENT | LEFT NUMBERS | CONNECTOR | RIGHT NUMBERS | RIGHT CONTENT.
@@ -337,6 +408,8 @@ function Session:open_layout()
   local left_header_win
   local center_header_win
   local right_header_win
+  local panel_nav_win
+  local panel_commit_win
 
   local function open_gutter_win(buf, anchor_win, width)
     local ok, win = pcall(vim.api.nvim_open_win, buf, false, {
@@ -377,9 +450,34 @@ function Session:open_layout()
   local connector_win
   local right_num_win
 
+  if self.panel_enabled then
+    local panel_config = (((self.config or {}).git or {}).panel or {})
+    panel_nav_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(panel_nav_win, panel_nav_buf)
+    set_window_width(panel_nav_win, panel_config.width or 42)
+    if self.status_enabled then
+      left_header_win = vim.api.nvim_open_win(left_header_buf, false, {
+        split = "right",
+        win = panel_nav_win,
+      })
+    else
+      left_win = vim.api.nvim_open_win(left_buf, false, {
+        split = "right",
+        win = panel_nav_win,
+      })
+    end
+    panel_commit_win = vim.api.nvim_open_win(panel_commit_buf, false, {
+      split = "below",
+      win = panel_nav_win,
+      height = panel_config.commit_height or 10,
+    })
+  end
+
   if self.status_enabled then
-    left_header_win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(left_header_win, left_header_buf)
+    if not self.panel_enabled then
+      left_header_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(left_header_win, left_header_buf)
+    end
     left_win = vim.api.nvim_open_win(left_buf, false, {
       split = "below",
       win = left_header_win,
@@ -396,8 +494,10 @@ function Session:open_layout()
     connector_win = open_gutter_win(connector_buf, left_num_win, self.connector_core_width)
     right_num_win = open_gutter_win(right_num_buf, connector_win, self.right_number_pane_width)
   else
-    left_win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(left_win, left_buf)
+    if not self.panel_enabled then
+      left_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(left_win, left_buf)
+    end
     right_win = vim.api.nvim_open_win(right_buf, false, {
       split = "right",
       win = left_win,
@@ -416,6 +516,10 @@ function Session:open_layout()
   self.left_header_win = left_header_win
   self.center_header_win = center_header_win
   self.right_header_win = right_header_win
+  if self.panel_enabled then
+    self.panel.nav_win = panel_nav_win
+    self.panel.commit_win = panel_commit_win
+  end
 
   local split_winhl = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit"
   local source_winhl = split_winhl .. ",CursorLine:DiffBanditCursorLine"
@@ -493,6 +597,29 @@ function Session:open_layout()
     end
   end
 
+  if self.panel_enabled then
+    local panel_config = (((self.config or {}).git or {}).panel or {})
+    local panel_winhl = split_winhl .. ",Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,CursorLine:DiffBanditCursorLine"
+    for _, win in ipairs({ panel_nav_win, panel_commit_win }) do
+      if win then
+        set_window_options(win, {
+          number = false,
+          relativenumber = false,
+          cursorline = true,
+          wrap = false,
+          signcolumn = "no",
+          foldcolumn = "0",
+          winfixwidth = true,
+          winhl = panel_winhl,
+        })
+        set_window_width(win, panel_config.width or 42)
+      end
+    end
+    if panel_commit_win then
+      set_window_height(panel_commit_win, panel_config.commit_height or 10)
+    end
+  end
+
   self:resize_layout()
 
   -- Now that all buffers are displayed in windows, set bufhidden=wipe for cleanup
@@ -506,6 +633,11 @@ function Session:open_layout()
       set_buffer_options(buf, { bufhidden = "wipe" })
     end
   end
+  for _, buf in ipairs({ panel_nav_buf, panel_commit_buf }) do
+    if buf then
+      set_buffer_options(buf, { bufhidden = "hide" })
+    end
+  end
 
   -- Set vertical split character to thin line
   vim.opt.fillchars:append({ vert = "│" })
@@ -513,8 +645,11 @@ function Session:open_layout()
   local navigation = self.config.navigation or {}
   local initial_focus = navigation.initial_focus == "left" and "left" or "right"
   local initial_win = initial_focus == "left" and self.left_win or self.right_win
+  if self.panel_enabled and (((self.config.git or {}).panel or {}).focus_on_open or "panel") == "panel" then
+    initial_win = self.panel.nav_win
+  end
   vim.api.nvim_set_current_win(initial_win)
-  self.last_source_win = initial_win
+  self.last_source_win = (self.panel and initial_win == self.panel.nav_win) and self.right_win or initial_win
   self.last_source_side = initial_focus
 
   local left_name = self.left.label or self.left.path or ""
@@ -525,6 +660,17 @@ function Session:open_layout()
 end
 
 function Session:resize_layout()
+  if self.panel then
+    local panel_config = (((self.config or {}).git or {}).panel or {})
+    if self.panel.nav_win and vim.api.nvim_win_is_valid(self.panel.nav_win) then
+      set_window_width(self.panel.nav_win, panel_config.width or 42)
+    end
+    if self.panel.commit_win and vim.api.nvim_win_is_valid(self.panel.commit_win) then
+      set_window_width(self.panel.commit_win, panel_config.width or 42)
+      set_window_height(self.panel.commit_win, panel_config.commit_height or 10)
+    end
+  end
+
   local windows = {
     self.left_win,
     self.left_num_win,
@@ -741,6 +887,7 @@ function Session:setup_keymaps()
   local navigation = self.config.navigation or {}
   local document_keys = navigation.document_keys or {}
   local git_keys = ((self.config.git or {}).file_keys or {})
+  local panel_keys = (((self.config.git or {}).panel or {}).keys or {})
   local action_keys = ((self.config.actions or {}).keys or {})
 
   local function buffer_maps(buf)
@@ -791,6 +938,11 @@ function Session:setup_keymaps()
     if action_keys.undo then
       action_map(buf, action_keys.undo, "DiffBanditUndo", function()
         self:undo_action()
+      end)
+    end
+    if self.panel and panel_keys.focus_panel then
+      map(buf, panel_keys.focus_panel, function()
+        panel_mod.focus_nav(self)
       end)
     end
   end
@@ -2930,7 +3082,8 @@ function Session:load_queue_sources(index, step)
   return nil, nil, "no readable changed file"
 end
 
-function Session:goto_queue_file(index, chunk_position)
+function Session:goto_queue_file(index, chunk_position, opts)
+  opts = opts or {}
   local current = self.file_queue_index or 1
   local step = index >= current and 1 or -1
   local sources, resolved_index, err = self:load_queue_sources(index, step)
@@ -2944,10 +3097,17 @@ function Session:goto_queue_file(index, chunk_position)
   if self.file_queue then
     self.file_queue.index = resolved_index
   end
+  local focused_win = opts.preserve_focus and vim.api.nvim_get_current_win() or nil
   local ok, replace_err = self:replace_sources(sources, { chunk_position = chunk_position })
   if not ok then
     vim.notify("DiffBandit: " .. replace_err, vim.log.levels.ERROR)
     return false
+  end
+  if self.panel then
+    panel_mod.render(self, resolved_index)
+  end
+  if focused_win and vim.api.nvim_win_is_valid(focused_win) then
+    pcall(vim.api.nvim_set_current_win, focused_win)
   end
   return true
 end
@@ -2968,6 +3128,243 @@ function Session:goto_prev_file()
   end
   self:reset_pending_file_boundary()
   self:goto_queue_file((self.file_queue_index or 1) - 1, "top")
+end
+
+local function empty_git_source(label)
+  return {
+    path = nil,
+    label = label,
+    lines = {},
+    text = "",
+    filetype = nil,
+    empty_reason = label,
+  }
+end
+
+function Session:refresh_git_queue(preferred_path)
+  local queue = self.file_queue
+  if not queue or queue.kind ~= "git" then
+    return false, "no Git file queue configured"
+  end
+
+  local current_entry = queue.entries and queue.entries[self.file_queue_index or queue.index or 1]
+  preferred_path = preferred_path or (current_entry and (current_entry.path or current_entry.old_path))
+  local opts = vim.tbl_extend("force", {}, queue.opts or {})
+  opts.pathspecs = opts.pathspecs or {}
+  local git_config = vim.tbl_extend("force", {}, (self.config or {}).git or {}, {
+    hex = ((self.config or {}).ui or {}).hex or {},
+  })
+  local next_queue, err = git_mod.queue(opts, git_config)
+  if not next_queue then
+    if err ~= "no git changes" then
+      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+      return false, err
+    end
+    queue.entries = {}
+    queue.index = 1
+    self.file_queue = queue
+    self.file_queue_index = 1
+    self:replace_sources({
+      left = empty_git_source("No Git changes"),
+      right = empty_git_source("No Git changes"),
+    }, { chunk_position = "top" })
+    if self.panel then
+      panel_mod.render(self)
+    end
+    return true, nil
+  end
+
+  local target_index = next_queue.index or 1
+  if preferred_path then
+    for index, entry in ipairs(next_queue.entries or {}) do
+      if entry.path == preferred_path or entry.old_path == preferred_path then
+        target_index = index
+        break
+      end
+    end
+  end
+  next_queue.index = target_index
+  self.file_queue = next_queue
+  self.file_queue_index = target_index
+  self:goto_queue_file(target_index, "top", { preserve_focus = self.panel and self.panel.visible })
+  if self.panel then
+    panel_mod.render(self, target_index)
+  end
+  return true, nil
+end
+
+function Session:set_amend_mode(enabled)
+  if not self.file_queue or self.file_queue.kind ~= "git" or not self.file_queue.root then
+    return false, "no Git file queue configured"
+  end
+  if not self.panel then
+    return false, "no commit panel configured"
+  end
+
+  capture_panel_message_lines(self)
+  local current_entry = self.file_queue.entries and self.file_queue.entries[self.file_queue_index or self.file_queue.index or 1]
+  local preferred_path = current_entry and (current_entry.path or current_entry.old_path)
+
+  if enabled then
+    local base, err = git_mod.amend_base(self.file_queue.root)
+    if not base then
+      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+      return false, err
+    end
+    if not self.normal_queue_opts then
+      self.normal_queue_opts = clear_amend_opts((self.file_queue or {}).opts or {})
+    end
+    self.file_queue.opts = vim.tbl_extend("force", {}, self.normal_queue_opts, {
+      mode = "all",
+      base = base,
+      stage_base = base,
+      amend_mode = true,
+    })
+    self.file_queue.normal_opts = self.normal_queue_opts
+    self.panel.amend = true
+    if not self.panel.amend_loaded and vim.trim(table.concat(self.panel.message_lines or {}, "\n")) == "" then
+      local message = git_mod.last_commit_message(self.file_queue.root)
+      if message then
+        local loaded_lines = vim.split(message, "\n", { plain = true })
+        self.panel.pre_amend_message_lines = vim.deepcopy(self.panel.message_lines or { "" })
+        self.panel.amend_loaded_message_lines = loaded_lines
+        self.panel.message_lines = loaded_lines
+        self.panel.message_initialized = false
+      end
+      self.panel.amend_loaded = true
+    end
+  else
+    if self.panel.amend_loaded_message_lines
+        and lines_equal(self.panel.message_lines, self.panel.amend_loaded_message_lines) then
+      self.panel.message_lines = self.panel.pre_amend_message_lines or { "" }
+      self.panel.message_initialized = false
+    end
+    self.panel.pre_amend_message_lines = nil
+    self.panel.amend_loaded_message_lines = nil
+    self.file_queue.opts = clear_amend_opts(self.normal_queue_opts or (self.file_queue or {}).opts or {})
+    self.file_queue.normal_opts = nil
+    self.normal_queue_opts = nil
+    self.panel.amend = false
+  end
+
+  return self:refresh_git_queue(preferred_path)
+end
+
+function Session:clear_amend_mode()
+  if self.file_queue then
+    self.file_queue.opts = clear_amend_opts(self.normal_queue_opts or self.file_queue.opts or {})
+    self.file_queue.normal_opts = nil
+  end
+  self.normal_queue_opts = nil
+  if self.panel then
+    self.panel.amend = false
+    self.panel.amend_loaded = false
+    self.panel.pre_amend_message_lines = nil
+    self.panel.amend_loaded_message_lines = nil
+  end
+end
+
+function Session:ensure_panel_buffers()
+  if self.panel and self.panel.nav_buf and vim.api.nvim_buf_is_valid(self.panel.nav_buf) then
+    return
+  end
+  local nav_buf = vim.api.nvim_create_buf(false, true)
+  local commit_buf = vim.api.nvim_create_buf(false, true)
+  pcall(vim.api.nvim_buf_set_name, commit_buf, "diffbandit-commit-" .. tostring(self.id))
+  set_buffer_options(nav_buf, {
+    buftype = "nofile",
+    swapfile = false,
+    modifiable = false,
+    bufhidden = "hide",
+  })
+  set_buffer_options(commit_buf, {
+    buftype = "acwrite",
+    swapfile = false,
+    modifiable = false,
+    bufhidden = "hide",
+  })
+  self.panel = self.panel or {}
+  self.panel.nav_buf = nav_buf
+  self.panel.commit_buf = commit_buf
+  self.panel.message_lines = self.panel.message_lines or { "" }
+  self.panel.amend = self.panel.amend or false
+end
+
+function Session:show_commit_panel()
+  if not self.file_queue or self.file_queue.kind ~= "git" then
+    vim.notify("DiffBandit: commit panel is only available for Git diff sessions", vim.log.levels.INFO)
+    return false
+  end
+  self:ensure_panel_buffers()
+  if self.panel.visible
+      and self.panel.nav_win and vim.api.nvim_win_is_valid(self.panel.nav_win)
+      and self.panel.commit_win and vim.api.nvim_win_is_valid(self.panel.commit_win) then
+    panel_mod.focus_nav(self)
+    return true
+  end
+
+  local panel_config = (((self.config or {}).git or {}).panel or {})
+  local anchor = self.left_header_win
+    or self.left_win
+    or self.right_win
+    or vim.api.nvim_get_current_win()
+  if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
+    return false
+  end
+
+  local nav_win = vim.api.nvim_open_win(self.panel.nav_buf, false, {
+    split = "left",
+    win = anchor,
+    width = panel_config.width or 42,
+  })
+  local commit_win = vim.api.nvim_open_win(self.panel.commit_buf, false, {
+    split = "below",
+    win = nav_win,
+    height = panel_config.commit_height or 10,
+  })
+  self.panel.nav_win = nav_win
+  self.panel.commit_win = commit_win
+  self.panel.visible = true
+
+  local split_winhl = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit"
+  local panel_winhl = split_winhl .. ",Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,CursorLine:DiffBanditCursorLine"
+  for _, win in ipairs({ nav_win, commit_win }) do
+    set_window_options(win, {
+      number = false,
+      relativenumber = false,
+      cursorline = true,
+      wrap = false,
+      signcolumn = "no",
+      foldcolumn = "0",
+      winfixwidth = true,
+      winhl = panel_winhl,
+    })
+    set_window_width(win, panel_config.width or 42)
+  end
+  set_window_height(commit_win, panel_config.commit_height or 10)
+  panel_mod.attach(self)
+  self:resize_layout()
+  panel_mod.focus_nav(self)
+  return true
+end
+
+function Session:hide_commit_panel()
+  if not self.panel then
+    return false
+  end
+  panel_mod.close(self)
+  self:resize_layout()
+  return true
+end
+
+function Session:toggle_commit_panel()
+  if self.panel
+      and self.panel.visible
+      and self.panel.nav_win
+      and vim.api.nvim_win_is_valid(self.panel.nav_win) then
+    return self:hide_commit_panel()
+  end
+  return self:show_commit_panel()
 end
 
 function Session:confirm_file_boundary(direction)
@@ -3057,34 +3454,42 @@ local function notify_action_result(ok, err)
   if not ok and err then
     vim.notify("DiffBandit: " .. err, vim.log.levels.INFO)
   end
+  return ok, err
+end
+
+function Session:after_git_action(ok)
+  if ok and self.panel and self.file_queue then
+    local entry = self.file_queue.entries and self.file_queue.entries[self.file_queue_index or self.file_queue.index or 1]
+    self:refresh_git_queue(entry and entry.path)
+  end
 end
 
 function Session:toggle_stage_hunk()
-  notify_action_result(actions.toggle_stage(self))
+  self:after_git_action(notify_action_result(actions.toggle_stage(self)))
 end
 
 function Session:stage_hunk()
-  notify_action_result(actions.stage(self))
+  self:after_git_action(notify_action_result(actions.stage(self)))
 end
 
 function Session:unstage_hunk()
-  notify_action_result(actions.unstage(self))
+  self:after_git_action(notify_action_result(actions.unstage(self)))
 end
 
 function Session:discard_hunk()
-  notify_action_result(actions.discard(self))
+  self:after_git_action(notify_action_result(actions.discard(self)))
 end
 
 function Session:apply_left_hunk()
-  notify_action_result(actions.apply_left(self))
+  self:after_git_action(notify_action_result(actions.apply_left(self)))
 end
 
 function Session:apply_right_hunk()
-  notify_action_result(actions.apply_right(self))
+  self:after_git_action(notify_action_result(actions.apply_right(self)))
 end
 
 function Session:undo_action()
-  notify_action_result(actions.undo(self))
+  self:after_git_action(notify_action_result(actions.undo(self)))
 end
 
 return Session

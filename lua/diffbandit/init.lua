@@ -4,6 +4,7 @@ local Session = require("diffbandit.session")
 local highlights = require("diffbandit.highlights")
 local git_mod = require("diffbandit.git")
 local hex = require("diffbandit.hex")
+local CommitPanel = require("diffbandit.commit_panel")
 
 local M = {}
 
@@ -153,6 +154,10 @@ local function current_session()
   return state.sessions[vim.api.nvim_get_current_tabpage()]
 end
 
+local function current_panel()
+  return state.panels[vim.api.nvim_get_current_tabpage()]
+end
+
 local function call_current_session(method)
   local session = current_session()
   if not session then
@@ -221,6 +226,35 @@ function M.git(opts)
   end
 
   return start_session(loaded.left, loaded.right, { queue = queue, chunk_position = "top" })
+end
+
+function M.commit_panel(opts)
+  local existing_panel = current_panel()
+  if existing_panel and not existing_panel.disposed then
+    return existing_panel:toggle_commit_panel()
+  end
+
+  local existing = current_session()
+  if existing and existing.file_queue and existing.file_queue.kind == "git" then
+    return existing:toggle_commit_panel()
+  end
+
+  local config = state.get_config()
+  ensure_highlights(config)
+  local git_config = vim.tbl_extend("force", {}, config.git or {}, {
+    hex = (config.ui or {}).hex or {},
+  })
+  local queue, err = git_mod.queue(opts or {}, git_config)
+  if not queue then
+    return nil, err
+  end
+  queue.index = 0
+
+  return CommitPanel.start(config, queue, {
+    start_diff = function(left, right, start_opts)
+      return start_session(left, right, start_opts)
+    end,
+  })
 end
 
 function M.git_file(path, opts)

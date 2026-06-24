@@ -131,6 +131,18 @@ end, {
   desc = "Open DiffBandit git diff view for the current file",
 })
 
+vim.api.nvim_create_user_command("DiffBanditCommitPanel", function(opts)
+  local git_opts = parse_git_args(opts.fargs, {})
+  local session, err = diffbandit.commit_panel(git_opts)
+  if not session and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "*",
+  complete = "file",
+  desc = "Toggle the DiffBandit Git commit panel",
+})
+
 vim.api.nvim_create_user_command("DiffBanditToggleStageHunk", function()
   diffbandit.toggle_stage_hunk()
 end, {

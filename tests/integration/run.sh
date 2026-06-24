@@ -940,6 +940,133 @@ EOF
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 }
 
+run_git_commit_panel_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/commit-panel-repo"
+    local initial_state="$case_dir/panel-initial.state"
+    local amend_on_state="$case_dir/panel-amend-on.state"
+    local amend_off_state="$case_dir/panel-amend-off.state"
+    local first_move_state="$case_dir/panel-after-first-j.state"
+    local second_move_state="$case_dir/panel-after-second-j.state"
+    local next_change_state="$case_dir/panel-after-next-change.state"
+    local staged_state="$case_dir/panel-after-stage.state"
+    local hidden_state="$case_dir/panel-after-hide.state"
+    local shown_state="$case_dir/panel-after-show.state"
+    local committed_state="$case_dir/panel-after-commit.state"
+
+    echo "  phase: git-commit-panel"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/alpha.txt" <<'EOF'
+alpha base
+EOF
+    cat > "$repo/beta.txt" <<'EOF'
+beta base
+EOF
+    git -C "$repo" add alpha.txt beta.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    cat > "$repo/alpha.txt" <<'EOF'
+alpha changed
+EOF
+    cat > "$repo/beta.txt" <<'EOF'
+beta changed
+EOF
+
+    start_git_session "$repo" 18
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditCommitPanel" C-m
+    sleep 2
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $initial_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" c c
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $amend_on_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $amend_off_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" C-w k
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" j
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $first_move_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" j
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $second_move_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $next_change_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $staged_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditCommitPanel" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $hidden_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditCommitPanel" C-m
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $shown_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" c c
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" i "panel commit" Escape
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":w" C-m
+    sleep 1.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $committed_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    assert_git_state_contains "$initial_state" "surface=panel" "panel command should open only the standalone panel"
+    assert_git_state_contains "$initial_state" "panel_visible=true" "panel initial visible"
+    assert_git_state_contains "$initial_state" "focus=panel" "panel initial focus"
+    assert_git_state_contains "$initial_state" "queue_index=0" "panel should not load a file before selection"
+    assert_git_state_contains "$initial_state" "row=▾ Changes" "panel should initially rest on the group header"
+    assert_git_state_contains "$amend_on_state" "focus=commit" "panel amend toggle should run from the commit pane"
+    assert_git_state_contains "$amend_on_state" "amend=true" "commit pane space should enable amend mode"
+    assert_git_state_contains "$amend_on_state" "stage_states=1:partial,2:partial" "panel amend mode should evaluate stage states against the amend base"
+    assert_git_state_contains "$amend_off_state" "amend=false" "commit pane space should disable amend mode"
+    assert_git_state_contains "$amend_off_state" "stage_states=1:unstaged,2:unstaged" "panel normal mode should restore ordinary stage states"
+    assert_git_state_contains "$first_move_state" "focus=panel" "panel first j keeps focus"
+    assert_git_state_contains "$first_move_state" "queue_index=1" "panel first j selects first file"
+    assert_git_state_contains "$first_move_state" "selected_path=alpha.txt" "panel first j selects alpha"
+    assert_git_state_contains "$second_move_state" "focus=panel" "panel second j keeps focus"
+    assert_git_state_contains "$second_move_state" "queue_index=2" "panel second j previews second file"
+    assert_git_state_contains "$second_move_state" "selected_path=beta.txt" "panel second j selects beta"
+    assert_git_state_contains "$next_change_state" "focus=panel" "panel ]c keeps focus"
+    assert_git_state_contains "$next_change_state" "surface=session" "panel ]c operates after diff session load"
+    assert_git_state_contains "$next_change_state" "queue_index=2" "panel ]c stays on selected file"
+    assert_git_state_contains "$next_change_state" "chunk=1" "panel ]c moves to the first hunk"
+    assert_git_state_contains "$staged_state" "2:staged" "panel space stages selected file"
+    assert_git_state_contains "$hidden_state" "panel_visible=false" "panel command hides panel"
+    assert_git_state_contains "$shown_state" "panel_visible=true" "panel command shows panel"
+    assert_git_state_contains "$committed_state" "queue_count=1" "panel commit refreshes remaining queue"
+    if [[ "$(git -C "$repo" log -1 --pretty=%B | tr -d '\n')" != "panel commit" ]]; then
+        echo "Git commit panel failed: latest commit message mismatch"
+        git -C "$repo" log -1 --pretty=%B
+        exit 1
+    fi
+    if ! git -C "$repo" diff --cached --quiet; then
+        echo "Git commit panel failed: cached diff should be clean after commit"
+        git -C "$repo" diff --cached
+        exit 1
+    fi
+    if find "$repo" -maxdepth 1 -name 'diffbandit-commit-*' | grep -q .; then
+        echo "Git commit panel failed: :w should be intercepted, not written to disk"
+        exit 1
+    fi
+    assert_git_diff_contains "$repo" "worktree" "alpha.txt" "alpha changed" "panel commit should leave unstaged alpha change"
+}
+
 run_git_test() {
     local test_name="git"
     local case_dir="$CAPTURE_ROOT/$test_name"
@@ -963,6 +1090,7 @@ run_git_test() {
     run_git_staged_added_toggle_test
     run_git_staged_added_hunk_toggle_test
     run_git_mixed_staged_added_hunk_toggle_test
+    run_git_commit_panel_test
     run_git_live_buffer_test
 
     echo "  PASSED: $test_name"

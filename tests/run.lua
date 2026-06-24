@@ -14,6 +14,7 @@ local git_mod = require("diffbandit.git")
 local actions_mod = require("diffbandit.actions")
 local status_mod = require("diffbandit.status")
 local hex_mod = require("diffbandit.hex")
+local panel_mod = require("diffbandit.panel")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -46,6 +47,10 @@ local function assert_ne(a, b, msg)
     error((msg or "assertion failed") .. string.format("\nExpected values to differ, both were: %s", tostring(a)))
   end
 end
+
+assert_eq(config.git.panel.keys.toggle_amend, "<Space>",
+  "Commit panel amend toggle should use the commit-pane normal-mode space key")
+assert_eq(config.git.panel.keys.commit, nil, "Commit panel should commit through :w by default")
 
 local function get_hl(name)
   return vim.api.nvim_get_hl(0, { name = name, link = false })
@@ -1601,6 +1606,164 @@ if vim.fn.executable("git") == 1 then
     local loaded = select(1, queue.load(1))
     assert_eq(loaded.left.text, "old\n", "Staged left source should read HEAD content")
     assert_eq(loaded.right.text, "new\n", "Staged right source should read index content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "panel.txt", { "one", "two", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "panel.txt", { "one", "TWO", "three" })
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "panel.txt" } }, config.git)))
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1]), "unstaged",
+      "Panel file state should start unstaged for worktree-only changes")
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1], { mode = "all" }), "unstaged",
+      "Panel file state should not treat all-mode opts as a staged base")
+
+    local ok, err = git_mod.stage_file(repo, queue.entries[1])
+    assert_eq(err, nil, "Panel file stage should not error")
+    assert_eq(ok, true, "Panel file stage should succeed")
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1]), "staged",
+      "Panel file state should become staged after file stage")
+
+    write_repo_file(repo, "panel.txt", { "one", "TWO", "THREE" })
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1]), "partial",
+      "Panel file state should detect staged and unstaged changes for the same file")
+
+    ok, err = git_mod.unstage_file(repo, queue.entries[1])
+    assert_eq(err, nil, "Panel file unstage should not error")
+    assert_eq(ok, true, "Panel file unstage should succeed")
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1]), "unstaged",
+      "Panel file state should return to unstaged after whole-file unstage")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "amend.txt", { "base" })
+    commit_baseline(repo)
+    write_repo_file(repo, "amend.txt", { "committed" })
+    git_test_command({ "add", "amend.txt" }, repo)
+    git_test_command({ "commit", "-m", "second" }, repo)
+
+    local base, err = git_mod.amend_base(repo)
+    assert_eq(err, nil, "Amend base should resolve for a normal repository")
+    assert_eq(base, "HEAD^", "Amend base should compare against the parent commit")
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", base = base, pathspecs = { "amend.txt" } }, config.git)))
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1], { stage_base = base }), "staged",
+      "Amend panel state should treat current HEAD content as staged against the amend base")
+
+    write_repo_file(repo, "amend.txt", { "committed", "working tree" })
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1], { stage_base = base }), "partial",
+      "Amend panel state should show partial when the commit content and worktree both differ from the amend base")
+    local ok, unstage_err = git_mod.unstage_file(repo, queue.entries[1], { stage_base = base })
+    assert_eq(ok, true, "Amend unstage should restore the index from the amend base")
+    assert_eq(unstage_err, nil, "Amend unstage should not error")
+    assert_eq(git_mod.file_stage_state(repo, queue.entries[1], { stage_base = base }), "unstaged",
+      "Amend unstage should clear the staged state against the amend base")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "root.txt", { "first" })
+    commit_baseline(repo)
+    local base, err = git_mod.amend_base(repo)
+    assert_eq(err, nil, "Amend base should resolve for the root commit")
+    assert_ne(base, "HEAD^", "Root amend base should not use a missing parent ref")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "commit.txt", { "base" })
+    commit_baseline(repo)
+    local ok, err = git_mod.commit(repo, "   ", {})
+    assert_eq(ok, false, "Panel commit should reject an empty message")
+    assert_eq(err, "commit message cannot be empty", "Panel commit should explain empty message validation")
+    ok, err = git_mod.commit(repo, "no staged changes", {})
+    assert_eq(ok, false, "Panel commit should reject committing without staged changes")
+    assert_eq(err, "no staged changes to commit", "Panel commit should explain missing staged changes")
+
+    write_repo_file(repo, "commit.txt", { "changed" })
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "commit.txt" } }, config.git)))
+    ok, err = git_mod.stage_file(repo, queue.entries[1])
+    assert_eq(ok, true, "Commit test stage should succeed")
+    assert_eq(err, nil, "Commit test stage should not error")
+    ok, err = git_mod.commit(repo, "panel commit", {})
+    assert_eq(ok, true, "Panel commit should succeed with staged changes")
+    assert_eq(err, nil, "Panel commit should not error")
+    local message = git_test_command({ "log", "-1", "--pretty=%B" }, repo)
+    assert_eq(vim.trim(message), "panel commit", "Panel commit should write the requested message")
+
+    ok, err = git_mod.commit(repo, "panel amend", { amend = true })
+    assert_eq(ok, true, "Panel amend should allow message-only amend")
+    assert_eq(err, nil, "Panel amend should not error")
+    message = git_test_command({ "log", "-1", "--pretty=%B" }, repo)
+    assert_eq(vim.trim(message), "panel amend", "Panel amend should update the latest commit message")
+  end
+
+  do
+    local session = {
+      config = config_mod.apply({
+        git = {
+          panel = {
+            icons = "plain",
+          },
+        },
+      }),
+      file_queue = {
+        root = "/tmp/repo",
+        entries = {
+          { status = "M", path = "lua/diffbandit/git.lua", kind = "modified" },
+          { status = "A", raw_status = "??", path = "tests/files/new.txt", untracked = true, kind = "untracked" },
+        },
+      },
+      panel = {
+        stage_states = {
+          [1] = "partial",
+          [2] = "unstaged",
+        },
+      },
+    }
+    local rows = panel_mod._private.build_rows(session)
+    assert_eq(rows[1].text, "▾ Changes  1 files", "Panel rows should group tracked changes")
+    assert_eq(rows[2].type, "file", "Panel rows should include tracked file row")
+    assert_eq(rows[3].text, "▾ Unversioned Files  1 files", "Panel rows should group unversioned files")
+    assert_eq(rows[4].type, "file", "Panel rows should include unversioned file row")
+    assert_eq(rows[2].text:find("◧ M git.lua", 1, true) ~= nil, true,
+      "Panel file row should include staged state, status, and basename")
+  end
+
+  do
+    local buf = vim.api.nvim_create_buf(false, true)
+    local session = {
+      ns = vim.api.nvim_create_namespace("DiffBanditPanelCommitTest"),
+      config = config,
+      panel = {
+        commit_buf = buf,
+        stage_states = { [1] = "staged" },
+        amend = true,
+        message_lines = { "commit body" },
+        validation_message = "commit message cannot be empty",
+      },
+    }
+    panel_mod.render_commit(session)
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    assert_eq(#lines, 3, "Commit pane should reserve two virtual header rows before the message")
+    assert_eq(lines[1], "", "Commit pane amend status row should be virtual text")
+    assert_eq(lines[2], "", "Commit pane message label row should be virtual text")
+    assert_eq(lines[3], "commit body", "Commit pane message body should remain real buffer text")
+    local marks = vim.api.nvim_buf_get_extmarks(buf, session.ns, 0, -1, { details = true })
+    assert_eq(#marks >= 2, true, "Commit pane should render virtual header overlays")
+    local found_validation = false
+    for _, mark in ipairs(marks) do
+      local details = mark[4] or {}
+      for _, chunk in ipairs(details.virt_text or {}) do
+        if chunk[1] and chunk[1]:find("commit message cannot be empty", 1, true) then
+          found_validation = true
+        end
+      end
+    end
+    assert_eq(found_validation, true, "Commit pane should render validation text in the virtual header")
+    vim.api.nvim_buf_delete(buf, { force = true })
   end
 
   do
