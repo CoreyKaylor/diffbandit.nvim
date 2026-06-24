@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - "lua/**"
+      - "plugin/**"
+      - "tests/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ci.yml"
+      - "lua/**"
+      - "plugin/**"
+      - "tests/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Neovim tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git lua5.1 tmux
+
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Check generated help tags
+        run: |
+          nvim --headless -u NONE -i NONE -c 'helptags doc' -c 'if &modified | cquit | endif' -c qa
+          git diff --exit-code -- doc/tags
+
+      - name: Run unit specs
+        run: nvim --headless -u tests/run.lua
+
+      - name: Run integration specs
+        run: tests/integration/run.sh
+
+      - name: Check whitespace
+        run: git diff --check
