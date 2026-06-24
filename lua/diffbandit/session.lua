@@ -1109,24 +1109,21 @@ function Session:setup_keymaps()
         self:undo_action()
       end)
     end
-    if self.panel and panel_keys.focus_panel then
-      map(buf, panel_keys.focus_panel, function()
-        panel_mod.focus_nav(self)
-      end)
-    end
   end
 
   buffer_maps(self.left_buf)
-  if self.left_overview_buf then
-    buffer_maps(self.left_overview_buf)
-  end
   buffer_maps(self.left_num_buf)
   buffer_maps(self.connector_buf)
   buffer_maps(self.right_num_buf)
-  if self.right_overview_buf then
-    buffer_maps(self.right_overview_buf)
-  end
   buffer_maps(self.right_buf)
+  if self.file_queue and panel_keys.focus_panel then
+    map(self.left_buf, panel_keys.focus_panel, function()
+      self:focus_commit_panel_for_current_file()
+    end)
+    map(self.right_buf, panel_keys.focus_panel, function()
+      self:focus_commit_panel_for_current_file()
+    end)
+  end
   map(self.left_buf, "<C-w>l", function()
     if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
       vim.api.nvim_set_current_win(self.right_win)
@@ -3492,7 +3489,8 @@ function Session:ensure_panel_buffers()
   self.panel.amend = self.panel.amend or false
 end
 
-function Session:show_commit_panel()
+function Session:show_commit_panel(opts)
+  opts = opts or {}
   if not self.file_queue or self.file_queue.kind ~= "git" then
     vim.notify("DiffBandit: commit panel is only available for Git diff sessions", vim.log.levels.INFO)
     return false
@@ -3506,9 +3504,9 @@ function Session:show_commit_panel()
   end
 
   local panel_config = (((self.config or {}).git or {}).panel or {})
-  local anchor = self.left_header_win
-    or self.left_win
+  local anchor = self.left_win
     or self.right_win
+    or self.left_header_win
     or vim.api.nvim_get_current_win()
   if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
     return false
@@ -3544,10 +3542,34 @@ function Session:show_commit_panel()
     set_window_width(win, panel_config.width or 42)
   end
   set_window_height(commit_win, panel_config.commit_height or 10)
-  panel_mod.attach(self)
+  if opts.select_current_file then
+    panel_mod.attach(self, {
+      initial_selection = self.file_queue_index or self.file_queue.index or 1,
+      no_initial_selection = false,
+    })
+  else
+    panel_mod.attach(self)
+  end
   self:resize_layout()
   panel_mod.focus_nav(self)
   return true
+end
+
+function Session:focus_commit_panel_for_current_file()
+  if not self.file_queue or self.file_queue.kind ~= "git" then
+    vim.notify("DiffBandit: commit panel is only available for Git diff sessions", vim.log.levels.INFO)
+    return false
+  end
+  local index = self.file_queue_index or self.file_queue.index or 1
+  if self.panel
+      and self.panel.visible
+      and self.panel.nav_win
+      and vim.api.nvim_win_is_valid(self.panel.nav_win) then
+    panel_mod.render(self, index)
+    panel_mod.focus_nav(self)
+    return true
+  end
+  return self:show_commit_panel({ select_current_file = true })
 end
 
 function Session:hide_commit_panel()

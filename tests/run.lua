@@ -51,6 +51,8 @@ end
 
 assert_eq(config.git.panel.keys.toggle_amend, "<Space>",
   "Commit panel amend toggle should use the commit-pane normal-mode space key")
+assert_eq(config.git.panel.keys.focus_panel, "C",
+  "Git diff document focus-panel key should default to normal-mode C")
 assert_eq(config.git.panel.keys.commit, nil, "Commit panel should commit through :w by default")
 assert_eq(config.ui.overview.enabled, true, "Overview gutter should be enabled by default")
 assert_eq(config.ui.overview.width, 1, "Overview gutter should default to one column")

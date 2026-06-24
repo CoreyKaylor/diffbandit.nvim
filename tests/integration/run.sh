@@ -617,6 +617,7 @@ run_git_queue_navigation_test() {
     local second_boundary_state="$case_dir/queue-after-second-boundary.state"
     local next_file_state="$case_dir/queue-after-next-file.state"
     local prev_file_state="$case_dir/queue-after-prev-file.state"
+    local focus_panel_state="$case_dir/queue-after-focus-panel.state"
 
     echo "  phase: git-queue-navigation"
     start_git_session "$repo" 12
@@ -645,6 +646,10 @@ run_git_queue_navigation_test() {
     sleep 0.8
     tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $prev_file_state" C-m
     sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" C
+    sleep 0.8
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $focus_panel_state" C-m
+    sleep 0.2
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 
     assert_git_state_contains "$initial_state" "queue_index=1" "initial index"
@@ -671,6 +676,10 @@ run_git_queue_navigation_test() {
     assert_git_state_contains "$prev_file_state" "queue_index=2" "[f should return to second file"
     assert_git_state_contains "$prev_file_state" "chunk=0" "[f should open previous file at top"
     assert_git_state_contains "$prev_file_state" "beta_added_staged.txt" "[f second file label"
+    assert_git_state_contains "$focus_panel_state" "panel_visible=true" "C should open the commit panel from DiffBanditGit"
+    assert_git_state_contains "$focus_panel_state" "focus=panel" "C should focus the commit panel"
+    assert_git_state_contains "$focus_panel_state" "queue_index=2" "C should preserve the current file index"
+    assert_git_state_contains "$focus_panel_state" "selected_path=beta_added_staged.txt" "C should select the current file in the panel"
 }
 
 run_git_live_buffer_test() {

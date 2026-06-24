@@ -612,11 +612,6 @@ function M.setup_keymaps(session)
   if panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) then
     setup_commit_write_command(session)
     local commit_opts = { buffer = panel.commit_buf, nowait = true, noremap = true, silent = true }
-    if keys.focus_panel then
-      vim.keymap.set("n", keys.focus_panel, function()
-        M.focus_nav(session)
-      end, commit_opts)
-    end
     if keys.commit then
       vim.keymap.set("n", keys.commit, function()
         M.commit(session)
