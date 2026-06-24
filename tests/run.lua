@@ -13,12 +13,20 @@ local Session = require("diffbandit.session")
 local git_mod = require("diffbandit.git")
 local actions_mod = require("diffbandit.actions")
 local status_mod = require("diffbandit.status")
+local hex_mod = require("diffbandit.hex")
 
 -- Helper: read file lines
 local function read_file(path)
   local ok, lines = pcall(vim.fn.readfile, path)
   if not ok then return {} end
   return lines
+end
+
+local function write_binary_file(path, bytes)
+  local uv = vim.uv or vim.loop
+  local fd = assert(uv.fs_open(path, "w", 420))
+  assert(uv.fs_write(fd, bytes, 0))
+  assert(uv.fs_close(fd))
 end
 
 -- Helper: convert lines to text
@@ -1505,6 +1513,23 @@ do
   vim.g.diffbandit_have_nerd_font = old_diffbandit_have_nerd
 end
 
+do
+  local dump = hex_mod.dump(string.char(0, 1, 2, 65, 66, 255), {
+    bytes_per_row = 4,
+    max_bytes = 4,
+    show_ascii = true,
+  })
+  assert_eq(dump.display_numbers[1], "00000000", "Hex dump should label the first row by byte offset")
+  assert_eq(dump.lines[1], "00 01 02 41  |...A|", "Hex dump should include grouped bytes and ASCII preview")
+  assert_eq(dump.truncated, true, "Hex dump should report truncation when max_bytes is exceeded")
+  assert_eq(dump.lines[2], "[DiffBandit: hex view truncated at 4 of 6 bytes]",
+    "Hex dump should add a truncation notice row")
+  assert_eq(hex_mod.is_binary("plain text\n"), false, "Plain text should not be detected as binary")
+  assert_eq(hex_mod.is_binary("a\000b"), true, "NUL-containing text should be detected as binary")
+  local no_offsets = hex_mod.dump("abcd", { show_offsets = false })
+  assert_eq(no_offsets.display_numbers, nil, "Hex dump should honor disabled offset labels")
+end
+
 if vim.fn.executable("git") == 1 then
   do
     local repo = make_git_repo()
@@ -1644,6 +1669,163 @@ if vim.fn.executable("git") == 1 then
     assert_eq(loaded.right.text, "unsaved\n", "Buffer diff right source should read live buffer content")
 
     pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end
+
+  do
+    local repo = make_git_repo()
+    local binary_path = repo .. "/binary.bin"
+    write_binary_file(binary_path, string.char(0, 1, 2, 3, 65, 66, 67, 68))
+    git_test_command({ "add", "binary.bin" }, repo)
+    commit_baseline(repo)
+    write_binary_file(binary_path, string.char(0, 1, 2, 4, 65, 66, 67, 69))
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "binary.bin" } }, config.git)))
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.git_binary_hex, true, "Binary left source should render as hex")
+    assert_eq(loaded.right.git_binary_hex, true, "Binary right source should render as hex")
+    assert_eq(loaded.left.display_numbers[1], "00000000", "Binary hex source should expose byte offsets")
+    assert_eq(loaded.left.lines[1]:find("00 01 02 03", 1, true) ~= nil, true,
+      "Binary left source should include baseline bytes")
+    assert_eq(loaded.right.lines[1]:find("00 01 02 04", 1, true) ~= nil, true,
+      "Binary right source should include changed bytes")
+    assert_eq(queue.entries[1].content_kind, "binary", "Binary queue entry should be classified as binary")
+    assert_eq(queue.entries[1].actions_enabled, false, "Binary queue entry should disable hunk actions")
+  end
+
+  do
+    local repo = vim.fn.tempname()
+    vim.fn.mkdir(repo, "p")
+    git_test_command({ "init" }, repo)
+    write_repo_file(repo, "first.txt", { "first content" })
+
+    local queue, err = git_mod.queue({ root = repo, mode = "all" }, config.git)
+    assert_eq(err, nil, "Unborn repository queue should diff against the empty tree")
+    assert_eq(#queue.entries, 1, "Unborn repository queue should include the untracked file")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.git_ref, "not tracked", "Unborn untracked left side should still identify not-tracked state")
+    assert_eq(loaded.right.text, "first content\n", "Unborn untracked right side should read worktree content")
+  end
+
+  do
+    local repo = make_git_repo()
+    local queue = {
+      kind = "git",
+      root = repo,
+      opts = { mode = "all" },
+      entries = {
+        { status = "U", raw_status = "U", path = "conflict.txt" },
+        { status = "T", raw_status = "T", path = "typechange.txt" },
+      },
+    }
+    local unmerged = select(1, git_mod.sources_for_entry(queue, 1))
+    assert_eq(unmerged.left.empty_reason, "Git metadata entry", "Unmerged left side should render a metadata placeholder")
+    assert_eq(unmerged.right.text, "Unmerged file: resolve conflicts outside DiffBandit\n",
+      "Unmerged right side should explain the conflict state")
+    assert_eq(queue.entries[1].actions_enabled, false, "Unmerged entries should disable hunk actions")
+
+    local typechange = select(1, git_mod.sources_for_entry(queue, 2))
+    assert_eq(typechange.right.text, "File type changed\n",
+      "Typechange right side should explain metadata-only changes")
+    assert_eq(queue.entries[2].actions_enabled, false, "Typechange entries should disable hunk actions")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "renamed_old.txt", { "old name line" })
+    commit_baseline(repo)
+    git_test_command({ "mv", "renamed_old.txt", "renamed_new.txt" }, repo)
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all" }, config.git)))
+    local loaded = select(1, queue.load(1))
+    assert_eq(queue.entries[1].status, "R", "Renamed file should classify as rename")
+    assert_eq(loaded.left.git_relpath, "renamed_old.txt", "Rename left source should use old path")
+    assert_eq(loaded.right.git_relpath, "renamed_new.txt", "Rename right source should use new path")
+    local lines = status_mod.build({
+      config = config,
+      left = loaded.left,
+      right = loaded.right,
+      file_queue = queue,
+      file_queue_index = 1,
+      current_chunk = 1,
+      view = { chunks = { {} } },
+      staged_chunk_states = {},
+    })
+    assert_eq(lines.center:find("renamed_old.txt %-%> renamed_new.txt") ~= nil, true,
+      "Rename status should show path direction")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "copy_source.txt", { "copy base" })
+    commit_baseline(repo)
+    write_repo_file(repo, "copy_dest.txt", { "copy base" })
+    git_test_command({ "add", "copy_dest.txt" }, repo)
+
+    local queue = assert((git_mod.queue({
+      root = repo,
+      mode = "staged",
+      find_copies = true,
+    }, config.git)))
+    assert_eq(queue.entries[1].status, "C", "Opt-in copy detection should classify copied files")
+    queue.load(1)
+    assert_eq(queue.entries[1].actions_enabled, false, "Copied entries should disable hunk actions")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "mode_only.sh", { "#!/bin/sh", "echo mode" })
+    commit_baseline(repo)
+    git_test_command({ "update-index", "--chmod=+x", "mode_only.sh" }, repo)
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "staged", pathspecs = { "mode_only.sh" } }, config.git)))
+    local loaded = select(1, queue.load(1))
+    assert_eq(queue.entries[1].content_kind, "metadata", "Mode-only diff should classify as metadata")
+    assert_eq(loaded.right.text:find("mode change", 1, true) ~= nil, true,
+      "Mode-only diff should show Git summary text")
+    assert_eq(queue.entries[1].actions_enabled, false, "Mode-only metadata should disable hunk actions")
+  end
+
+  do
+    local repo = make_git_repo()
+    local uv = vim.uv or vim.loop
+    assert(uv.fs_symlink("old-target.txt", repo .. "/link.txt"))
+    git_test_command({ "add", "link.txt" }, repo)
+    commit_baseline(repo)
+    assert(os.remove(repo .. "/link.txt"))
+    assert(uv.fs_symlink("new-target.txt", repo .. "/link.txt"))
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "link.txt" } }, config.git)))
+    local loaded = select(1, queue.load(1))
+    assert_eq(queue.entries[1].content_kind, "symlink", "Symlink diff should classify as symlink")
+    assert_eq(loaded.left.text, "symlink -> old-target.txt\n", "Symlink left side should show old target")
+    assert_eq(loaded.right.text, "symlink -> new-target.txt\n", "Symlink right side should show new target")
+    assert_eq(queue.entries[1].actions_enabled, false, "Symlink actions should be disabled")
+  end
+
+  do
+    local repo = make_git_repo()
+    local old_oid = "1111111111111111111111111111111111111111"
+    local new_oid = "2222222222222222222222222222222222222222"
+    git_test_command({ "update-index", "--add", "--cacheinfo", "160000," .. old_oid .. ",vendor/lib" }, repo)
+    git_test_command({ "commit", "-m", "submodule baseline" }, repo)
+    git_test_command({ "update-index", "--add", "--cacheinfo", "160000," .. new_oid .. ",vendor/lib" }, repo)
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "staged", pathspecs = { "vendor/lib" } }, config.git)))
+    local loaded = select(1, queue.load(1))
+    assert_eq(queue.entries[1].content_kind, "submodule", "Gitlink diff should classify as submodule")
+    assert_eq(loaded.right.text:find("Submodule", 1, true) ~= nil, true,
+      "Submodule diff should show a metadata summary")
+    assert_eq(queue.entries[1].actions_enabled, false, "Submodule actions should be disabled")
+  end
+
+  do
+    local dump = hex_mod.dump(string.rep("a", 12), {
+      max_bytes = 8,
+      bytes_per_row = 4,
+    })
+    assert_eq(dump.truncated, true, "Large binary dump should mark truncation")
+    assert_eq(dump.lines[#dump.lines], "[DiffBandit: hex view truncated at 8 of 12 bytes]",
+      "Large binary dump should include truncation notice")
   end
 
   local function make_action_session(queue)

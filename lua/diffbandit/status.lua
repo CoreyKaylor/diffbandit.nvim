@@ -85,6 +85,18 @@ local function entry_status(session)
   return entry.raw_status or entry.status
 end
 
+local function entry_detail(session)
+  local queue = session and session.file_queue
+  if not queue or queue.kind ~= "git" then
+    return nil
+  end
+  local entry = queue.entries and queue.entries[session.file_queue_index or queue.index or 1]
+  if not entry or not entry.old_path or not entry.path then
+    return nil
+  end
+  return entry.old_path .. " -> " .. entry.path
+end
+
 local function count_staged_chunks(session)
   local count = 0
   for _, staged in pairs(session.staged_chunk_states or {}) do
@@ -154,6 +166,7 @@ function M.build(session)
     local file_pos = file_position(session) or "0/0"
     local hunk_pos = hunk_position(session)
     local status = entry_status(session)
+    local detail = entry_detail(session)
     local staged = tostring(count_staged_chunks(session))
       .. "/"
       .. tostring(#(session.view and session.view.chunks or {}))
@@ -162,6 +175,9 @@ function M.build(session)
     center_parts[#center_parts + 1] = icons.hunk .. " " .. hunk_pos
     if status and status ~= "" then
       center_parts[#center_parts + 1] = status
+    end
+    if detail and detail ~= "" then
+      center_parts[#center_parts + 1] = detail
     end
     center_parts[#center_parts + 1] = icons.staged .. " " .. staged
 

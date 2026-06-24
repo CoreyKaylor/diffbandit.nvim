@@ -131,6 +131,17 @@ local function queue_context(session)
   }, nil
 end
 
+local function action_capability_error(ctx)
+  if not ctx then
+    return nil
+  end
+  local entry = ctx.entry or {}
+  if entry.actions_enabled == false then
+    return entry.actions_disabled_reason or "Git hunk actions are disabled for this entry"
+  end
+  return nil
+end
+
 local function read_target(ctx, target)
   if target == "index" then
     return git_mod.read_index(ctx.root, ctx.path)
@@ -235,6 +246,10 @@ local function apply_sides(session, source_side, target_side, opts)
   if not ctx then
     return false, ctx_err
   end
+  local capability_err = action_capability_error(ctx)
+  if capability_err then
+    return false, capability_err
+  end
   local mode = ctx.opts.mode or "unstaged"
   if mode ~= "unstaged" and mode ~= "staged" and mode ~= "all" then
     return false, "Git hunk actions are disabled for " .. mode .. " diffs"
@@ -325,6 +340,10 @@ function M.stage(session)
   if not ctx then
     return false, err
   end
+  local capability_err = action_capability_error(ctx)
+  if capability_err then
+    return false, capability_err
+  end
   local mode = ctx.opts.mode or "unstaged"
   if mode ~= "unstaged" and mode ~= "all" then
     return false, "stage hunk is only available in unstaged or all Git diffs"
@@ -336,6 +355,10 @@ function M.unstage(session)
   local ctx, err = queue_context(session)
   if not ctx then
     return false, err
+  end
+  local capability_err = action_capability_error(ctx)
+  if capability_err then
+    return false, capability_err
   end
   local mode = ctx.opts.mode or "unstaged"
   if mode ~= "staged" and mode ~= "all" then
@@ -361,6 +384,10 @@ function M.discard(session)
   if not ctx then
     return false, err
   end
+  local capability_err = action_capability_error(ctx)
+  if capability_err then
+    return false, capability_err
+  end
   local mode = ctx.opts.mode or "unstaged"
   if mode ~= "unstaged" and mode ~= "all" then
     return false, "discard hunk is only available in unstaged or all Git diffs"
@@ -372,6 +399,10 @@ function M.toggle_stage(session)
   local ctx, err = queue_context(session)
   if not ctx then
     return false, err
+  end
+  local capability_err = action_capability_error(ctx)
+  if capability_err then
+    return false, capability_err
   end
   local mode = ctx.opts.mode or "unstaged"
   if mode == "unstaged" then
@@ -504,6 +535,9 @@ function M.staged_chunk_states(session)
   local states = {}
   local ctx = queue_context(session)
   if not ctx then
+    return states
+  end
+  if action_capability_error(ctx) then
     return states
   end
   local mode = ctx.opts.mode or "unstaged"

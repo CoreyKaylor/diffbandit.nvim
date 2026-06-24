@@ -460,6 +460,141 @@ capture_git_command() {
     lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "git:${test_name#git-}" "$ansi_capture"
 }
 
+run_git_binary_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/binary-repo"
+
+    echo "  phase: git-binary"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    printf '\000\001\002\003ABCD' > "$repo/binary.bin"
+    git -C "$repo" add binary.bin
+    git -C "$repo" commit -m baseline >/dev/null
+    printf '\000\001\002\004ABCE' > "$repo/binary.bin"
+
+    capture_git_command "$repo" "git-binary" ":DiffBanditGit -- binary.bin"
+}
+
+run_git_binary_truncation_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/binary-truncated-repo"
+    local plain_capture="$case_dir/git-binary-truncated.txt"
+    local ansi_capture="$case_dir/git-binary-truncated.ansi"
+
+    echo "  phase: git-binary-truncated"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    printf '\000\001\002\003ABCD1234' > "$repo/large.bin"
+    git -C "$repo" add large.bin
+    git -C "$repo" commit -m baseline >/dev/null
+    printf '\000\001\002\004ABCE5678' > "$repo/large.bin"
+
+    start_git_session "$repo" 16
+    tmux send-keys -t "$TMUX_SESSION" ":lua require('diffbandit').setup({ ui = { hex = { max_bytes = 8, bytes_per_row = 4 } } })" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- large.bin" C-m
+    sleep 2
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+    tmux capture-pane -t "$TMUX_SESSION" -e -p > "$ansi_capture"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "git:binary-truncated" "$ansi_capture"
+}
+
+run_git_symlink_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/symlink-repo"
+
+    echo "  phase: git-symlink"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    ln -s old-target.txt "$repo/link.txt"
+    git -C "$repo" add link.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    rm "$repo/link.txt"
+    ln -s new-target.txt "$repo/link.txt"
+
+    capture_git_command "$repo" "git-symlink" ":DiffBanditGit -- link.txt"
+}
+
+run_git_mode_only_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/mode-only-repo"
+
+    echo "  phase: git-mode-only"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/mode_only.sh" <<'EOF'
+#!/bin/sh
+echo mode
+EOF
+    git -C "$repo" add mode_only.sh
+    git -C "$repo" commit -m baseline >/dev/null
+    git -C "$repo" update-index --chmod=+x mode_only.sh
+
+    capture_git_command "$repo" "git-mode-only" ":DiffBanditGit --staged -- mode_only.sh"
+}
+
+run_git_unmerged_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/unmerged-repo"
+
+    echo "  phase: git-unmerged"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/conflict.txt" <<'EOF'
+base
+EOF
+    git -C "$repo" add conflict.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    git -C "$repo" checkout -b side >/dev/null
+    cat > "$repo/conflict.txt" <<'EOF'
+side
+EOF
+    git -C "$repo" commit -am side >/dev/null
+    git -C "$repo" checkout main >/dev/null 2>&1 || git -C "$repo" checkout master >/dev/null
+    cat > "$repo/conflict.txt" <<'EOF'
+main
+EOF
+    git -C "$repo" commit -am main >/dev/null
+    git -C "$repo" merge side >/dev/null 2>&1 || true
+
+    capture_git_command "$repo" "git-unmerged" ":DiffBanditGit -- conflict.txt"
+}
+
+run_git_submodule_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/submodule-repo"
+    local old_oid="1111111111111111111111111111111111111111"
+    local new_oid="2222222222222222222222222222222222222222"
+
+    echo "  phase: git-submodule"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    git -C "$repo" update-index --add --cacheinfo "160000,$old_oid,vendor/lib"
+    git -C "$repo" commit -m baseline >/dev/null
+    git -C "$repo" update-index --add --cacheinfo "160000,$new_oid,vendor/lib"
+
+    capture_git_command "$repo" "git-submodule" ":DiffBanditGit --staged -- vendor/lib"
+}
+
 assert_git_state_contains() {
     local file="$1"
     local expected="$2"
@@ -817,6 +952,12 @@ run_git_test() {
     capture_git_command "$repo" "git-untracked" ":DiffBanditGit -- z_new_file.txt"
     capture_git_command "$repo" "git-deleted" ":DiffBanditGit -- delete_me.txt"
     capture_git_command "$repo" "git-staged-added" ":DiffBanditGit --staged -- beta_added_staged.txt"
+    run_git_binary_test
+    run_git_binary_truncation_test
+    run_git_symlink_test
+    run_git_mode_only_test
+    run_git_unmerged_test
+    run_git_submodule_test
     run_git_queue_navigation_test "$repo"
     run_git_actions_test
     run_git_staged_added_toggle_test

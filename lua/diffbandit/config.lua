@@ -16,6 +16,13 @@ local defaults = {
       icons = "auto",
       icon_overrides = {},
     },
+    hex = {
+      enabled = true,
+      bytes_per_row = 16,
+      max_bytes = 65536,
+      show_ascii = true,
+      show_offsets = true,
+    },
     theme = {
       auto_refresh = true,
       semantic_blend = 0.3,
@@ -54,9 +61,11 @@ local defaults = {
   git = {
     default_mode = "all",
     default_scope = "repo",
+    binary_view = "hex",
     use_buffer = true,
     include_untracked = true,
     find_renames = true,
+    find_copies = false,
     file_keys = {
       next = "]f",
       prev = "[f",

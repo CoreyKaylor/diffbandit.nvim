@@ -871,6 +871,48 @@ local function verify_git(lines, ansi_lines, phase)
     for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "staged added line one" })) do
       table.insert(errors, err)
     end
+  elseif phase == "binary" then
+    require_plain_fragment("binary.bin",
+      "Expected binary Git capture to show the binary file name")
+    require_plain_fragment("00000000",
+      "Expected binary Git capture to show byte offsets")
+    require_plain_fragment("00 01 02 03",
+      "Expected binary Git capture to show left-side hex bytes")
+    require_plain_fragment("00 01 02 04",
+      "Expected binary Git capture to show right-side changed hex bytes")
+    forbid_plain_fragment("binary file skipped",
+      "Binary Git capture should render a hex comparison instead of skipping")
+    forbid_plain_fragment("□",
+      "Binary Git capture should not show mutable hunk markers")
+    forbid_plain_fragment("▣",
+      "Binary Git capture should not show staged hunk markers")
+  elseif phase == "binary-truncated" then
+    require_plain_fragment("[DiffBandit: hex view truncated at 8 of 12",
+      "Expected large binary Git capture to show a truncation notice")
+    require_plain_fragment("00000000",
+      "Expected large binary Git capture to show offsets")
+  elseif phase == "symlink" then
+    require_plain_fragment("symlink -> old-target.txt",
+      "Expected symlink Git capture to show old symlink target")
+    require_plain_fragment("symlink -> new-target.txt",
+      "Expected symlink Git capture to show new symlink target")
+    forbid_plain_fragment("□",
+      "Symlink Git capture should not show mutable hunk markers")
+  elseif phase == "mode-only" then
+    require_plain_fragment("mode change 100644 => 100755",
+      "Expected mode-only Git capture to show executable-bit metadata")
+    forbid_plain_fragment("□",
+      "Mode-only Git capture should not show mutable hunk markers")
+  elseif phase == "unmerged" then
+    require_plain_fragment("Unmerged file: resolve conflicts outside DiffBan",
+      "Expected unmerged Git capture to explain conflict state")
+    forbid_plain_fragment("□",
+      "Unmerged Git capture should not show mutable hunk markers")
+  elseif phase == "submodule" then
+    require_plain_fragment("Submodule",
+      "Expected submodule Git capture to show submodule metadata")
+    forbid_plain_fragment("□",
+      "Submodule Git capture should not show mutable hunk markers")
   elseif phase == "live-buffer" then
     require_plain_fragment("saved buffer line",
       "Expected live-buffer Git capture to show the saved index/base text")

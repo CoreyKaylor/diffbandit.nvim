@@ -12,6 +12,15 @@ local function digits_of(count)
   return math.max(3, #tostring(math.max(1, count)))
 end
 
+local function display_number_width(source)
+  local width = digits_of(#(source and source.lines or {}))
+  local override = tonumber(source and source.display_number_width)
+  if override and override > width then
+    width = override
+  end
+  return width
+end
+
 local function format_line_number(num, width)
   if not num then
     return string.rep(" ", width)
@@ -29,8 +38,49 @@ local function format_line_number_left(num, width)
   return string.format(fmt, num)
 end
 
+local function source_display_number(source, line_num)
+  if not line_num then
+    return nil
+  end
+  local display_numbers = source and source.display_numbers
+  if display_numbers and display_numbers[line_num] then
+    return display_numbers[line_num]
+  end
+  return line_num
+end
+
+local function format_display_number(value, width, align_left)
+  if not value then
+    return string.rep(" ", width)
+  end
+  if type(value) == "number" then
+    if align_left then
+      return format_line_number_left(value, width)
+    end
+    return format_line_number(value, width)
+  end
+  value = tostring(value)
+  local display = vim.fn.strdisplaywidth(value)
+  if display >= width then
+    return value
+  end
+  local padding = string.rep(" ", width - display)
+  if align_left then
+    return value .. padding
+  end
+  return padding .. value
+end
+
 local function is_git_queue(queue)
   return queue and queue.kind == "git"
+end
+
+local function git_action_markers_enabled(queue, index)
+  if not is_git_queue(queue) then
+    return false
+  end
+  local entry = queue.entries and queue.entries[index or queue.index or 1]
+  return not entry or entry.actions_enabled ~= false
 end
 
 local function build_display_lines(session)
@@ -161,8 +211,8 @@ function Session.start(sources, config, opts)
   self.file_queue = opts.queue
   self.file_queue_index = opts.queue and (opts.queue.index or 1) or nil
   self.pending_file_boundary = nil
-  self.left_number_width = math.max(2, digits_of(#sources.left.lines))
-  self.right_number_width = digits_of(#sources.right.lines)
+  self.left_number_width = math.max(2, display_number_width(sources.left))
+  self.right_number_width = display_number_width(sources.right)
   self.right_number_padding = self.config.ui.right_number_padding or 2
   self.ns = vim.api.nvim_create_namespace("DiffBanditHighlights" .. self.id)
   self.active_ns = vim.api.nvim_create_namespace("DiffBanditActive" .. self.id)
@@ -171,7 +221,7 @@ function Session.start(sources, config, opts)
   self.disposed = false
 
   self.connector_core_width = connector_core_base_width(view, self.config)
-  self.stage_marker_width = is_git_queue(self.file_queue) and 1 or 0
+  self.stage_marker_width = git_action_markers_enabled(self.file_queue, self.file_queue_index) and 1 or 0
   self.left_stage_marker_width = 0
   self.right_stage_marker_width = self.stage_marker_width
   self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
@@ -1150,9 +1200,9 @@ function Session:replace_sources(sources, opts)
   self.hunks = hunks
   self.view = view
   self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
-  self.left_number_width = math.max(2, digits_of(#sources.left.lines))
-  self.right_number_width = digits_of(#sources.right.lines)
-  self.stage_marker_width = is_git_queue(self.file_queue) and 1 or 0
+  self.left_number_width = math.max(2, display_number_width(sources.left))
+  self.right_number_width = display_number_width(sources.right)
+  self.stage_marker_width = git_action_markers_enabled(self.file_queue, self.file_queue_index) and 1 or 0
   self.left_stage_marker_width = 0
   self.right_stage_marker_width = self.stage_marker_width
   self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
@@ -2234,19 +2284,19 @@ function Session:render()
     if meta.left_index then
       if (self.left_stage_marker_width or 0) > 0 then
         left_num_lines[meta.left_index] = " "
-          .. format_line_number(meta.left_line, self.left_number_width)
+          .. format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false)
           .. " "
       else
-        left_num_lines[meta.left_index] = format_line_number(meta.left_line, self.left_number_width) .. " "
+        left_num_lines[meta.left_index] = format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false) .. " "
       end
     end
     if meta.right_index then
       if (self.right_stage_marker_width or 0) > 0 then
         right_num_lines[meta.right_index] = " "
-          .. format_line_number_left(meta.right_line, self.right_number_width)
+          .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
           .. (right_stage_markers[meta.right_index] or " ")
       else
-        right_num_lines[meta.right_index] = " " .. format_line_number_left(meta.right_line, self.right_number_width)
+        right_num_lines[meta.right_index] = " " .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
       end
     end
   end

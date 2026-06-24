@@ -3,6 +3,7 @@ local diff_mod = require("diffbandit.diff")
 local Session = require("diffbandit.session")
 local highlights = require("diffbandit.highlights")
 local git_mod = require("diffbandit.git")
+local hex = require("diffbandit.hex")
 
 local M = {}
 
@@ -53,7 +54,61 @@ local function detect_filetype(path)
   return vim.filetype.match({ filename = path })
 end
 
-local function make_source_from_file(path, label)
+local function read_file_raw(path)
+  local uv = vim.uv or vim.loop
+  local stat = uv.fs_stat(path)
+  if not stat then
+    return nil, string.format("Unable to read file: %s", path)
+  end
+  local fd, open_err = uv.fs_open(path, "r", 438)
+  if not fd then
+    return nil, tostring(open_err or ("Unable to open file: " .. path))
+  end
+  local data, read_err = uv.fs_read(fd, stat.size, 0)
+  uv.fs_close(fd)
+  if data == nil then
+    return nil, tostring(read_err or ("Unable to read file: " .. path))
+  end
+  return data, nil
+end
+
+local function source_from_hex_file(path, label, text, config)
+  local dump = hex.dump(text or "", ((config or {}).ui or {}).hex or {})
+  return {
+    path = path,
+    label = label or path,
+    lines = dump.lines,
+    text = dump.text,
+    filetype = "diffbandit-hex",
+    display_numbers = dump.display_numbers,
+    display_number_width = dump.display_number_width,
+    binary_hex = true,
+    hex_total_bytes = dump.total_bytes,
+    hex_visible_bytes = dump.visible_bytes,
+    hex_truncated = dump.truncated,
+  }
+end
+
+local function make_source_from_file(path, label, config)
+  local raw, raw_err = read_file_raw(path)
+  if not raw then
+    return nil, raw_err
+  end
+  local hex_config = ((config or {}).ui or {}).hex or {}
+  if hex.is_binary(raw) then
+    if hex_config.enabled ~= false then
+      return source_from_hex_file(path, label, raw, config)
+    end
+    return {
+      path = path,
+      label = label or path,
+      lines = { "[DiffBandit: binary file hidden]" },
+      text = "[DiffBandit: binary file hidden]\n",
+      filetype = nil,
+      binary_hidden = true,
+    }
+  end
+
   local lines, text, err = diff_mod.read_file(path)
   if not lines then
     return nil, err
@@ -128,12 +183,13 @@ end
 
 function M.files(left_path, right_path, opts)
   opts = opts or {}
-  local left_source, left_err = make_source_from_file(left_path, opts.left_label)
+  local config = state.get_config()
+  local left_source, left_err = make_source_from_file(left_path, opts.left_label, config)
   if not left_source then
     return nil, left_err
   end
 
-  local right_source, right_err = make_source_from_file(right_path, opts.right_label)
+  local right_source, right_err = make_source_from_file(right_path, opts.right_label, config)
   if not right_source then
     return nil, right_err
   end
@@ -151,7 +207,10 @@ end
 function M.git(opts)
   local config = state.get_config()
   ensure_highlights(config)
-  local queue, err = git_mod.queue(opts or {}, config.git or {})
+  local git_config = vim.tbl_extend("force", {}, config.git or {}, {
+    hex = (config.ui or {}).hex or {},
+  })
+  local queue, err = git_mod.queue(opts or {}, git_config)
   if not queue then
     return nil, err
   end
