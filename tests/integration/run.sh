@@ -22,19 +22,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-configure_tmux() {
-    tmux start-server
-    tmux set-option -g default-terminal "$TEST_TERM"
-    tmux set-option -ga terminal-overrides ",*:Tc" 2>/dev/null || true
-    tmux set-option -ga terminal-overrides ",*:RGB" 2>/dev/null || true
-}
-
 start_test_nvim() {
     local command="$1"
     tmux send-keys -t "$TMUX_SESSION" "TERM=$TEST_TERM COLORTERM=$TEST_COLORTERM $command" Enter
 }
-
-configure_tmux
 
 # Function to run a single test
 run_test() {
