@@ -88,6 +88,22 @@ local function run_command(cmd)
   return output or "", nil
 end
 
+local function run_command_async(cmd, callback)
+  if vim.system then
+    vim.system(cmd, { text = false }, function(result)
+      local err
+      if result.code ~= 0 then
+        err = vim.trim(result.stderr or result.stdout or "")
+      end
+      vim.schedule(function()
+        callback(result.code == 0, err, result.stdout or "")
+      end)
+    end)
+    return true
+  end
+  return false
+end
+
 local function git_output(root, args)
   local cmd = { "git" }
   if root and root ~= "" then
@@ -99,6 +115,27 @@ local function git_output(root, args)
   end
 
   return run_command(cmd)
+end
+
+local function git_async(root, args, callback)
+  local cmd = { "git" }
+  if root and root ~= "" then
+    cmd[#cmd + 1] = "-C"
+    cmd[#cmd + 1] = root
+  end
+  for _, arg in ipairs(args) do
+    cmd[#cmd + 1] = arg
+  end
+
+  if run_command_async(cmd, callback) then
+    return true
+  end
+
+  local output, err = run_command(cmd)
+  vim.schedule(function()
+    callback(err == nil, err, output or "")
+  end)
+  return true
 end
 
 local function git_exit_code(root, args)
@@ -422,6 +459,15 @@ end
 local function has_modified_loaded_buffer(root, path)
   local bufnr = find_loaded_buffer(abs_path(root, path))
   return bufnr ~= nil and vim.api.nvim_get_option_value("modified", { buf = bufnr }) == true
+end
+
+local function entry_uses_modified_buffer(root, entry)
+  if not root or not entry then
+    return false
+  end
+  return (entry.path and has_modified_loaded_buffer(root, entry.path))
+    or (entry.old_path and has_modified_loaded_buffer(root, entry.old_path))
+    or false
 end
 
 local function read_worktree(root, path, use_buffer)
@@ -929,10 +975,20 @@ function M.queue(opts, config)
     opts = normalized,
     entries = entries,
     index = 1,
+    source_cache = {},
   }
 
   function queue.load(index)
-    return M.sources_for_entry(queue, index)
+    local entry = queue.entries[index]
+    local cacheable = normalized.use_buffer == false or not entry_uses_modified_buffer(root, entry)
+    if cacheable and queue.source_cache[index] then
+      return queue.source_cache[index], nil
+    end
+    local loaded, load_err = M.sources_for_entry(queue, index)
+    if loaded and cacheable then
+      queue.source_cache[index] = loaded
+    end
+    return loaded, load_err
   end
 
   return queue, nil
@@ -1042,6 +1098,52 @@ local function has_worktree_changes(root, path)
   return code == 1 or has_untracked_file(root, path)
 end
 
+local function path_set_from_nul(output)
+  local set = {}
+  for _, path in ipairs(split_nul(output)) do
+    set[normalize_path(path)] = true
+  end
+  return set
+end
+
+local function has_entry_path(set, entry)
+  if not set or not entry then
+    return false
+  end
+  return (entry.path and set[entry.path])
+    or (entry.old_path and set[entry.old_path])
+    or false
+end
+
+local function staged_path_set(root, opts)
+  local args = { "diff", "--cached", "--name-only", "-z", "--no-ext-diff" }
+  local stage_base = stage_base_from_opts(opts)
+  if type(stage_base) == "string" and stage_base ~= "" then
+    args[#args + 1] = stage_base
+  end
+  append_pathspecs(args, {})
+  local output, err = git_output(root, args)
+  if not output then
+    return nil, err
+  end
+  return path_set_from_nul(output), nil
+end
+
+local function worktree_path_set(root)
+  local output, err = git_output(root, { "diff", "--name-only", "-z", "--no-ext-diff", "--" })
+  if not output then
+    return nil, err
+  end
+  local set = path_set_from_nul(output)
+  local untracked = list_untracked(root, {})
+  for _, entry in ipairs(untracked or {}) do
+    if entry.path then
+      set[entry.path] = true
+    end
+  end
+  return set, nil
+end
+
 function M.file_stage_state(root, entry, opts)
   if not root or not entry or not entry.path then
     return "unstaged"
@@ -1065,6 +1167,30 @@ end
 
 function M.file_stage_states(root, entries, opts)
   local states = {}
+  if not root then
+    for index, _ in ipairs(entries or {}) do
+      states[index] = "unstaged"
+    end
+    return states
+  end
+
+  local staged_set = staged_path_set(root, opts)
+  local worktree_set = worktree_path_set(root)
+  if staged_set and worktree_set then
+    for index, entry in ipairs(entries or {}) do
+      local staged = has_entry_path(staged_set, entry)
+      local unstaged = has_entry_path(worktree_set, entry)
+      if staged and unstaged then
+        states[index] = "partial"
+      elseif staged then
+        states[index] = "staged"
+      else
+        states[index] = "unstaged"
+      end
+    end
+    return states
+  end
+
   for index, entry in ipairs(entries or {}) do
     states[index] = M.file_stage_state(root, entry, opts)
   end
@@ -1123,6 +1249,47 @@ function M.toggle_file_stage(root, entry, opts)
     return M.unstage_file(root, entry, opts)
   end
   return M.stage_file(root, entry)
+end
+
+function M.toggle_file_stage_async(root, entry, opts, state, callback)
+  if not root or not entry or not entry.path then
+    vim.schedule(function()
+      callback(false, "no Git file entry to stage")
+    end)
+    return
+  end
+
+  local unstage = state == "staged" or state == "partial"
+  if not state then
+    state = M.file_stage_state(root, entry, opts)
+    unstage = state == "staged" or state == "partial"
+  end
+
+  local args
+  if unstage then
+    args = { "restore", "--staged" }
+    local stage_base = stage_base_from_opts(opts)
+    if stage_base and stage_base ~= "" then
+      args[#args + 1] = "--source=" .. stage_base
+    end
+    append_pathspecs(args, entry_paths(entry))
+  else
+    args = { "add", "-A" }
+    append_pathspecs(args, entry_paths(entry))
+  end
+
+  git_async(root, args, function(ok, err)
+    if ok or not unstage then
+      callback(ok, err)
+      return
+    end
+
+    local rm_args = { "rm", "--cached", "-r", "--ignore-unmatch" }
+    append_pathspecs(rm_args, entry_paths(entry))
+    git_async(root, rm_args, function(rm_ok, rm_err)
+      callback(rm_ok, rm_err or err)
+    end)
+  end)
 end
 
 function M.has_any_staged_changes(root)

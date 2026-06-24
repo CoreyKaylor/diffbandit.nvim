@@ -3260,6 +3260,25 @@ function Session:load_queue_sources(index, step)
   return nil, nil, "no readable changed file"
 end
 
+function Session:prefetch_queue_neighbors(index)
+  local queue = self.file_queue
+  if not queue or type(queue.load) ~= "function" then
+    return
+  end
+  self.prefetch_token = (self.prefetch_token or 0) + 1
+  local token = self.prefetch_token
+  vim.defer_fn(function()
+    if self.disposed or self.prefetch_token ~= token then
+      return
+    end
+    for _, neighbor in ipairs({ (index or self.file_queue_index or 1) - 1, (index or self.file_queue_index or 1) + 1 }) do
+      if neighbor >= 1 and neighbor <= #(queue.entries or {}) then
+        pcall(queue.load, neighbor)
+      end
+    end
+  end, 20)
+end
+
 function Session:goto_queue_file(index, chunk_position, opts)
   opts = opts or {}
   local current = self.file_queue_index or 1
@@ -3281,9 +3300,10 @@ function Session:goto_queue_file(index, chunk_position, opts)
     vim.notify("DiffBandit: " .. replace_err, vim.log.levels.ERROR)
     return false
   end
-  if self.panel then
+  if self.panel and not opts.skip_panel_render then
     panel_mod.render(self, resolved_index)
   end
+  self:prefetch_queue_neighbors(resolved_index)
   if focused_win and vim.api.nvim_win_is_valid(focused_win) then
     pcall(vim.api.nvim_set_current_win, focused_win)
   end
@@ -3319,7 +3339,8 @@ local function empty_git_source(label)
   }
 end
 
-function Session:refresh_git_queue(preferred_path)
+function Session:refresh_git_queue(preferred_path, refresh_opts)
+  refresh_opts = refresh_opts or {}
   local queue = self.file_queue
   if not queue or queue.kind ~= "git" then
     return false, "no Git file queue configured"
@@ -3347,7 +3368,7 @@ function Session:refresh_git_queue(preferred_path)
       right = empty_git_source("No Git changes"),
     }, { chunk_position = "top" })
     if self.panel then
-      panel_mod.render(self)
+      panel_mod.render(self, nil, { refresh_stage_states = true, no_initial_selection = true })
     end
     return true, nil
   end
@@ -3364,9 +3385,12 @@ function Session:refresh_git_queue(preferred_path)
   next_queue.index = target_index
   self.file_queue = next_queue
   self.file_queue_index = target_index
-  self:goto_queue_file(target_index, "top", { preserve_focus = self.panel and self.panel.visible })
+  self:goto_queue_file(target_index, "top", {
+    preserve_focus = self.panel and self.panel.visible,
+    skip_panel_render = true,
+  })
   if self.panel then
-    panel_mod.render(self, target_index)
+    panel_mod.render(self, refresh_opts.preserve_panel_selection or target_index, { refresh_stage_states = true })
   end
   return true, nil
 end

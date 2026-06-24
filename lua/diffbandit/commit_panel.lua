@@ -195,7 +195,7 @@ function CommitPanel:refresh_git_queue(preferred_path)
     self.file_queue.entries = {}
     self.file_queue.index = 0
     self.file_queue_index = 0
-    panel_mod.render(self, nil, { no_initial_selection = true })
+    panel_mod.render(self, nil, { no_initial_selection = true, refresh_stage_states = true })
     return true, nil
   end
 
@@ -211,7 +211,10 @@ function CommitPanel:refresh_git_queue(preferred_path)
   queue.index = target_index
   self.file_queue = queue
   self.file_queue_index = target_index
-  panel_mod.render(self, target_index > 0 and target_index or nil, { no_initial_selection = target_index == 0 })
+  panel_mod.render(self, target_index > 0 and target_index or nil, {
+    no_initial_selection = target_index == 0,
+    refresh_stage_states = true,
+  })
   return true, nil
 end
 

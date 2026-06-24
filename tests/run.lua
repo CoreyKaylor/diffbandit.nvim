@@ -1681,6 +1681,26 @@ if vim.fn.executable("git") == 1 then
 
   do
     local repo = make_git_repo()
+    write_repo_file(repo, "alpha.txt", { "one" })
+    write_repo_file(repo, "beta.txt", { "one" })
+    commit_baseline(repo)
+    write_repo_file(repo, "alpha.txt", { "two" })
+    write_repo_file(repo, "beta.txt", { "two" })
+    git_test_command({ "add", "alpha.txt" }, repo)
+    write_repo_file(repo, "alpha.txt", { "three" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all" }, config.git)))
+    local states = git_mod.file_stage_states(repo, queue.entries, queue.opts)
+    local by_path = {}
+    for index, entry in ipairs(queue.entries) do
+      by_path[entry.path] = states[index]
+    end
+    assert_eq(by_path["alpha.txt"], "partial", "Batched panel state should detect partial files")
+    assert_eq(by_path["beta.txt"], "unstaged", "Batched panel state should detect unstaged files")
+  end
+
+  do
+    local repo = make_git_repo()
     write_repo_file(repo, "amend.txt", { "base" })
     commit_baseline(repo)
     write_repo_file(repo, "amend.txt", { "committed" })
@@ -1773,6 +1793,35 @@ if vim.fn.executable("git") == 1 then
     assert_eq(rows[4].type, "file", "Panel rows should include unversioned file row")
     assert_eq(rows[2].text:find("◧ M git.lua", 1, true) ~= nil, true,
       "Panel file row should include staged state, status, and basename")
+  end
+
+  do
+    local nav_buf = vim.api.nvim_create_buf(false, true)
+    local original_file_stage_states = git_mod.file_stage_states
+    local called = false
+    git_mod.file_stage_states = function()
+      called = true
+      return {}
+    end
+    local session = {
+      ns = vim.api.nvim_create_namespace("DiffBanditPanelRenderNoGit"),
+      config = config,
+      file_queue = {
+        root = "/tmp/repo",
+        entries = {
+          { status = "M", path = "one.txt", kind = "modified" },
+        },
+      },
+      panel = {
+        nav_buf = nav_buf,
+        stage_states = { [1] = "unstaged" },
+      },
+      file_queue_index = 1,
+    }
+    panel_mod.render_nav(session, 1)
+    git_mod.file_stage_states = original_file_stage_states
+    assert_eq(called, false, "Panel nav render should not refresh Git stage states implicitly")
+    vim.api.nvim_buf_delete(nav_buf, { force = true })
   end
 
   do

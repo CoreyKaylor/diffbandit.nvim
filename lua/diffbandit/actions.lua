@@ -462,6 +462,9 @@ function M.refresh(session, preferred_chunk)
   if not ctx then
     return false, ctx_err
   end
+  if ctx.queue then
+    ctx.queue.source_cache = {}
+  end
 
   local refresh_opts = vim.tbl_extend("force", {}, ctx.opts, {
     scope = "current",

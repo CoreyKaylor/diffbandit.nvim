@@ -68,6 +68,13 @@ local function stage_symbol(session, state)
   return indicator[state] or indicator.unstaged or "□"
 end
 
+local function next_stage_state(state)
+  if state == "staged" or state == "partial" then
+    return "unstaged"
+  end
+  return "staged"
+end
+
 local function filename(path)
   return vim.fn.fnamemodify(path or "", ":t")
 end
@@ -252,6 +259,16 @@ local function commit_message_lines_from_buffer(buf)
   return { "" }
 end
 
+function M.refresh_stage_states(session)
+  local panel = session.panel
+  if not panel then
+    return {}
+  end
+  local queue = session.file_queue or {}
+  panel.stage_states = git.file_stage_states(queue.root, queue.entries, queue.opts or {})
+  return panel.stage_states
+end
+
 function M.render_nav(session, preferred_entry_index, opts)
   opts = opts or {}
   local panel = session.panel
@@ -259,8 +276,7 @@ function M.render_nav(session, preferred_entry_index, opts)
     return
   end
 
-  local queue = session.file_queue or {}
-  panel.stage_states = git.file_stage_states(queue.root, queue.entries, queue.opts or {})
+  panel.stage_states = panel.stage_states or {}
   panel.rows = M.build_rows(session)
   local lines = {}
   for _, row in ipairs(panel.rows) do
@@ -334,6 +350,10 @@ function M.render_commit(session)
 end
 
 function M.render(session, preferred_entry_index, opts)
+  opts = opts or {}
+  if opts.refresh_stage_states then
+    M.refresh_stage_states(session)
+  end
   M.render_nav(session, preferred_entry_index, opts)
   M.render_commit(session)
 end
@@ -430,17 +450,34 @@ function M.navigate_change(session, direction)
 end
 
 function M.toggle_stage(session)
-  local row = selected_row(session)
+  local row, row_index = selected_row(session)
   if not row or row.type ~= "file" then
     return
   end
   local queue = session.file_queue or {}
-  local ok, err = git.toggle_file_stage(queue.root, row.entry, queue.opts or {})
-  if not ok then
-    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
-    return
+  local panel = session.panel or {}
+  panel.stage_states = panel.stage_states or {}
+  local previous = panel.stage_states[row.index] or "unstaged"
+  panel.stage_states[row.index] = next_stage_state(previous)
+  M.render(session, row.index)
+  if row_index then
+    set_nav_cursor(session, row_index)
   end
-  session:refresh_git_queue(row.entry.path)
+
+  git.toggle_file_stage_async(queue.root, row.entry, queue.opts or {}, previous, function(ok, err)
+    if session.disposed then
+      return
+    end
+    if not ok then
+      panel.stage_states[row.index] = previous
+      M.render(session, row.index)
+      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+      return
+    end
+    if type(session.refresh_git_queue) == "function" then
+      session:refresh_git_queue(row.entry.path, { preserve_panel_selection = row.index })
+    end
+  end)
 end
 
 function M.toggle_amend(session)
@@ -602,6 +639,7 @@ function M.attach(session, opts)
   session.panel.stage_states = {}
   session.panel.rows = {}
   session.panel.message_lines = session.panel.message_lines or { "" }
+  M.refresh_stage_states(session)
   M.render(session, opts.initial_selection, { no_initial_selection = opts.no_initial_selection ~= false })
   M.setup_keymaps(session)
 end
