@@ -12,6 +12,8 @@ local base_defaults = {
   DiffBanditStatusLine = { link = "StatusLine" },
   DiffBanditStatusAccent = { link = "StatusLine" },
   DiffBanditStatusMuted = { link = "StatusLineNC" },
+  DiffBanditOverviewContext = { link = "Normal" },
+  DiffBanditOverviewCursor = { link = "CursorLineNr" },
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
 }
@@ -230,7 +232,7 @@ local function apply_diff_variants(config)
   })
 
   apply_group("DiffBanditHiddenSplit", {
-    fg = soft_split_fg,
+    fg = normal_bg,
     bg = normal_bg,
   })
 
@@ -358,6 +360,29 @@ local function apply_diff_variants(config)
   apply_group("DiffBanditConnectorContext", {
     bg = normal_bg,
     fg = get_foreground_color("Comment", "#808080"),
+  })
+
+  apply_group("DiffBanditOverviewContext", {
+    bg = normal_bg,
+    fg = normal_bg,
+  })
+  apply_group("DiffBanditOverviewAdd", {
+    bg = add_bg,
+    fg = add_bg,
+  })
+  apply_group("DiffBanditOverviewDelete", {
+    bg = delete_bg,
+    fg = delete_bg,
+  })
+  apply_group("DiffBanditOverviewChange", {
+    bg = change_bg,
+    fg = change_bg,
+  })
+  apply_group("DiffBanditOverviewCursor", {
+    fg = normal_fg,
+    underline = true,
+    sp = normal_fg,
+    bold = true,
   })
 
   -- Variants for line numbers with diff backgrounds (for visual text overlay)

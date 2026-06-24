@@ -59,8 +59,12 @@ local function focused_side(session)
   local win = vim.api.nvim_get_current_win()
   if win == session.left_win then
     return "left"
+  elseif win == session.left_overview_win then
+    return "left_overview"
   elseif win == session.right_win then
     return "right"
+  elseif win == session.right_overview_win then
+    return "right_overview"
   elseif win == session.left_num_win then
     return "left_numbers"
   elseif win == session.connector_win then

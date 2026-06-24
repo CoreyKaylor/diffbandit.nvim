@@ -16,6 +16,11 @@ local defaults = {
       icons = "auto",
       icon_overrides = {},
     },
+    overview = {
+      enabled = true,
+      width = 1,
+      cursor = true,
+    },
     hex = {
       enabled = true,
       bytes_per_row = 16,

@@ -15,6 +15,7 @@ local actions_mod = require("diffbandit.actions")
 local status_mod = require("diffbandit.status")
 local hex_mod = require("diffbandit.hex")
 local panel_mod = require("diffbandit.panel")
+local overview_mod = require("diffbandit.overview")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -51,6 +52,8 @@ end
 assert_eq(config.git.panel.keys.toggle_amend, "<Space>",
   "Commit panel amend toggle should use the commit-pane normal-mode space key")
 assert_eq(config.git.panel.keys.commit, nil, "Commit panel should commit through :w by default")
+assert_eq(config.ui.overview.enabled, true, "Overview gutter should be enabled by default")
+assert_eq(config.ui.overview.width, 1, "Overview gutter should default to one column")
 
 local function get_hl(name)
   return vim.api.nvim_get_hl(0, { name = name, link = false })
@@ -108,6 +111,40 @@ do
 
   local spans = diff.changed_spans(left[1], right[1])
   assert_eq(#(spans.right_changes), 0, "no blue change spans expected on first line when only suffix added")
+end
+
+-- Overview gutters should be side-native and viewport-proportional.
+do
+  local fake_view = {
+    line_meta = {
+      { kind = "add", right_index = 4, filler_right = false, chunk = 1 },
+      { kind = "delete", left_index = 2, filler_left = false, chunk = 2 },
+      { kind = "change", left_index = 3, right_index = 3, filler_left = false, filler_right = false, chunk = 3 },
+      { kind = "add", left_index = 5, filler_left = true, chunk = 4 },
+      { kind = "delete", right_index = 6, filler_right = true, chunk = 5 },
+    },
+  }
+
+  local left_marks = overview_mod.build_marks(fake_view, "left", 3)
+  assert_eq(#left_marks, 2, "Left overview should include only delete/change real left rows")
+  assert_eq(left_marks[1].kind, "delete", "Left overview should keep delete rows")
+  assert_eq(left_marks[2].kind, "change", "Left overview should keep change rows")
+  assert_eq(left_marks[2].current, true, "Overview marks should track the current chunk")
+
+  local right_marks = overview_mod.build_marks(fake_view, "right", 3)
+  assert_eq(#right_marks, 2, "Right overview should include only add/change real right rows")
+  assert_eq(right_marks[1].kind, "add", "Right overview should keep add rows")
+  assert_eq(right_marks[2].kind, "change", "Right overview should keep change rows")
+
+  local rows = overview_mod.project_marks({
+    { line = 1, kind = "add", current = false },
+    { line = 50, kind = "delete", current = true },
+    { line = 50, kind = "change", current = false },
+    { line = 100, kind = "change", current = false },
+  }, 100, 10)
+  assert_eq(rows[1].kind, "add", "First source line should project to the first overview row")
+  assert_eq(rows[5].kind, "delete", "Current chunk should win same-row overview collisions")
+  assert_eq(rows[10].kind, "change", "Last source line should project to the last overview row")
 end
 
 -- ==============================================================================
@@ -1376,14 +1413,20 @@ do
   }))
   assert_eq(get_hl("DiffBanditAdd").bg, 0x112233,
     "Add override should set the add source background")
+  assert_eq(get_hl("DiffBanditOverviewAdd").bg, 0x112233,
+    "Add override should propagate to overview add markers")
   assert_eq(get_hl("DiffBanditConnectorAddLine").fg, 0x112233,
     "Add override should propagate to add connector rails")
   assert_eq(get_hl("DiffBanditDelete").bg, 0x445566,
     "Delete override should accept hex strings")
+  assert_eq(get_hl("DiffBanditOverviewDelete").bg, 0x445566,
+    "Delete override should propagate to overview delete markers")
   assert_eq(get_hl("DiffBanditDeleteRightSeparator").sp, 0x445566,
     "Delete override should propagate to delete underlines")
   assert_eq(get_hl("DiffBanditChangeRight").bg, 0x778899,
     "Change override should set the change source background")
+  assert_eq(get_hl("DiffBanditOverviewChange").bg, 0x778899,
+    "Change override should propagate to overview change markers")
   assert_eq(get_hl("DiffBanditConnectorExpansionChange").fg, 0x778899,
     "Change override should propagate to change wedges")
   assert_eq(get_hl("DiffBanditChangeEmphasis").bg, 0xABCDEF,

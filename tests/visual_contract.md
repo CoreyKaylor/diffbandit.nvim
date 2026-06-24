@@ -13,6 +13,7 @@ This contract records the IntelliJ-inspired behavior that the focused specs and 
 - Adjacent or overlapping change regions must not touch in the gutter. When paths are close, lanes must stay compact and leave at least one clear transition cell between unrelated regions.
 - Native terminal underline is the required representation for separator spans. Diagrams may use `▁`, but implementation and integration tests should inspect ANSI underline (`SGR 4`) rather than literal underline characters.
 - ANSI captures are part of the spec. Plain captures verify glyph geometry and text placement; `capture-pane -e` verifies color backgrounds, underline spans, and token-level emphasis.
+- Optional overview gutters are independent one-column visual maps at the outer edges of the diff view. They summarize side-native changed rows proportionally across the source viewport height and must not affect source text, line-number panes, connector routing, or scroll synchronization.
 
 ## Additions
 

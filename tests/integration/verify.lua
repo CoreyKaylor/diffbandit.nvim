@@ -505,10 +505,15 @@ local function verify_deletions(lines, ansi_lines)
     for _, line in ipairs(ansi_lines) do
       local stripped = strip_ansi(line)
       if stripped:find("Second line", 1, true) then
-        local right_sep_pos = stripped:find("│Second line", 1, true)
-        if right_sep_pos then
+        local start = 1
+        while true do
+          local right_sep_pos = stripped:find("│Second line", start, true)
+          if not right_sep_pos then
+            break
+          end
           delete_origin_underline_reaches_edge =
             delete_origin_underline_reaches_edge or ansi_underline_at_plain_byte(line, right_sep_pos - 1)
+          start = right_sep_pos + 1
         end
       end
     end
@@ -603,9 +608,15 @@ local function verify_mixed(lines, ansi_lines)
         new_word_bg = ansi_bg_for_text(line, "New")
         new_tail_bg = ansi_bg_for_text_after(line, "value A", "New")
       elseif stripped:find("Context line 3", 1, true) then
-        local right_sep_pos = stripped:find("│Context line 3", 1, true)
-        if right_sep_pos then
-          delete_origin_underline_reaches_edge = ansi_underline_at_plain_byte(line, right_sep_pos - 1)
+        local start = 1
+        while true do
+          local right_sep_pos = stripped:find("│Context line 3", start, true)
+          if not right_sep_pos then
+            break
+          end
+          delete_origin_underline_reaches_edge =
+            delete_origin_underline_reaches_edge or ansi_underline_at_plain_byte(line, right_sep_pos - 1)
+          start = right_sep_pos + 1
         end
       elseif stripped:find("\226\151\164", 1, true) then
         saw_delete_transition_glyph = true
@@ -887,7 +898,7 @@ local function verify_git(lines, ansi_lines, phase)
     forbid_plain_fragment("▣",
       "Binary Git capture should not show staged hunk markers")
   elseif phase == "binary-truncated" then
-    require_plain_fragment("[DiffBandit: hex view truncated at 8 of 12",
+    require_plain_fragment("[DiffBandit: hex view truncated at 8",
       "Expected large binary Git capture to show a truncation notice")
     require_plain_fragment("00000000",
       "Expected large binary Git capture to show offsets")
@@ -904,7 +915,7 @@ local function verify_git(lines, ansi_lines, phase)
     forbid_plain_fragment("□",
       "Mode-only Git capture should not show mutable hunk markers")
   elseif phase == "unmerged" then
-    require_plain_fragment("Unmerged file: resolve conflicts outside DiffBan",
+    require_plain_fragment("Unmerged file: resolve conflicts outside",
       "Expected unmerged Git capture to explain conflict state")
     forbid_plain_fragment("□",
       "Unmerged Git capture should not show mutable hunk markers")
@@ -2124,12 +2135,13 @@ local function connector_core_segment(stripped)
     from = pos + #"│"
   end
 
-  local sep2 = separators[2]
-  local sep_before_right_numbers = separators[#separators - 1]
-  if not sep2 or not sep_before_right_numbers then
+  local has_overview_panes = (separators[1] or 999) <= 3
+  local core_left_sep = has_overview_panes and separators[3] or separators[2]
+  local core_right_sep = has_overview_panes and separators[#separators - 2] or separators[#separators - 1]
+  if not core_left_sep or not core_right_sep then
     return nil
   end
-  return stripped:sub(sep2 + #"│", sep_before_right_numbers - 1)
+  return stripped:sub(core_left_sep + #"│", core_right_sep - 1)
 end
 
 local function dense_number_pane_bounds(stripped, side)
@@ -2144,10 +2156,18 @@ local function dense_number_pane_bounds(stripped, side)
     from = pos + #"│"
   end
   if side == "left" then
+    local has_overview_panes = (separators[1] or 999) <= 3
+    if has_overview_panes then
+      return separators[2] + #"│", separators[3] - 1
+    end
     if #separators < 2 then
       return nil, nil
     end
     return separators[1] + #"│", separators[2] - 1
+  end
+  local has_overview_panes = (separators[1] or 999) <= 3
+  if has_overview_panes then
+    return separators[#separators - 2] + #"│", separators[#separators - 1] - 1
   end
   if #separators < 4 then
     return nil, nil
