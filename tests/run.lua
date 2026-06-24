@@ -12,6 +12,7 @@ local paths_mod = require("diffbandit.paths")
 local Session = require("diffbandit.session")
 local git_mod = require("diffbandit.git")
 local actions_mod = require("diffbandit.actions")
+local status_mod = require("diffbandit.status")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -1472,6 +1473,38 @@ do
   assert_eq(entries[2].path, "new path.txt", "Parser should capture rename new path")
 end
 
+do
+  local session = {
+    config = config,
+    left = { path = "/tmp/left.txt", label = "left.txt" },
+    right = { path = "/tmp/right.txt", label = "right.txt" },
+    current_chunk = 1,
+    view = { chunks = { {} } },
+  }
+  local lines = status_mod.build(session)
+  assert_eq(lines.left, "file  left.txt", "Plain status should identify left file")
+  assert_eq(lines.center, "DiffBandit  hunk 1/1", "Plain status should summarize non-git hunk state")
+  assert_eq(lines.right, "file  right.txt", "Plain status should identify right file")
+end
+
+do
+  local old_have_nerd = vim.g.have_nerd_font
+  local old_diffbandit_have_nerd = vim.g.diffbandit_have_nerd_font
+  vim.g.have_nerd_font = true
+  vim.g.diffbandit_have_nerd_font = nil
+  local nerd_config = config_mod.apply({
+    ui = {
+      status = {
+        icons = "auto",
+      },
+    },
+  })
+  local icons = status_mod._private.icons_for(nerd_config)
+  assert_eq(icons.git ~= "Git", true, "Auto icon mode should use Nerd Font glyphs when advertised")
+  vim.g.have_nerd_font = old_have_nerd
+  vim.g.diffbandit_have_nerd_font = old_diffbandit_have_nerd
+end
+
 if vim.fn.executable("git") == 1 then
   do
     local repo = make_git_repo()
@@ -1489,10 +1522,12 @@ if vim.fn.executable("git") == 1 then
     assert_eq(#queue.entries, 2, "Unstaged queue should include modified and untracked files")
 
     local alpha
+    local alpha_index
     local untracked
     for index, entry in ipairs(queue.entries) do
       if entry.path == "alpha.txt" then
         alpha = select(1, queue.load(index))
+        alpha_index = index
       elseif entry.path == "new file.txt" then
         untracked = select(1, queue.load(index))
       end
@@ -1500,6 +1535,24 @@ if vim.fn.executable("git") == 1 then
 
     assert_eq(alpha.left.text, "one\n", "Unstaged left source should read index content")
     assert_eq(alpha.right.text, "one changed\n", "Unstaged right source should read working tree content")
+    do
+      queue.index = alpha_index
+      local status_session = {
+        config = config,
+        left = alpha.left,
+        right = alpha.right,
+        file_queue = queue,
+        file_queue_index = alpha_index,
+        current_chunk = 1,
+        view = { chunks = { {}, {} } },
+        staged_chunk_states = { [1] = true },
+      }
+      local lines = status_mod.build(status_session)
+      assert_eq(lines.left, "index  alpha.txt", "Git status should identify left index side")
+      assert_eq(lines.center, "DiffBandit  Git:unstaged  file " .. tostring(alpha_index) .. "/2  hunk 1/2  M  staged 1/2", "Git status should summarize queue and staged chunks")
+      assert_eq(lines.center_compact, "unstg " .. tostring(alpha_index) .. "/2 h1/2 M 1/2", "Git status should provide a compact center summary")
+      assert_eq(lines.right, "working tree  alpha.txt", "Git status should identify right working tree side")
+    end
     assert_eq(untracked.left.text, "", "Untracked left source should be empty")
     assert_eq(untracked.left.label, "new file.txt (not tracked)", "Untracked left source should explain missing base")
     assert_eq(untracked.left.git_state, "untracked", "Untracked left source should carry git state")
@@ -1827,8 +1880,8 @@ do
     "Second next boundary press should open the next file")
   assert_eq(fake.transitions[1].index, 2,
     "Second next boundary press should target the next file")
-  assert_eq(fake.transitions[1].chunk_position, "first",
-    "Next file transition should land on the first hunk")
+  assert_eq(fake.transitions[1].chunk_position, "top",
+    "Next file transition should land at the top of the next file")
 
   fake.pending_file_boundary = { direction = "next", file_index = 2 }
   fake:confirm_file_boundary("prev")

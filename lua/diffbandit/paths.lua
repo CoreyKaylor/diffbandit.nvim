@@ -1488,6 +1488,7 @@ function M.plan_routes(paths, layout)
   local function solve_greedy()
     occupied = {}
     clear_route_assignments()
+    local unplaced = {}
     for route_index, route in ipairs(routes) do
       local placed = false
       for _, col in ipairs(route_preferred_columns(route, connector_core_width)) do
@@ -1519,15 +1520,19 @@ function M.plan_routes(paths, layout)
         end
       end
       if not placed then
-        occupied = {}
-        clear_route_assignments()
-        return false
+        unplaced[#unplaced + 1] = route
       end
     end
-    return true
+    return #unplaced == 0, unplaced
   end
 
+  local backtrack_steps = 0
+  local backtrack_limit = tonumber(layout.max_route_backtrack_steps) or 20000
   local function solve_route(index)
+    backtrack_steps = backtrack_steps + 1
+    if backtrack_steps > backtrack_limit then
+      return false
+    end
     if index > #routes then
       return true
     end
@@ -1553,7 +1558,7 @@ function M.plan_routes(paths, layout)
   end
 
   local strategy = "greedy"
-  local success = solve_greedy()
+  local success, unplaced_routes = solve_greedy()
   if not success then
     strategy = "backtrack"
     occupied = {}
@@ -1561,13 +1566,16 @@ function M.plan_routes(paths, layout)
     success = solve_route(1)
   end
   if not success then
-    occupied = {}
-    for _, route in ipairs(routes) do
-      local fallback_col = math.max(0, math.min(connector_core_width - 1, math.floor(connector_core_width / 2)))
-      route.rail_col = fallback_col
-      route.segments = build_route_segments(route, fallback_col, connector_core_width)
-      reserve_route_segments(route.segments, occupied, route.group)
+    strategy = backtrack_steps > backtrack_limit and "bounded-hidden" or "greedy-hidden"
+    success, unplaced_routes = solve_greedy()
+    hidden_routes = hidden_routes or {}
+    for _, route in ipairs(unplaced_routes or {}) do
+      mark_route_overflow_hidden(route)
+      hidden_routes[#hidden_routes + 1] = route
+      route.rail_col = nil
+      route.segments = {}
     end
+    success = #unplaced_routes == 0
   end
 
   for _, route in ipairs(routes) do

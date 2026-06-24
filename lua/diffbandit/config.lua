@@ -11,6 +11,11 @@ local defaults = {
     connector_width = 12,
     right_number_padding = 2,
     split_blend = 0.3,
+    status = {
+      enabled = true,
+      icons = "auto",
+      icon_overrides = {},
+    },
     theme = {
       auto_refresh = true,
       semantic_blend = 0.3,

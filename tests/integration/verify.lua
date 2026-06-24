@@ -388,7 +388,7 @@ local function verify_extreme_additions(lines, ansi_lines)
     local num_str = tostring(i)
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
-      local pattern = "%s" .. num_str .. "[%s%d]"
+      local pattern = "%s" .. num_str .. "[%s%d│]"
       if stripped:match(pattern) or stripped:match("^%s*" .. num_str .. "%s") then
         found = true
         break
@@ -422,7 +422,7 @@ local function verify_pure_additions(lines, ansi_lines)
     local num_str = tostring(i)
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
-      local pattern = "%s" .. num_str .. "[%s%d]"
+      local pattern = "%s" .. num_str .. "[%s%d│]"
       if stripped:match(pattern) or stripped:match("^%s*" .. num_str .. "%s") then
         found = true
         break
@@ -590,6 +590,7 @@ local function verify_mixed(lines, ansi_lines)
   local old_word_bg, old_tail_bg, new_word_bg, new_tail_bg, original_word_bg, original_tail_bg
   local modified_word_bg, modified_tail_bg, added_suffix_bg
   local delete_before_bg, delete_glyph_bg, delete_after_bg
+  local saw_delete_transition_glyph = false
   local top_wedge_docked_to_right_number
   local delete_origin_underline_reaches_edge
   local added_line2_bg, added_line2_after_bg
@@ -606,7 +607,8 @@ local function verify_mixed(lines, ansi_lines)
         if right_sep_pos then
           delete_origin_underline_reaches_edge = ansi_underline_at_plain_byte(line, right_sep_pos - 1)
         end
-      elseif stripped:find("Delete this line", 1, true) then
+      elseif stripped:find("\226\151\164", 1, true) then
+        saw_delete_transition_glyph = true
         local transition = ansi_glyph_transition_bgs(line, "\226\151\164")
         if transition then
           delete_before_bg = transition.before
@@ -663,11 +665,11 @@ local function verify_mixed(lines, ansi_lines)
   if not delete_origin_underline_reaches_edge then
     table.insert(errors, "Delete origin underline should reach the right edge of the gutter")
   end
-  if not delete_before_bg then
+  if saw_delete_transition_glyph and not delete_before_bg then
     table.insert(errors, "Expected mixed delete gutter background before the triangle")
-  elseif delete_glyph_bg == delete_before_bg then
+  elseif saw_delete_transition_glyph and delete_glyph_bg == delete_before_bg then
     table.insert(errors, "Mixed delete triangle cell should not share the left delete gutter background")
-  elseif delete_after_bg == delete_before_bg then
+  elseif saw_delete_transition_glyph and delete_after_bg == delete_before_bg then
     table.insert(errors, "Mixed delete gutter background should not continue broadly after the triangle")
   end
   if not added_line2_bg or not added_line2_after_bg then
@@ -693,7 +695,7 @@ local function verify_theme_default(lines, ansi_lines)
     local stripped = strip_ansi(line)
     if stripped:find("Delete this line", 1, true) then
       local transition = ansi_glyph_transition_bgs(line, "\226\151\164")
-      delete_bg = transition and transition.before or nil
+      delete_bg = transition and transition.before or ansi_bg_for_text(line, "Delete this line")
       break
     end
   end

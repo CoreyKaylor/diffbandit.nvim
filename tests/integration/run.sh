@@ -33,7 +33,7 @@ run_test() {
     mkdir -p "$case_dir"
 
     # Create tmux session with fixed dimensions
-    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 40
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 48
 
     # Start neovim with minimal config
     tmux send-keys -t "$TMUX_SESSION" "nvim -u '$SCRIPT_DIR/init.lua'" Enter
@@ -384,7 +384,7 @@ run_navigation_test() {
         echo "Navigation document-top next-change state failed: $doc_top_next"
         exit 1
     fi
-    if [[ "$doc_bottom" != *"focus=right"* || "$doc_bottom" != *"left_top=9"* || "$doc_bottom" != *"right_top=9"* || "$doc_bottom" != *"left_cursor=13"* || "$doc_bottom" != *"right_cursor=13"* || "$doc_bottom" != *"chunk=5"* ]]; then
+    if [[ "$doc_bottom" != *"focus=right"* || "$doc_bottom" != *"left_top=11"* || "$doc_bottom" != *"right_top=11"* || "$doc_bottom" != *"left_cursor=13"* || "$doc_bottom" != *"right_cursor=13"* || "$doc_bottom" != *"chunk=5"* ]]; then
         echo "Navigation document-bottom state failed: $doc_bottom"
         exit 1
     fi
@@ -477,6 +477,7 @@ run_git_queue_navigation_test() {
     local repo="$1"
     local case_dir="$CAPTURE_ROOT/git"
     local initial_state="$case_dir/queue-initial.state"
+    local first_hunk_state="$case_dir/queue-after-first-hunk.state"
     local first_boundary_state="$case_dir/queue-after-first-boundary.state"
     local second_boundary_state="$case_dir/queue-after-second-boundary.state"
     local next_file_state="$case_dir/queue-after-next-file.state"
@@ -488,6 +489,10 @@ run_git_queue_navigation_test() {
     sleep 2
 
     tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $initial_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteGitState $first_hunk_state" C-m
     sleep 0.2
     tmux send-keys -t "$TMUX_SESSION" "]" "c"
     sleep 0.5
@@ -509,16 +514,27 @@ run_git_queue_navigation_test() {
 
     assert_git_state_contains "$initial_state" "queue_index=1" "initial index"
     assert_git_state_contains "$initial_state" "queue_count=4" "initial count"
+    assert_git_state_contains "$initial_state" "chunk=0" "initial git file should open at top"
     assert_git_state_contains "$initial_state" "alpha_modified.txt (HEAD)" "initial left label"
     assert_git_state_contains "$initial_state" "alpha_modified.txt (working tree)" "initial right label"
+    assert_git_state_contains "$initial_state" "status_left=HEAD  alpha_modified.txt" "initial left status"
+    assert_git_state_contains "$initial_state" "status_center=all 1/4" "initial center status"
+    assert_git_state_contains "$initial_state" "status_right=working tree  alpha_modified.txt" "initial right status"
 
-    assert_git_state_contains "$first_boundary_state" "queue_index=1" "first ]c should only arm boundary"
-    assert_git_state_contains "$second_boundary_state" "queue_index=2" "second ]c should open next file"
-    assert_git_state_contains "$second_boundary_state" "beta_added_staged.txt" "second ]c next file label"
+    assert_git_state_contains "$first_hunk_state" "queue_index=1" "first ]c should stay in the initial file"
+    assert_git_state_contains "$first_hunk_state" "chunk=1" "first ]c should move to the first hunk"
+    assert_git_state_contains "$first_boundary_state" "queue_index=1" "second ]c should only arm boundary"
+    assert_git_state_contains "$second_boundary_state" "queue_index=2" "third ]c should open next file"
+    assert_git_state_contains "$second_boundary_state" "chunk=0" "third ]c should open next file at top"
+    assert_git_state_contains "$second_boundary_state" "beta_added_staged.txt" "third ]c next file label"
+    assert_git_state_contains "$second_boundary_state" "status_center=all 2/4" "second file center status"
 
     assert_git_state_contains "$next_file_state" "queue_index=3" "]f should open third file"
+    assert_git_state_contains "$next_file_state" "chunk=0" "]f should open third file at top"
     assert_git_state_contains "$next_file_state" "delete_me.txt" "]f third file label"
+    assert_git_state_contains "$next_file_state" "status_center=all 3/4" "]f center status"
     assert_git_state_contains "$prev_file_state" "queue_index=2" "[f should return to second file"
+    assert_git_state_contains "$prev_file_state" "chunk=0" "[f should open previous file at top"
     assert_git_state_contains "$prev_file_state" "beta_added_staged.txt" "[f second file label"
 }
 
@@ -627,6 +643,8 @@ EOF
     tmux capture-pane -t "$TMUX_SESSION" -e -p > "$initial_ansi"
     lua "$SCRIPT_DIR/verify.lua" "$initial_capture" "git:action-unstaged-marker" "$initial_ansi"
 
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
     tmux send-keys -t "$TMUX_SESSION" Space
     sleep 1
     assert_git_diff_contains "$repo" "cached" "action.txt" "action changed line" "space should stage hunk"
@@ -667,6 +685,8 @@ EOF
     tmux capture-pane -t "$TMUX_SESSION" -e -p > "$staged_ansi"
     lua "$SCRIPT_DIR/verify.lua" "$staged_capture" "git:action-staged-marker" "$staged_ansi"
 
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
     tmux send-keys -t "$TMUX_SESSION" Space
     sleep 1
     assert_git_diff_clean "$repo" "cached" "action.txt" "space should unstage staged hunk"
@@ -698,6 +718,8 @@ EOF
     start_git_session "$repo" 14
     tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- already_staged_added.txt" C-m
     sleep 2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
     tmux send-keys -t "$TMUX_SESSION" Space
     sleep 1
     assert_git_diff_clean "$repo" "cached" "already_staged_added.txt" "space should unstage an already staged added file"
@@ -730,6 +752,8 @@ EOF
     start_git_session "$repo" 14
     tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- already_staged_added_hunk.txt" C-m
     sleep 2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
     tmux send-keys -t "$TMUX_SESSION" Space
     sleep 1
     assert_git_diff_clean "$repo" "cached" "already_staged_added_hunk.txt" "space should unstage an already staged added hunk"
@@ -771,6 +795,8 @@ EOF
     start_git_session "$repo" 14
     tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- mixed_staged_added_hunk.txt" C-m
     sleep 2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.5
     tmux send-keys -t "$TMUX_SESSION" Space
     sleep 1
     assert_git_diff_clean "$repo" "cached" "mixed_staged_added_hunk.txt" "space should unstage only the staged added hunk"

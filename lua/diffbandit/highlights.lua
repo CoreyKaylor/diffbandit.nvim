@@ -8,6 +8,10 @@ local base_defaults = {
   DiffBanditConnectorText = { link = "Normal" },
   DiffBanditSplit = { link = "WinSeparator" },
   DiffBanditHiddenSplit = {},
+  DiffBanditStatus = { link = "StatusLine" },
+  DiffBanditStatusLine = { link = "StatusLine" },
+  DiffBanditStatusAccent = { link = "StatusLine" },
+  DiffBanditStatusMuted = { link = "StatusLineNC" },
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
 }
@@ -228,6 +232,27 @@ local function apply_diff_variants(config)
   apply_group("DiffBanditHiddenSplit", {
     fg = soft_split_fg,
     bg = normal_bg,
+  })
+
+  local status_bg = blend_color(normal_bg, get_foreground_color("LineNr", "#808080"), 0.08)
+  local status_muted = get_foreground_color("Comment", "#808080")
+  local status_accent = get_foreground_color("Identifier", normal_fg)
+  apply_group("DiffBanditStatus", {
+    bg = status_bg,
+    fg = normal_fg,
+  })
+  apply_group("DiffBanditStatusLine", {
+    bg = status_bg,
+    fg = status_muted,
+  })
+  apply_group("DiffBanditStatusAccent", {
+    bg = status_bg,
+    fg = status_accent,
+    bold = true,
+  })
+  apply_group("DiffBanditStatusMuted", {
+    bg = status_bg,
+    fg = status_muted,
   })
 
   -- Separator line highlights for text buffers (use underline attribute)

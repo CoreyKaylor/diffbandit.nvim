@@ -96,6 +96,9 @@ function _G.DiffBanditTestWriteGitState(path)
     string.format("chunk=%d", session.current_chunk or -1),
     string.format("left_label=%s", session.left and (session.left.label or session.left.path or "") or ""),
     string.format("right_label=%s", session.right and (session.right.label or session.right.path or "") or ""),
+    string.format("status_left=%s", session.status_lines and session.status_lines.left or ""),
+    string.format("status_center=%s", session.status_lines and session.status_lines.center or ""),
+    string.format("status_right=%s", session.status_lines and session.status_lines.right or ""),
   }
   vim.fn.writefile(lines, path)
 end

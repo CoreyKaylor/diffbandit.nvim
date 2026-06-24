@@ -413,12 +413,14 @@ local function no_change_sources(ctx)
   return {
     left = source_from_text(left_text, abs, left_label, {
       git_side = "left",
-      git_target = mode == "staged" and "head" or "index",
+      git_target = (mode == "staged" or mode == "all") and "head" or "index",
+      git_ref = (mode == "staged" or mode == "all") and (ctx.opts.base or "HEAD") or "index",
       git_relpath = ctx.path,
     }),
     right = source_from_text(right_text, abs, right_label, {
       git_side = "right",
       git_target = mode == "staged" and "index" or "worktree",
+      git_ref = mode == "staged" and "index" or "working tree",
       git_relpath = ctx.path,
     }),
   }

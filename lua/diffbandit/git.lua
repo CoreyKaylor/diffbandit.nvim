@@ -368,25 +368,26 @@ local function source_from_kind(queue, entry, side)
         empty_reason = entry.untracked and "New untracked file" or "New file",
         git_side = side,
         git_target = "absent",
+        git_ref = entry.untracked and "not tracked" or (mode == "rev" and opts.base or opts.base or "HEAD"),
         git_relpath = path,
       })
     end
     if mode == "unstaged" then
       return git_source(root, path, string.format("%s (index)", label_path), function()
         return read_blob(root, ":" .. path)
-      end, { git_side = side, git_target = "index", git_relpath = path })
+      end, { git_side = side, git_target = "index", git_ref = "index", git_relpath = path })
     elseif mode == "staged" then
       return git_source(root, path, string.format("%s (HEAD)", label_path), function()
         return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
-      end, { git_side = side, git_target = "head", git_relpath = path })
+      end, { git_side = side, git_target = "head", git_ref = opts.base or "HEAD", git_relpath = path })
     elseif mode == "all" then
       return git_source(root, path, string.format("%s (%s)", label_path, opts.base or "HEAD"), function()
         return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
-      end, { git_side = side, git_target = "head", git_relpath = path })
+      end, { git_side = side, git_target = "head", git_ref = opts.base or "HEAD", git_relpath = path })
     elseif mode == "rev" then
       return git_source(root, path, string.format("%s (%s)", label_path, opts.base), function()
         return read_blob(root, opts.base .. ":" .. path)
-      end, { git_side = side, git_target = "rev", git_relpath = path })
+      end, { git_side = side, git_target = "rev", git_ref = opts.base, git_relpath = path })
     end
   end
 
@@ -404,22 +405,23 @@ local function source_from_kind(queue, entry, side)
       empty_reason = "Deleted file",
       git_side = side,
       git_target = "absent",
+      git_ref = mode == "rev" and opts.target or "deleted",
       git_relpath = path,
     })
   end
   if mode == "staged" then
     return git_source(root, path, string.format("%s (index)", label_path), function()
       return read_blob(root, ":" .. path)
-    end, { git_side = side, git_target = "index", git_relpath = path })
+    end, { git_side = side, git_target = "index", git_ref = "index", git_relpath = path })
   elseif mode == "rev" then
     return git_source(root, path, string.format("%s (%s)", label_path, opts.target), function()
       return read_blob(root, opts.target .. ":" .. path)
-    end, { git_side = side, git_target = "rev", git_relpath = path })
+    end, { git_side = side, git_target = "rev", git_ref = opts.target, git_relpath = path })
   end
 
   return git_source(root, path, string.format("%s (working tree)", label_path), function()
     return read_worktree(root, path, opts.use_buffer)
-  end, { git_side = side, git_target = "worktree", git_relpath = path })
+  end, { git_side = side, git_target = "worktree", git_ref = "working tree", git_relpath = path })
 end
 
 local function normalize_opts(opts, config)

@@ -161,7 +161,7 @@ function M.git(opts)
     return nil, load_err
   end
 
-  return start_session(loaded.left, loaded.right, { queue = queue })
+  return start_session(loaded.left, loaded.right, { queue = queue, chunk_position = "top" })
 end
 
 function M.git_file(path, opts)

@@ -3,6 +3,7 @@ local view_builder = require("diffbandit.view")
 local state = require("diffbandit.state")
 local paths_mod = require("diffbandit.paths")
 local actions = require("diffbandit.actions")
+local status = require("diffbandit.status")
 
 local Session = {}
 Session.__index = Session
@@ -115,6 +116,12 @@ local function set_window_width(win, width)
   end
 end
 
+local function set_window_height(win, height)
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_win_set_height, win, math.max(1, height))
+  end
+end
+
 local function build_view_for_sources(sources, config)
   local hunks, err = diff_mod.compute_hunks(sources.left.text, sources.right.text, config.diff)
   if err then
@@ -150,7 +157,7 @@ function Session.start(sources, config, opts)
   self.right = sources.right
   self.hunks = hunks
   self.view = view
-  self.current_chunk = view.chunks[1] and 1 or 0
+  self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
   self.file_queue = opts.queue
   self.file_queue_index = opts.queue and (opts.queue.index or 1) or nil
   self.pending_file_boundary = nil
@@ -172,6 +179,7 @@ function Session.start(sources, config, opts)
   self.gutter_width = self.connector_core_width
   self.connector_width_cache = {}
   self.staged_chunk_states = actions.staged_chunk_states(self)
+  self.status_enabled = status.enabled(self.config)
 
   self:open_layout()
   self:precompute_connector_core_width()
@@ -212,12 +220,18 @@ function Session:open_layout()
   local connector_buf = vim.api.nvim_create_buf(false, true)
   local right_num_buf = vim.api.nvim_create_buf(false, true)
   local right_buf = vim.api.nvim_create_buf(false, true)
+  local left_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
+  local center_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
+  local right_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
 
   self.left_buf = left_buf
   self.left_num_buf = left_num_buf
   self.connector_buf = connector_buf
   self.right_num_buf = right_num_buf
   self.right_buf = right_buf
+  self.left_header_buf = left_header_buf
+  self.center_header_buf = center_header_buf
+  self.right_header_buf = right_header_buf
 
   -- Set non-destructive options first
   set_buffer_options(left_buf, {
@@ -252,20 +266,27 @@ function Session:open_layout()
     modifiable = false,
   })
 
+  for _, buf in ipairs({ left_header_buf, center_header_buf, right_header_buf }) do
+    if buf then
+      set_buffer_options(buf, {
+        buftype = "nofile",
+        swapfile = false,
+        modifiable = false,
+      })
+    end
+  end
+
   -- Put buffers in windows BEFORE setting bufhidden=wipe.
   -- Final order:
   -- LEFT CONTENT | LEFT NUMBERS | CONNECTOR | RIGHT NUMBERS | RIGHT CONTENT.
   -- nvim_open_win() split configs let gutter panes opt out of mouse/focus where
   -- the running Nvim supports it.
 
-  local left_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(left_win, left_buf)
-
-  local right_win = vim.api.nvim_open_win(right_buf, false, {
-    split = "right",
-    win = left_win,
-  })
-  vim.api.nvim_win_set_buf(right_win, right_buf)
+  local left_win
+  local right_win
+  local left_header_win
+  local center_header_win
+  local right_header_win
 
   local function open_gutter_win(buf, anchor_win, width)
     local ok, win = pcall(vim.api.nvim_open_win, buf, false, {
@@ -286,20 +307,73 @@ function Session:open_layout()
     return win
   end
 
-  local left_num_win = open_gutter_win(left_num_buf, left_win, self.left_number_pane_width)
-  local connector_win = open_gutter_win(connector_buf, left_num_win, self.connector_core_width)
-  local right_num_win = open_gutter_win(right_num_buf, connector_win, self.right_number_pane_width)
+  local function open_status_win(buf, anchor_win, split)
+    local ok, win = pcall(vim.api.nvim_open_win, buf, false, {
+      split = split,
+      win = anchor_win,
+      focusable = false,
+      mouse = false,
+    })
+    if ok then
+      return win
+    end
+    return vim.api.nvim_open_win(buf, false, {
+      split = split,
+      win = anchor_win,
+    })
+  end
+
+  local left_num_win
+  local connector_win
+  local right_num_win
+
+  if self.status_enabled then
+    left_header_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(left_header_win, left_header_buf)
+    left_win = vim.api.nvim_open_win(left_buf, false, {
+      split = "below",
+      win = left_header_win,
+    })
+
+    center_header_win = open_status_win(center_header_buf, left_header_win, "right")
+    right_header_win = open_status_win(right_header_buf, center_header_win, "right")
+
+    right_win = vim.api.nvim_open_win(right_buf, false, {
+      split = "right",
+      win = left_win,
+    })
+    left_num_win = open_gutter_win(left_num_buf, left_win, self.left_number_pane_width)
+    connector_win = open_gutter_win(connector_buf, left_num_win, self.connector_core_width)
+    right_num_win = open_gutter_win(right_num_buf, connector_win, self.right_number_pane_width)
+  else
+    left_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(left_win, left_buf)
+    right_win = vim.api.nvim_open_win(right_buf, false, {
+      split = "right",
+      win = left_win,
+    })
+    vim.api.nvim_win_set_buf(right_win, right_buf)
+    left_num_win = open_gutter_win(left_num_buf, left_win, self.left_number_pane_width)
+    connector_win = open_gutter_win(connector_buf, left_num_win, self.connector_core_width)
+    right_num_win = open_gutter_win(right_num_buf, connector_win, self.right_number_pane_width)
+  end
 
   self.left_win = left_win
   self.left_num_win = left_num_win
   self.connector_win = connector_win
   self.right_num_win = right_num_win
   self.right_win = right_win
+  self.left_header_win = left_header_win
+  self.center_header_win = center_header_win
+  self.right_header_win = right_header_win
 
   local split_winhl = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit"
   local source_winhl = split_winhl .. ",CursorLine:DiffBanditCursorLine"
   local gutter_winhl = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
     .. split_winhl .. ",CursorLine:DiffBanditCursorLine"
+  local status_winhl = "Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,"
+    .. "StatusLine:DiffBanditStatusLine,StatusLineNC:DiffBanditStatusLine,"
+    .. split_winhl .. ",CursorLine:DiffBanditStatus"
 
   set_window_options(left_win, {
     number = false,
@@ -352,6 +426,23 @@ function Session:open_layout()
     winhl = source_winhl,
   })
 
+  for _, win in ipairs({ left_header_win, center_header_win, right_header_win }) do
+    if win then
+      set_window_options(win, {
+        number = false,
+        relativenumber = false,
+        cursorline = false,
+        wrap = false,
+        signcolumn = "no",
+        foldcolumn = "0",
+        winfixheight = true,
+        winhl = status_winhl,
+        statusline = " ",
+      })
+      set_window_height(win, 1)
+    end
+  end
+
   self:resize_layout()
 
   -- Now that all buffers are displayed in windows, set bufhidden=wipe for cleanup
@@ -360,6 +451,11 @@ function Session:open_layout()
   set_buffer_options(connector_buf, { bufhidden = "wipe" })
   set_buffer_options(right_num_buf, { bufhidden = "wipe" })
   set_buffer_options(right_buf, { bufhidden = "wipe" })
+  for _, buf in ipairs({ left_header_buf, center_header_buf, right_header_buf }) do
+    if buf then
+      set_buffer_options(buf, { bufhidden = "wipe" })
+    end
+  end
 
   -- Set vertical split character to thin line
   vim.opt.fillchars:append({ vert = "│" })
@@ -416,6 +512,16 @@ function Session:resize_layout()
   set_window_width(self.left_num_win, self.left_number_pane_width)
   set_window_width(self.connector_win, self.connector_core_width)
   set_window_width(self.right_num_win, self.right_number_pane_width)
+
+  if self.status_enabled then
+    set_window_width(self.left_header_win, left_width)
+    set_window_width(self.center_header_win, fixed_width + 2)
+    set_window_width(self.right_header_win, right_width)
+    set_window_height(self.left_header_win, 1)
+    set_window_height(self.center_header_win, 1)
+    set_window_height(self.right_header_win, 1)
+    self:render_status_headers()
+  end
 end
 
 function Session:get_scroll_padding()
@@ -476,6 +582,18 @@ function Session:setup_autocmds()
     end,
   })
 
+  for _, buf in ipairs({ self.left_header_buf, self.center_header_buf, self.right_header_buf }) do
+    if buf then
+      vim.api.nvim_create_autocmd("BufWipeout", {
+        group = augroup,
+        buffer = buf,
+        callback = function()
+          self:dispose()
+        end,
+      })
+    end
+  end
+
   vim.api.nvim_create_autocmd("WinEnter", {
     group = augroup,
     callback = function()
@@ -489,7 +607,12 @@ function Session:setup_autocmds()
       elseif win == self.right_win then
         self.last_source_win = self.right_win
         self.last_source_side = "right"
-      elseif win == self.left_num_win or win == self.connector_win or win == self.right_num_win then
+      elseif win == self.left_num_win
+          or win == self.connector_win
+          or win == self.right_num_win
+          or win == self.left_header_win
+          or win == self.center_header_win
+          or win == self.right_header_win then
         vim.schedule(function()
           if not self.disposed then
             local target
@@ -511,8 +634,12 @@ function Session:setup_autocmds()
 
   vim.api.nvim_create_autocmd("WinScrolled", {
     group = augroup,
-    callback = function()
+    callback = function(event)
       if self.syncing_scroll or self.rendering_viewport or self.disposed then
+        return
+      end
+      local win = tonumber(event.winid)
+      if win == self.left_header_win or win == self.center_header_win or win == self.right_header_win then
         return
       end
       self:sync_gutter_viewports()
@@ -930,6 +1057,75 @@ function Session:update_title()
   vim.api.nvim_tabpage_set_var(self.tabpage, "diffbandit_title", self.title)
 end
 
+local function truncate_display(text, width)
+  text = text or ""
+  width = math.max(0, width or 0)
+  if vim.fn.strdisplaywidth(text) <= width then
+    return text
+  end
+  if width <= 1 then
+    return string.rep(" ", width)
+  end
+
+  local ellipsis = "…"
+  local target_width = width - vim.fn.strdisplaywidth(ellipsis)
+  local out = {}
+  local used = 0
+  local char_count = vim.fn.strchars(text)
+  for i = 0, char_count - 1 do
+    local char = vim.fn.strcharpart(text, i, 1)
+    local char_width = vim.fn.strdisplaywidth(char)
+    if used + char_width > target_width then
+      break
+    end
+    out[#out + 1] = char
+    used = used + char_width
+  end
+  return table.concat(out) .. ellipsis
+end
+
+local function set_header_line(buf, namespace, text, width)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  text = " " .. truncate_display(text, math.max(1, width - 1))
+  set_buffer_options(buf, { modifiable = true })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { text })
+  set_buffer_options(buf, { modifiable = false })
+  vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
+  vim.api.nvim_buf_add_highlight(buf, namespace, "DiffBanditStatus", 0, 0, -1)
+  local accent_end = text:find("  ", 2, true)
+  if accent_end then
+    vim.api.nvim_buf_add_highlight(buf, namespace, "DiffBanditStatusAccent", 0, 1, accent_end - 1)
+  end
+end
+
+function Session:render_status_headers()
+  if not self.status_enabled then
+    return
+  end
+  if not (
+        self.left_header_win
+        and self.center_header_win
+        and self.right_header_win
+        and vim.api.nvim_win_is_valid(self.left_header_win)
+        and vim.api.nvim_win_is_valid(self.center_header_win)
+        and vim.api.nvim_win_is_valid(self.right_header_win)
+      ) then
+    return
+  end
+
+  local lines = status.build(self)
+  local center_width = vim.api.nvim_win_get_width(self.center_header_win)
+  if lines.center_compact and vim.fn.strdisplaywidth(lines.center) > math.max(1, center_width - 1) then
+    lines.center = lines.center_compact
+  end
+  self.status_lines = lines
+  set_header_line(self.left_header_buf, self.ns, self.status_lines.left, vim.api.nvim_win_get_width(self.left_header_win))
+  set_header_line(self.center_header_buf, self.ns, self.status_lines.center, center_width)
+  set_header_line(self.right_header_buf, self.ns, self.status_lines.right, vim.api.nvim_win_get_width(self.right_header_win))
+end
+
 function Session:replace_sources(sources, opts)
   opts = opts or {}
   local preserve_view = opts.preserve_view == true
@@ -953,7 +1149,7 @@ function Session:replace_sources(sources, opts)
   self.right = sources.right
   self.hunks = hunks
   self.view = view
-  self.current_chunk = view.chunks[1] and 1 or 0
+  self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
   self.left_number_width = math.max(2, digits_of(#sources.left.lines))
   self.right_number_width = digits_of(#sources.right.lines)
   self.stage_marker_width = is_git_queue(self.file_queue) and 1 or 0
@@ -995,7 +1191,11 @@ function Session:replace_sources(sources, opts)
     self:set_viewport_toplines_preserve_cursors(1, 1, 1, 1)
   end
 
-  if opts.chunk_position == "preserve" then
+  if opts.chunk_position == "top" then
+    self.current_chunk = 0
+    self:clear_active_chunk()
+    self:render_status_headers()
+  elseif opts.chunk_position == "preserve" then
     if #self.view.chunks > 0 then
       self.current_chunk = math.min(opts.preferred_chunk or self.current_chunk or 1, #self.view.chunks)
       self:highlight_active_chunk(self.view.chunks[self.current_chunk], { position_cursor = false })
@@ -2583,6 +2783,7 @@ function Session:render()
     end
   end
 
+  self:render_status_headers()
 end
 
 function Session:clear_active_chunk()
@@ -2640,6 +2841,7 @@ function Session:highlight_active_chunk(chunk, opts)
     vim.api.nvim_win_set_cursor(self.connector_win, { chunk.display_start, 0 })
   end
   self:sync_gutter_viewports()
+  self:render_status_headers()
 end
 
 function Session:goto_chunk(index)
@@ -2706,7 +2908,7 @@ function Session:goto_next_file()
     return
   end
   self:reset_pending_file_boundary()
-  self:goto_queue_file((self.file_queue_index or 1) + 1, "first")
+  self:goto_queue_file((self.file_queue_index or 1) + 1, "top")
 end
 
 function Session:goto_prev_file()
@@ -2715,7 +2917,7 @@ function Session:goto_prev_file()
     return
   end
   self:reset_pending_file_boundary()
-  self:goto_queue_file((self.file_queue_index or 1) - 1, "last")
+  self:goto_queue_file((self.file_queue_index or 1) - 1, "top")
 end
 
 function Session:confirm_file_boundary(direction)
@@ -2738,7 +2940,7 @@ function Session:confirm_file_boundary(direction)
   local pending = self.pending_file_boundary
   if pending and pending.direction == direction and pending.file_index == current then
     self:reset_pending_file_boundary()
-    self:goto_queue_file(target, direction == "next" and "first" or "last")
+    self:goto_queue_file(target, "top")
     return true
   end
 
