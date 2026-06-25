@@ -1,5 +1,7 @@
 # diffbandit.nvim
 
+[![CI](https://github.com/CoreyKaylor/diffbandit.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/CoreyKaylor/diffbandit.nvim/actions/workflows/ci.yml)
+
 DiffBandit is a Neovim diff viewer with independent panes, compact connector
 geometry, Git-aware navigation, hunk actions, a commit panel, binary hex diffs,
 and theme-adaptive highlights.
@@ -78,6 +80,44 @@ Toggle the Git commit panel:
 ```vim
 :DiffBanditCommitPanel
 ```
+
+## Screenshots
+
+### Diff Views
+
+<p>
+  <img src="screenshots/mixed_review.png" alt="Mixed review diff with connector gutter and overview markers" width="720">
+</p>
+
+<p>
+  <img src="screenshots/dense_routes.png" alt="Dense connector routing with non-overlapping paths" width="720">
+</p>
+
+<p>
+  <img src="screenshots/long_additions.png" alt="Long additions with expansion connectors and overview gutters" width="720">
+</p>
+
+### Git States
+
+<p>
+  <img src="screenshots/changes_file_git.png" alt="Changed Git file with status header" width="420">
+  <img src="screenshots/new_file.png" alt="New Git file diff" width="420">
+</p>
+
+<p>
+  <img src="screenshots/deleted_file.png" alt="Deleted Git file diff" width="420">
+  <img src="screenshots/renamed_file.png" alt="Renamed Git file diff" width="420">
+</p>
+
+<p>
+  <img src="screenshots/staged_file.png" alt="Staged Git file diff" width="420">
+</p>
+
+### Commit Panel
+
+<p>
+  <img src="screenshots/git_commit_amend.png" alt="Git commit panel with amend mode and live diff preview" width="720">
+</p>
 
 ## Git Modes
 
