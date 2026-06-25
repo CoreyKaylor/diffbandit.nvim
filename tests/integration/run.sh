@@ -3,7 +3,7 @@
 # Usage: ./run.sh [test_name]
 #   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'dense-mixed',
 #              'theme-default', 'comprehensive',
-#              'navigation', 'git',
+#              'navigation', 'git', 'git-scroll-perf',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
 
@@ -721,6 +721,144 @@ EOF
     lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "git:live-buffer" "$ansi_capture"
 }
 
+write_large_scroll_repo() {
+    local repo="$1"
+    local line_count="${2:-5000}"
+
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+
+    : > "$repo/big.lua"
+    for i in $(seq 1 "$line_count"); do
+        printf "local value_%04d = %04d\n" "$i" "$i" >> "$repo/big.lua"
+    done
+    git -C "$repo" add big.lua
+    git -C "$repo" commit -m baseline >/dev/null
+
+    local tmp_file="$repo/big.lua.tmp"
+    : > "$tmp_file"
+    for i in $(seq 1 "$line_count"); do
+        case "$i" in
+            250|750|1250|1750|2250|2750|3250|3750|4250|4750)
+                printf "local value_%04d = %04d -- changed\n" "$i" "$((i + 10000))" >> "$tmp_file"
+                ;;
+            *)
+                printf "local value_%04d = %04d\n" "$i" "$i" >> "$tmp_file"
+                ;;
+        esac
+    done
+    mv "$tmp_file" "$repo/big.lua"
+}
+
+perf_state_value() {
+    local file="$1"
+    local key="$2"
+    grep "^$key=" "$file" | head -n 1 | cut -d= -f2
+}
+
+wait_for_file() {
+    local file="$1"
+    local attempts="${2:-20}"
+    for _ in $(seq 1 "$attempts"); do
+        if [[ -f "$file" ]]; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+run_git_scroll_perf_test() {
+    local test_name="git-scroll-perf"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+    local repo="$case_dir/repo"
+    local initial_state="$case_dir/initial.state"
+
+    echo "Running integration test: $test_name"
+    mkdir -p "$case_dir"
+    write_large_scroll_repo "$repo" 5000
+
+    start_git_session "$repo" 24
+    tmux send-keys -t "$TMUX_SESSION" ":lua require('diffbandit').setup({ ui = { scroll_debounce_ms = 25 } })" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":edit big.lua" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGitCurrent" C-m
+    sleep 2
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePerfState $initial_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBResetPerf" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBFocus right" C-m
+    sleep 0.2
+
+    run_scroll_burst() {
+        local label="$1"
+        local scroll_events="$2"
+        local min_top="$3"
+        local scroll_state="$case_dir/${label}.state"
+        local render_count
+        local request_count
+        local right_top
+        local right_lines
+
+        rm -f "$scroll_state"
+        tmux send-keys -t "$TMUX_SESSION" ":DBResetPerf" C-m
+        sleep 0.1
+        tmux send-keys -t "$TMUX_SESSION" ":DBRapidScroll $scroll_events" C-m
+        sleep 1
+        tmux send-keys -t "$TMUX_SESSION" ":DBWritePerfState $scroll_state" C-m
+        wait_for_file "$scroll_state" 30 || true
+
+        render_count="$(perf_state_value "$scroll_state" "render_count")"
+        request_count="$(perf_state_value "$scroll_state" "viewport_request_count")"
+        right_top="$(perf_state_value "$scroll_state" "right_top")"
+        right_lines="$(perf_state_value "$scroll_state" "right_lines")"
+
+        if [[ -z "$render_count" || -z "$request_count" || -z "$right_top" ]]; then
+            echo "Git scroll perf state missing expected values ($label)"
+            cat "$scroll_state"
+            exit 1
+        fi
+        if (( right_lines < 5000 )); then
+            echo "Git scroll perf fixture did not load the large current file ($label)"
+            cat "$scroll_state"
+            exit 1
+        fi
+        if (( right_top < min_top )); then
+            echo "Git scroll perf failed: rapid scroll did not reach expected depth ($label)"
+            echo "events=$scroll_events min_top=$min_top"
+            cat "$scroll_state"
+            exit 1
+        fi
+        if (( request_count <= 0 )); then
+            echo "Git scroll perf failed: rapid scroll did not hit viewport rerender scheduling ($label)"
+            cat "$scroll_state"
+            exit 1
+        fi
+        if (( render_count >= scroll_events / 2 )); then
+            echo "Git scroll perf failed: render count too high for debounced scroll ($label)"
+            echo "events=$scroll_events renders=$render_count requests=$request_count"
+            cat "$scroll_state"
+            exit 1
+        fi
+
+        echo "  burst $label: events=$scroll_events renders=$render_count requests=$request_count right_top=$right_top"
+    }
+
+    run_scroll_burst "burst-1" 80 70
+    run_scroll_burst "burst-2" 420 480
+    run_scroll_burst "burst-3" 900 1350
+    run_scroll_burst "burst-4" 1800 3100
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    echo "  PASSED: $test_name"
+    echo "  States: $case_dir"
+}
+
 assert_git_diff_contains() {
     local repo="$1"
     local mode="$2"
@@ -1158,6 +1296,9 @@ case "$TEST_TO_RUN" in
     git)
         run_git_test
         ;;
+    git-scroll-perf)
+        run_git_scroll_perf_test
+        ;;
     scroll-additions)
         run_scroll_test "scroll-additions" \
             "$PROJECT_ROOT/tests/files/left_scroll_additions.txt" \
@@ -1216,10 +1357,12 @@ case "$TEST_TO_RUN" in
 
         run_git_test
 
+        run_git_scroll_perf_test
+
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|git|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|git|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac

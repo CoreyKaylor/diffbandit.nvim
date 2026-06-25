@@ -56,6 +56,7 @@ assert_eq(config.git.panel.keys.focus_panel, "C",
 assert_eq(config.git.panel.keys.commit, nil, "Commit panel should commit through :w by default")
 assert_eq(config.ui.overview.enabled, true, "Overview gutter should be enabled by default")
 assert_eq(config.ui.overview.width, 1, "Overview gutter should default to one column")
+assert_eq(config.ui.scroll_debounce_ms, 16, "Viewport scroll rerenders should debounce by default")
 
 local function get_hl(name)
   return vim.api.nvim_get_hl(0, { name = name, link = false })
@@ -147,6 +148,90 @@ do
   assert_eq(rows[1].kind, "add", "First source line should project to the first overview row")
   assert_eq(rows[5].kind, "delete", "Current chunk should win same-row overview collisions")
   assert_eq(rows[10].kind, "change", "Last source line should project to the last overview row")
+end
+
+-- Viewport rerenders should be coalesced so rapid mouse-wheel scroll events do
+-- not trigger a full render per event.
+do
+  local fake_session = setmetatable({
+    config = {
+      ui = {
+        scroll_debounce_ms = 1,
+      },
+    },
+    rerender_count = 0,
+  }, { __index = Session })
+
+  function fake_session:rerender_for_viewport()
+    self.rerender_count = self.rerender_count + 1
+  end
+
+  fake_session:request_viewport_rerender()
+  fake_session:request_viewport_rerender()
+  fake_session:request_viewport_rerender()
+
+  local ok = vim.wait(100, function()
+    return fake_session.rerender_count == 1
+  end, 1)
+  assert_eq(ok, true, "Scroll rerender should run after debounce")
+  assert_eq(fake_session.rerender_count, 1, "Scroll rerender requests should coalesce")
+end
+
+-- Replacing sources must invalidate cached display lines. Commit-panel preview
+-- navigation reuses a session while swapping files, so stale cache here would
+-- show the previous file content under the next file's headers.
+do
+  local function source(lines)
+    return {
+      lines = lines,
+      text = to_text(lines),
+      filetype = "text",
+    }
+  end
+
+  local initial = {
+    left = source({ "old left" }),
+    right = source({ "old right" }),
+  }
+  local next_sources = {
+    left = source({ "new left" }),
+    right = source({ "new right" }),
+  }
+  local initial_hunks = assert((diff.compute_hunks(initial.left.text, initial.right.text, config.diff)))
+  local initial_view = view.build(initial.left.lines, initial.right.lines, initial_hunks, config)
+  local fake_session = setmetatable({
+    config = config,
+    left = initial.left,
+    right = initial.right,
+    hunks = initial_hunks,
+    view = initial_view,
+    left_buf = vim.api.nvim_create_buf(false, true),
+    right_buf = vim.api.nvim_create_buf(false, true),
+  }, { __index = Session })
+
+  local old_left_lines = select(1, fake_session:display_lines())
+  assert_eq(old_left_lines[1], "old left", "Initial display cache should contain old file content")
+
+  function fake_session:reset_pending_file_boundary() end
+  function fake_session:update_title() end
+  function fake_session:resize_layout() end
+  function fake_session:precompute_connector_core_width() end
+  function fake_session:setup_keymaps() end
+  function fake_session:set_viewport_toplines_preserve_cursors() end
+  function fake_session:clear_active_chunk() end
+  function fake_session:render_status_headers() end
+  function fake_session:render()
+    local left_lines, right_lines = self:display_lines()
+    assert_eq(left_lines[1], "new left", "Source replacement should rebuild cached left display lines")
+    assert_eq(right_lines[1], "new right", "Source replacement should rebuild cached right display lines")
+  end
+
+  local ok, err = fake_session:replace_sources(next_sources, { chunk_position = "top" })
+  assert_eq(err, nil, "Source replacement should not error")
+  assert_eq(ok, true, "Source replacement should succeed")
+
+  pcall(vim.api.nvim_buf_delete, fake_session.left_buf, { force = true })
+  pcall(vim.api.nvim_buf_delete, fake_session.right_buf, { force = true })
 end
 
 -- ==============================================================================

@@ -225,6 +225,42 @@ local function connector_core_base_width(view, config)
   return width
 end
 
+function Session:invalidate_render_caches()
+  self.base_paths_cache = nil
+  self.overview_marks_cache = nil
+  self.changed_spans_cache = nil
+  self.display_lines_cache = nil
+end
+
+function Session:base_paths()
+  if not self.base_paths_cache then
+    self.base_paths_cache = paths_mod.compute_paths(self.view.chunks, self.view.line_meta)
+  end
+  return self.base_paths_cache
+end
+
+function Session:display_lines()
+  local padding = self:get_scroll_padding()
+  if not self.display_lines_cache or self.display_lines_cache.padding ~= padding then
+    local left_lines, right_lines = build_display_lines(self)
+    self.display_lines_cache = {
+      left = left_lines,
+      right = right_lines,
+      padding = padding,
+    }
+  end
+  return self.display_lines_cache.left, self.display_lines_cache.right
+end
+
+function Session:overview_marks(side)
+  self.overview_marks_cache = self.overview_marks_cache or {}
+  local key = tostring(side) .. ":" .. tostring(self.current_chunk or 0)
+  if not self.overview_marks_cache[key] then
+    self.overview_marks_cache[key] = overview.build_marks(self.view, side, self.current_chunk)
+  end
+  return self.overview_marks_cache[key]
+end
+
 function Session.start(sources, config, opts)
   opts = opts or {}
   local hunks, view = build_view_for_sources(sources, config)
@@ -263,6 +299,7 @@ function Session.start(sources, config, opts)
   self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
   self.gutter_width = self.connector_core_width
   self.connector_width_cache = {}
+  self:invalidate_render_caches()
   self.staged_chunk_states = actions.staged_chunk_states(self)
   self.status_enabled = status.enabled(self.config)
   self.panel_enabled = opts.panel == true
@@ -843,22 +880,20 @@ function Session:render_overviews()
 
   set_buffer_options(self.left_overview_buf, { modifiable = true })
   set_buffer_options(self.right_overview_buf, { modifiable = true })
-  overview.render_side(
+  overview.render_side_with_marks(
     self.left_overview_buf,
     self.overview_ns,
-    self.view,
-    "left",
+    self:overview_marks("left"),
     #((self.view or {}).left or {}),
     left_height,
     left_cursor,
     self.current_chunk,
     self.config
   )
-  overview.render_side(
+  overview.render_side_with_marks(
     self.right_overview_buf,
     self.overview_ns,
-    self.view,
-    "right",
+    self:overview_marks("right"),
     #((self.view or {}).right or {}),
     right_height,
     right_cursor,
@@ -1006,7 +1041,7 @@ function Session:setup_autocmds()
         return
       end
       self:sync_gutter_viewports()
-      self:rerender_for_viewport()
+      self:request_viewport_rerender()
     end,
   })
 
@@ -1169,6 +1204,26 @@ end
 
 function Session:sync_from_right()
   sync_source_to_gutter(self, self.right_win, self.right_num_win)
+end
+
+function Session:request_viewport_rerender()
+  if self.disposed or self.rendering_viewport then
+    return
+  end
+  if self.viewport_rerender_scheduled then
+    return
+  end
+
+  self.viewport_rerender_scheduled = true
+  local delay = tonumber(((self.config or {}).ui or {}).scroll_debounce_ms) or 16
+  delay = math.max(0, delay)
+  vim.defer_fn(function()
+    self.viewport_rerender_scheduled = false
+    if self.disposed then
+      return
+    end
+    self:rerender_for_viewport()
+  end, delay)
 end
 
 function Session:set_viewport_toplines(left_topline, right_topline)
@@ -1523,6 +1578,7 @@ function Session:replace_sources(sources, opts)
   self.right = sources.right
   self.hunks = hunks
   self.view = view
+  self:invalidate_render_caches()
   self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
   self.left_number_width = math.max(2, display_number_width(sources.left))
   self.right_number_width = display_number_width(sources.right)
@@ -2021,7 +2077,7 @@ function Session:precompute_connector_core_width()
     return cached
   end
 
-  local paths = paths_mod.compute_paths(self.view.chunks, self.view.line_meta)
+  local paths = self:base_paths()
   local minimum_width = self.connector_core_width
   local required_core = minimum_width
 
@@ -2084,13 +2140,13 @@ function Session:render()
   set_buffer_options(self.right_num_buf, { modifiable = true })
   set_buffer_options(self.connector_buf, { modifiable = true })
 
-  local left_lines, right_lines = build_display_lines(self)
+  local left_lines, right_lines = self:display_lines()
   local left_topline = get_win_view_topline(self.left_win)
   local right_topline = get_win_view_topline(self.right_win)
   local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
 
   -- Compute connector routing lanes using extracted paths module
-  local paths = paths_mod.compute_paths(self.view.chunks, self.view.line_meta)
+  local paths = self:base_paths()
   local route_paths = self:project_paths_for_viewport(paths)
   local route_plan = paths_mod.plan_routes(route_paths, {
     connector_core_width = self.connector_core_width,
@@ -2828,14 +2884,19 @@ function Session:render()
   end
 
   -- Apply change/add-specific highlighting with intra-line spans
-  for _, meta in ipairs(self.view.line_meta) do
+  self.changed_spans_cache = self.changed_spans_cache or {}
+  for meta_idx, meta in ipairs(self.view.line_meta) do
     local is_change = meta.kind == "change" and meta.left_index and meta.right_index
     local not_filler = not meta.filler_left and not meta.filler_right
     if is_change and not_filler then
       local left_line = self.left.lines and self.left.lines[meta.left_line] or nil
       local right_line = self.right.lines and self.right.lines[meta.right_line] or nil
       if left_line and right_line then
-        local spans = diff_mod.changed_spans(left_line, right_line)
+        local spans = self.changed_spans_cache[meta_idx]
+        if not spans then
+          spans = diff_mod.changed_spans(left_line, right_line)
+          self.changed_spans_cache[meta_idx] = spans
+        end
         local row_l = meta.left_index - 1
         local row_r = meta.right_index - 1
 

@@ -10,6 +10,24 @@ vim.opt.termguicolors = true
 -- Load the plugin
 require("diffbandit").setup({})
 
+do
+  local Session = require("diffbandit.session")
+  if not Session._diffbandit_integration_perf_wrapped then
+    Session._diffbandit_integration_perf_wrapped = true
+    local original_render = Session.render
+    function Session:render(...)
+      self.test_render_count = (self.test_render_count or 0) + 1
+      return original_render(self, ...)
+    end
+
+    local original_request_viewport_rerender = Session.request_viewport_rerender
+    function Session:request_viewport_rerender(...)
+      self.test_viewport_request_count = (self.test_viewport_request_count or 0) + 1
+      return original_request_viewport_rerender(self, ...)
+    end
+  end
+end
+
 function _G.DiffBanditTestSession()
   local sessions = require("diffbandit.state").sessions
   local _, session = next(sessions)
@@ -96,6 +114,39 @@ function _G.DiffBanditTestWriteState(path)
   vim.fn.writefile({ state }, path)
 end
 
+function _G.DiffBanditTestResetPerf()
+  local session = _G.DiffBanditTestSession()
+  if session then
+    session.test_render_count = 0
+    session.test_viewport_request_count = 0
+  end
+end
+
+function _G.DiffBanditTestWritePerfState(path)
+  local session = _G.DiffBanditTestSession()
+  if not session then
+    vim.fn.writefile({ "missing_session" }, path)
+    return
+  end
+  local lines = {
+    string.format("render_count=%d", session.test_render_count or 0),
+    string.format("viewport_request_count=%d", session.test_viewport_request_count or 0),
+    string.format("left_top=%d", topline_for(session.left_win)),
+    string.format("right_top=%d", topline_for(session.right_win)),
+    string.format("left_lines=%d", #(session.left and session.left.lines or {})),
+    string.format("right_lines=%d", #(session.right and session.right.lines or {})),
+  }
+  vim.fn.writefile(lines, path)
+end
+
+function _G.DiffBanditTestRapidScroll(count)
+  count = tonumber(count) or 1
+  local key = vim.api.nvim_replace_termcodes("<C-E>", true, false, true)
+  for _ = 1, count do
+    vim.api.nvim_feedkeys(key, "nx", false)
+  end
+end
+
 function _G.DiffBanditTestWriteGitState(path)
   local session = _G.DiffBanditTestSession()
   if not session then
@@ -178,6 +229,19 @@ vim.api.nvim_create_user_command("DBWriteState", function(opts)
   _G.DiffBanditTestWriteState(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBResetPerf", function()
+  _G.DiffBanditTestResetPerf()
+end, { nargs = 0 })
+
+vim.api.nvim_create_user_command("DBWritePerfState", function(opts)
+  _G.DiffBanditTestWritePerfState(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBRapidScroll", function(opts)
+  _G.DiffBanditTestRapidScroll(opts.fargs[1])
+end, { nargs = 1 })
 
 vim.api.nvim_create_user_command("DBWriteGitState", function(opts)
   _G.DiffBanditTestWriteGitState(opts.fargs[1])

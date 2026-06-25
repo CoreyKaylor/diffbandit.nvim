@@ -113,7 +113,7 @@ local function set_lines(buf, height, width)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 end
 
-function M.render_side(buf, namespace, view, side, line_count, height, cursor_line, current_chunk, config)
+function M.render_side_with_marks(buf, namespace, marks, line_count, height, cursor_line, current_chunk, config)
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then
     return
   end
@@ -127,7 +127,6 @@ function M.render_side(buf, namespace, view, side, line_count, height, cursor_li
     vim.api.nvim_buf_add_highlight(buf, namespace, "DiffBanditOverviewContext", row - 1, 0, -1)
   end
 
-  local marks = M.build_marks(view, side, current_chunk)
   local rows = M.project_marks(marks, line_count, height)
   for row, mark in pairs(rows) do
     local hl = KIND_HIGHLIGHTS[mark.kind]
@@ -146,6 +145,15 @@ function M.render_side(buf, namespace, view, side, line_count, height, cursor_li
       priority = 9000,
     })
   end
+end
+
+function M.render_side(buf, namespace, view, side, line_count, height, cursor_line, current_chunk, config)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+
+  local marks = M.build_marks(view, side, current_chunk)
+  M.render_side_with_marks(buf, namespace, marks, line_count, height, cursor_line, current_chunk, config)
 end
 
 M._private = {

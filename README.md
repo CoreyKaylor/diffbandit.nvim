@@ -268,6 +268,7 @@ require("diffbandit").setup({
   },
   ui = {
     connector_width = 12,
+    scroll_debounce_ms = 16,
     split_blend = 0.3,
     overview = {
       enabled = true,

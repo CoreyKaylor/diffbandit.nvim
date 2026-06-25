@@ -10,6 +10,7 @@ local defaults = {
   ui = {
     connector_width = 12,
     right_number_padding = 2,
+    scroll_debounce_ms = 16,
     split_blend = 0.3,
     status = {
       enabled = true,
