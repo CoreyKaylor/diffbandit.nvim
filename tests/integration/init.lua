@@ -233,6 +233,34 @@ function _G.DiffBanditTestOpenQueuePath(path)
   error("queue path not found: " .. tostring(path))
 end
 
+function _G.DiffBanditTestSelectPanelPath(path)
+  local session = _G.DiffBanditTestSession() or _G.DiffBanditTestPanel()
+  if not session or not session.panel or not session.panel.nav_win then
+    error("missing commit panel")
+  end
+  require("diffbandit.panel").render(session, nil, { refresh_stage_states = true })
+  local panel = session.panel
+  for row_index, row in ipairs(panel.rows or {}) do
+    if row.entry and (row.entry.path == path or row.entry.old_path == path) then
+      vim.api.nvim_set_current_win(panel.nav_win)
+      vim.api.nvim_win_set_cursor(panel.nav_win, { row_index, row.name_col or 0 })
+      return
+    end
+  end
+  error("panel path not found: " .. tostring(path))
+end
+
+function _G.DiffBanditTestRunPanelAction(action_id)
+  local session = _G.DiffBanditTestSession() or _G.DiffBanditTestPanel()
+  if not session then
+    error("missing DiffBandit session")
+  end
+  local ok, err = require("diffbandit.panel").run_file_action(session, action_id, { confirm = false })
+  if not ok then
+    error(tostring(err or "panel action failed"))
+  end
+end
+
 function _G.DiffBanditTestAcceptResolve(side)
   local session = _G.DiffBanditTestSession()
   if not session or type(session.accept) ~= "function" or type(session.resolve) ~= "function" then
@@ -303,6 +331,16 @@ vim.api.nvim_create_user_command("DBOpenQueuePath", function(opts)
   _G.DiffBanditTestOpenQueuePath(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBSelectPanelPath", function(opts)
+  _G.DiffBanditTestSelectPanelPath(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBPanelAction", function(opts)
+  _G.DiffBanditTestRunPanelAction(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1 })
 
 vim.api.nvim_create_user_command("DBAcceptResolve", function(opts)
   _G.DiffBanditTestAcceptResolve(opts.fargs[1])

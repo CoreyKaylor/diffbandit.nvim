@@ -66,6 +66,8 @@ assert_eq(config.git.panel.keys.toggle_amend, "<Space>",
   "Commit panel amend toggle should use the commit-pane normal-mode space key")
 assert_eq(config.git.panel.keys.focus_panel, "C",
   "Git diff document focus-panel key should default to normal-mode C")
+assert_eq(config.git.panel.keys.file_actions, "a",
+  "Commit panel file actions should default to normal-mode a")
 assert_eq(config.git.panel.keys.commit, nil, "Commit panel should commit through :w by default")
 assert_eq(config.ui.overview.enabled, true, "Overview gutter should be enabled by default")
 assert_eq(config.ui.overview.width, 1, "Overview gutter should default to one column")
@@ -1910,6 +1912,113 @@ if vim.fn.executable("git") == 1 then
     assert_eq(ok, true, "Panel file unstage should succeed")
     assert_eq(git_mod.file_stage_state(repo, queue.entries[1]), "unstaged",
       "Panel file state should return to unstaged after whole-file unstage")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "tracked.txt", { "base" })
+    commit_baseline(repo)
+    write_repo_file(repo, "tracked.txt", { "staged" })
+    git_test_command({ "add", "tracked.txt" }, repo)
+    write_repo_file(repo, "tracked.txt", { "worktree" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "tracked.txt" } }, config.git)))
+    local ok, err = git_mod.discard_worktree_file(repo, queue.entries[1])
+    assert_eq(ok, true, "Panel discard file action should succeed")
+    assert_eq(err, nil, "Panel discard file action should not error")
+    assert_eq(table.concat(read_file(repo .. "/tracked.txt"), "\n") .. "\n", "staged\n",
+      "Panel discard should restore the worktree to the staged index content")
+    assert_eq(git_mod.read_index(repo, "tracked.txt"), "staged\n",
+      "Panel discard should preserve staged content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "restore_me.txt", { "base" })
+    commit_baseline(repo)
+    assert(os.remove(repo .. "/restore_me.txt"))
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "restore_me.txt" } }, config.git)))
+    local ok, err = git_mod.discard_worktree_file(repo, queue.entries[1])
+    assert_eq(ok, true, "Panel restore deleted file action should succeed")
+    assert_eq(err, nil, "Panel restore deleted file action should not error")
+    assert_eq(table.concat(read_file(repo .. "/restore_me.txt"), "\n") .. "\n", "base\n",
+      "Panel restore deleted file action should restore index content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "keep.txt", { "base" })
+    commit_baseline(repo)
+    write_repo_file(repo, "scratch.log", { "temporary" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "scratch.log" } }, config.git)))
+    assert_eq(queue.entries[1].untracked, true, "Panel delete test should load an untracked file")
+    local ok, err = git_mod.delete_untracked_file(repo, queue.entries[1])
+    assert_eq(ok, true, "Panel delete untracked action should succeed")
+    assert_eq(err, nil, "Panel delete untracked action should not error")
+    assert_eq(vim.fn.filereadable(repo .. "/scratch.log"), 0,
+      "Panel delete untracked action should remove the file")
+
+    ok, err = git_mod.delete_untracked_file(repo, { path = "keep.txt" })
+    assert_eq(ok, false, "Panel delete untracked action should refuse tracked files")
+    assert_eq(err, "refusing to delete a tracked file",
+      "Panel delete untracked action should explain tracked file refusal")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "tracked.txt", { "base" })
+    commit_baseline(repo)
+
+    local ok, err = git_mod.append_gitignore(repo, "/logs/*.log")
+    assert_eq(ok, true, "Panel ignore action should create .gitignore")
+    assert_eq(err, nil, "Panel ignore action should not error")
+    ok, err = git_mod.append_gitignore(repo, "/logs/*.log")
+    assert_eq(ok, true, "Panel ignore action should allow an existing pattern")
+    assert_eq(err, nil, "Panel ignore duplicate action should not error")
+    local lines = read_file(repo .. "/.gitignore")
+    assert_eq(#lines, 1, "Panel ignore action should avoid duplicate .gitignore entries")
+    assert_eq(lines[1], "/logs/*.log", "Panel ignore action should write the requested pattern")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "tracked.txt", { "base" })
+    commit_baseline(repo)
+    write_repo_file(repo, "logs/app.log", { "temporary" })
+    write_repo_file(repo, "tracked.txt", { "changed" })
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all" }, config.git)))
+    local by_path = {}
+    for index, entry in ipairs(queue.entries) do
+      by_path[entry.path] = { entry = entry, index = index }
+    end
+    local session = {
+      file_queue = queue,
+      panel = { stage_states = git_mod.file_stage_states(repo, queue.entries, queue.opts) },
+    }
+    local untracked_actions = panel_mod.file_actions_for_entry(session, by_path["logs/app.log"].entry,
+      session.panel.stage_states[by_path["logs/app.log"].index])
+    local action_ids = {}
+    for _, action in ipairs(untracked_actions) do
+      action_ids[action.id] = true
+    end
+    assert_eq(action_ids.stage, true, "Panel untracked action list should include stage")
+    assert_eq(action_ids.delete_untracked, true, "Panel untracked action list should include delete")
+    assert_eq(action_ids["ignore:/logs/app.log"], true, "Panel untracked action list should include exact ignore")
+    assert_eq(action_ids["ignore:*.log"], true, "Panel untracked action list should include extension ignore")
+    assert_eq(action_ids["ignore:/logs/"], true, "Panel untracked action list should include parent directory ignore")
+
+    local tracked_actions = panel_mod.file_actions_for_entry(session, by_path["tracked.txt"].entry,
+      session.panel.stage_states[by_path["tracked.txt"].index])
+    action_ids = {}
+    for _, action in ipairs(tracked_actions) do
+      action_ids[action.id] = true
+    end
+    assert_eq(action_ids.stage, true, "Panel tracked action list should include stage")
+    assert_eq(action_ids.discard_worktree, true, "Panel tracked action list should include discard")
+    assert_eq(action_ids.delete_untracked, nil, "Panel tracked action list should not include delete untracked")
   end
 
   do

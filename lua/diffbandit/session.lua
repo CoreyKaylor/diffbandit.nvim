@@ -3496,7 +3496,8 @@ function Session:refresh_git_queue(preferred_path, refresh_opts)
   refresh_opts = refresh_opts or {}
   return panel_mod.refresh_git_queue(self, {
     preferred_path = preferred_path,
-    default_index = 1,
+    default_index = refresh_opts.default_index or 1,
+    fallback_index = refresh_opts.fallback_index,
     empty_index = 1,
     on_no_changes = function(session)
       session:replace_sources({

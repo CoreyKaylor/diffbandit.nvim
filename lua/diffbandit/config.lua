@@ -93,6 +93,7 @@ local defaults = {
         focus_diff = "<CR>",
         focus_panel = "C",
         focus_commit = "cc",
+        file_actions = "a",
         toggle_amend = "<Space>",
         refresh = "R",
         close = "q",

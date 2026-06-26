@@ -153,10 +153,12 @@ function CommitPanel:close()
   state.unregister_panel(self.tabpage)
 end
 
-function CommitPanel:refresh_git_queue(preferred_path)
+function CommitPanel:refresh_git_queue(preferred_path, refresh_opts)
+  refresh_opts = refresh_opts or {}
   return panel_mod.refresh_git_queue(self, {
     preferred_path = preferred_path,
-    default_index = 0,
+    default_index = refresh_opts.default_index or 0,
+    fallback_index = refresh_opts.fallback_index,
     empty_index = 0,
   })
 end

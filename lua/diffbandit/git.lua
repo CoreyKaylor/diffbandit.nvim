@@ -1359,6 +1359,20 @@ local function entry_paths(entry)
   return paths
 end
 
+local function untracked_path_set(root, path)
+  local entries, err = list_untracked(root, path and { path } or {})
+  if not entries then
+    return nil, err
+  end
+  local set = {}
+  for _, entry in ipairs(entries) do
+    if entry.path then
+      set[entry.path] = true
+    end
+  end
+  return set, nil
+end
+
 function M.stage_file(root, entry)
   if not root or not entry or not entry.path then
     return false, "no Git file entry to stage"
@@ -1400,6 +1414,77 @@ function M.toggle_file_stage(root, entry, opts)
     return M.unstage_file(root, entry, opts)
   end
   return M.stage_file(root, entry)
+end
+
+function M.discard_worktree_file(root, entry)
+  if not root or not entry or not entry.path then
+    return false, "no Git file entry to discard"
+  end
+  if entry.untracked then
+    return false, "untracked files cannot be discarded from the index"
+  end
+  if entry.old_path and entry.old_path ~= entry.path then
+    return false, "renamed files cannot be discarded from the commit panel"
+  end
+  local _, err = git_output(root, { "restore", "--worktree", "--", entry.path })
+  return err == nil, err
+end
+
+function M.delete_untracked_file(root, entry)
+  if not root or not entry or not entry.path then
+    return false, "no untracked file entry to delete"
+  end
+  if not entry.untracked then
+    return false, "refusing to delete a tracked file"
+  end
+  local untracked, err = untracked_path_set(root, entry.path)
+  if not untracked then
+    return false, err
+  end
+  if not untracked[entry.path] then
+    return false, "refusing to delete a file that is no longer untracked"
+  end
+  local full_path = abs_path(root, entry.path)
+  local uv = vim.uv or vim.loop
+  local stat = uv.fs_lstat(full_path)
+  if not stat then
+    return true, nil
+  end
+  if stat.type == "directory" then
+    return false, "refusing to recursively delete an untracked directory"
+  end
+  local ok, remove_err = os.remove(full_path)
+  return ok == true, remove_err
+end
+
+function M.append_gitignore(root, pattern)
+  if not root or root == "" then
+    return false, "no Git root configured"
+  end
+  pattern = tostring(pattern or "")
+  if pattern == "" then
+    return false, "no .gitignore pattern supplied"
+  end
+  local path = abs_path(root, ".gitignore")
+  local lines = {}
+  if vim.fn.filereadable(path) == 1 then
+    local ok, existing = pcall(vim.fn.readfile, path)
+    if not ok then
+      return false, tostring(existing)
+    end
+    lines = existing
+  end
+  for _, line in ipairs(lines) do
+    if line == pattern then
+      return true, nil
+    end
+  end
+  lines[#lines + 1] = pattern
+  local ok, write_err = pcall(vim.fn.writefile, lines, path)
+  if not ok then
+    return false, tostring(write_err)
+  end
+  return true, nil
 end
 
 function M.toggle_file_stage_async(root, entry, opts, state, callback)

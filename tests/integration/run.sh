@@ -1260,6 +1260,99 @@ EOF
     assert_git_diff_contains "$repo" "worktree" "alpha.txt" "alpha changed" "panel commit should leave unstaged alpha change"
 }
 
+run_git_panel_file_actions_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/panel-file-actions-repo"
+    local initial_state="$case_dir/panel-file-actions-initial.state"
+    local ignore_state="$case_dir/panel-file-actions-ignore.state"
+    local discard_state="$case_dir/panel-file-actions-discard.state"
+    local delete_state="$case_dir/panel-file-actions-delete.state"
+
+    echo "  phase: git-panel-file-actions"
+    rm -rf "$repo"
+    mkdir -p "$repo/logs"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/tracked.txt" <<'EOF'
+base
+EOF
+    cat > "$repo/deleted.txt" <<'EOF'
+deleted base
+EOF
+    git -C "$repo" add tracked.txt deleted.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    cat > "$repo/tracked.txt" <<'EOF'
+staged
+EOF
+    git -C "$repo" add tracked.txt
+    cat > "$repo/tracked.txt" <<'EOF'
+worktree
+EOF
+    rm "$repo/deleted.txt"
+    cat > "$repo/logs/app.log" <<'EOF'
+temporary log
+EOF
+    cat > "$repo/remove.tmp" <<'EOF'
+temporary remove
+EOF
+
+    start_git_session "$repo" 24
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditCommitPanel" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $initial_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBSelectPanelPath logs/app.log" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBPanelAction ignore:/logs/app.log" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $ignore_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBSelectPanelPath tracked.txt" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBPanelAction discard_worktree" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $discard_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBSelectPanelPath remove.tmp" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBPanelAction delete_untracked" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $delete_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    assert_git_state_contains "$initial_state" "panel_visible=true" "panel file actions initial panel visible"
+    assert_git_state_contains "$ignore_state" "focus=panel" "ignore action should keep panel focus"
+    if grep -q "selected_path=logs/app.log" "$ignore_state" || grep -qx "selected_path=" "$ignore_state"; then
+        echo "Git panel file actions failed: ignore action should select a remaining file row"
+        cat "$ignore_state"
+        exit 1
+    fi
+    if ! grep -qx "/logs/app.log" "$repo/.gitignore"; then
+        echo "Git panel file actions failed: .gitignore missing exact path"
+        cat "$repo/.gitignore" 2>/dev/null || true
+        exit 1
+    fi
+    if git -C "$repo" status --porcelain -- logs/app.log | grep -q .; then
+        echo "Git panel file actions failed: ignored file should disappear from status"
+        git -C "$repo" status --porcelain -- logs/app.log
+        exit 1
+    fi
+    if [[ "$(cat "$repo/tracked.txt")" != "staged" ]]; then
+        echo "Git panel file actions failed: discard should restore worktree to staged content"
+        cat "$repo/tracked.txt"
+        exit 1
+    fi
+    assert_git_diff_contains "$repo" "cached" "tracked.txt" "staged" "discard action should preserve staged content"
+    assert_git_state_contains "$discard_state" "focus=panel" "discard action should keep panel focus"
+    if [[ -e "$repo/remove.tmp" ]]; then
+        echo "Git panel file actions failed: delete action should remove untracked file"
+        exit 1
+    fi
+    assert_git_state_contains "$delete_state" "focus=panel" "delete action should keep panel focus"
+}
+
 run_git_test() {
     local test_name="git"
     local case_dir="$CAPTURE_ROOT/$test_name"
@@ -1284,6 +1377,7 @@ run_git_test() {
     run_git_staged_added_hunk_toggle_test
     run_git_mixed_staged_added_hunk_toggle_test
     run_git_commit_panel_test
+    run_git_panel_file_actions_test
     run_git_live_buffer_test
 
     echo "  PASSED: $test_name"

@@ -179,6 +179,7 @@ opened by `:DiffBanditGit`.
 | `<CR>` | Focus the diff for the selected file |
 | `]c` / `[c` | Navigate hunks in the selected file preview |
 | `<Space>` | Toggle staged state for the selected file |
+| `a` | Open file actions for the selected file |
 | `cc` | Focus the commit message window |
 | `<Space>` in the commit message window | Toggle amend mode |
 | `:w` in the commit message window | Commit staged changes |
@@ -189,6 +190,10 @@ The panel validates empty commit messages and missing staged changes before
 committing, and rejects commits while merge conflicts remain unresolved. In
 amend mode, the panel compares against the previous commit so the file state
 reflects what the amended commit would contain.
+
+File actions include staging, unstaging, discarding unstaged tracked changes,
+restoring deleted tracked files, deleting untracked files, and adding useful
+`.gitignore` patterns for untracked files.
 
 ## Merge Conflicts
 
@@ -292,6 +297,7 @@ require("diffbandit").setup({
         focus_diff = "<CR>",
         focus_panel = "C",
         focus_commit = "cc",
+        file_actions = "a",
         toggle_amend = "<Space>",
         refresh = "R",
         close = "q",

@@ -218,6 +218,14 @@ local function first_file_row(rows)
   return 1
 end
 
+local function clamp_file_index(entries, index)
+  local count = #(entries or {})
+  if count == 0 then
+    return 0
+  end
+  return math.max(1, math.min(index or 1, count))
+end
+
 local function find_file_row(rows, entry_index)
   for row_index, row in ipairs(rows or {}) do
     if row.type == "file" and row.index == entry_index then
@@ -361,13 +369,18 @@ function M.refresh_git_queue(session, opts)
   if target_index == nil then
     target_index = next_queue.index or 1
   end
+  local found_preferred = false
   if preferred_path then
     for index, entry in ipairs(next_queue.entries or {}) do
       if entry.path == preferred_path or entry.old_path == preferred_path then
         target_index = index
+        found_preferred = true
         break
       end
     end
+  end
+  if preferred_path and not found_preferred and opts.fallback_index then
+    target_index = clamp_file_index(next_queue.entries, opts.fallback_index)
   end
   next_queue.index = target_index
   session.file_queue = next_queue
@@ -381,6 +394,208 @@ function M.refresh_git_queue(session, opts)
     })
   end
   return true, nil
+end
+
+local function escape_gitignore_path(path)
+  path = tostring(path or ""):gsub("\\", "/")
+  path = path:gsub("([%*%?%[%]])", "\\%1")
+  if path:sub(1, 1) == "#" or path:sub(1, 1) == "!" then
+    path = "\\" .. path
+  end
+  return path
+end
+
+local function ignore_patterns_for(entry)
+  local path = entry and entry.path or ""
+  if path == "" then
+    return {}
+  end
+  local patterns = {
+    { kind = "ignore", pattern = "/" .. escape_gitignore_path(path), label = "Ignore exact path" },
+  }
+  local name = filename(path)
+  local extension = name:match("^.+(%.[^%.%/]+)$")
+  if extension and extension ~= "" then
+    patterns[#patterns + 1] = {
+      kind = "ignore",
+      pattern = "*" .. escape_gitignore_path(extension),
+      label = "Ignore *" .. extension,
+    }
+  end
+  local parent = dirname(path)
+  if parent ~= "" then
+    patterns[#patterns + 1] = {
+      kind = "ignore",
+      pattern = "/" .. escape_gitignore_path(parent) .. "/",
+      label = "Ignore " .. parent .. "/",
+    }
+  end
+  return patterns
+end
+
+local function file_actions_for_entry(session, entry, state)
+  if not entry or not entry.path then
+    return {}
+  end
+  local actions = {}
+  local kind = entry_kind(entry)
+  local can_stage = kind ~= "unmerged"
+  if can_stage then
+    if state == "staged" or state == "partial" then
+      actions[#actions + 1] = { id = "unstage", label = "Unstage file", action = "unstage" }
+    else
+      actions[#actions + 1] = { id = "stage", label = "Stage file", action = "stage" }
+    end
+  end
+  if entry.untracked then
+    actions[#actions + 1] = {
+      id = "delete_untracked",
+      label = "Delete untracked file",
+      action = "delete_untracked",
+      confirm = "Delete untracked file " .. tostring(entry.path) .. "?",
+    }
+    for _, pattern in ipairs(ignore_patterns_for(entry)) do
+      actions[#actions + 1] = {
+        id = "ignore:" .. pattern.pattern,
+        label = pattern.label,
+        action = "ignore",
+        pattern = pattern.pattern,
+      }
+    end
+    return actions
+  end
+  if (state == "unstaged" or state == "partial")
+      and kind ~= "unmerged"
+      and kind ~= "renamed"
+      and kind ~= "copied"
+      and kind ~= "typechange"
+      and entry.actions_enabled ~= false then
+    local label = kind == "deleted" and "Restore deleted file" or "Discard unstaged changes"
+    actions[#actions + 1] = {
+      id = "discard_worktree",
+      label = label,
+      action = "discard_worktree",
+      confirm = label .. " for " .. tostring(entry.path) .. "?",
+    }
+  end
+  return actions
+end
+
+function M.file_actions_for_entry(session, entry, state)
+  state = state or git.file_stage_state(((session or {}).file_queue or {}).root, entry, ((session or {}).file_queue or {}).opts or {})
+  return file_actions_for_entry(session, entry, state)
+end
+
+local function find_action(actions, action_id)
+  if type(action_id) == "table" then
+    return action_id
+  end
+  for _, action in ipairs(actions or {}) do
+    if action.id == action_id or action.action == action_id then
+      return action
+    end
+  end
+  return nil
+end
+
+local function confirm_file_action(action, opts)
+  if opts and opts.confirm == false then
+    return true
+  end
+  if not action or not action.confirm then
+    return true
+  end
+  return vim.fn.confirm("DiffBandit: " .. action.confirm, "&Yes\n&No", 2) == 1
+end
+
+local function refresh_after_file_action(session, entry, row_index)
+  if type(session.refresh_git_queue) ~= "function" then
+    return
+  end
+  session:refresh_git_queue(entry and entry.path, {
+    fallback_index = row_index,
+    preserve_panel_selection = row_index,
+  })
+  M.focus_nav(session)
+end
+
+local function execute_file_action(session, row, action, opts)
+  opts = opts or {}
+  if not row or row.type ~= "file" or not row.entry then
+    return false, "no file selected"
+  end
+  local queue = session.file_queue or {}
+  local entry = row.entry
+  local ok, err
+  if action.action == "stage" then
+    ok, err = git.stage_file(queue.root, entry)
+  elseif action.action == "unstage" then
+    ok, err = git.unstage_file(queue.root, entry, queue.opts or {})
+  elseif action.action == "discard_worktree" then
+    if not confirm_file_action(action, opts) then
+      return false, "cancelled"
+    end
+    ok, err = git.discard_worktree_file(queue.root, entry)
+  elseif action.action == "delete_untracked" then
+    if not confirm_file_action(action, opts) then
+      return false, "cancelled"
+    end
+    ok, err = git.delete_untracked_file(queue.root, entry)
+  elseif action.action == "ignore" then
+    ok, err = git.append_gitignore(queue.root, action.pattern)
+  else
+    return false, "unsupported file action"
+  end
+  if not ok then
+    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+    return false, err
+  end
+  refresh_after_file_action(session, entry, row.index)
+  return true, nil
+end
+
+function M.run_file_action(session, action_id, opts)
+  local row = selected_row(session)
+  if not row or row.type ~= "file" then
+    vim.notify("DiffBandit: no file selected", vim.log.levels.INFO)
+    return false, "no file selected"
+  end
+  local panel = session.panel or {}
+  local state = (panel.stage_states or {})[row.index]
+    or git.file_stage_state((session.file_queue or {}).root, row.entry, (session.file_queue or {}).opts or {})
+  local actions = file_actions_for_entry(session, row.entry, state)
+  local action = find_action(actions, action_id)
+  if not action then
+    vim.notify("DiffBandit: file action is not available for " .. tostring(row.entry.path), vim.log.levels.INFO)
+    return false, "file action is not available"
+  end
+  return execute_file_action(session, row, action, opts)
+end
+
+function M.open_file_actions(session)
+  local row = selected_row(session)
+  if not row or row.type ~= "file" then
+    vim.notify("DiffBandit: no file selected", vim.log.levels.INFO)
+    return
+  end
+  local panel = session.panel or {}
+  local state = (panel.stage_states or {})[row.index]
+    or git.file_stage_state((session.file_queue or {}).root, row.entry, (session.file_queue or {}).opts or {})
+  local actions = file_actions_for_entry(session, row.entry, state)
+  if #actions == 0 then
+    vim.notify("DiffBandit: no file actions available for " .. tostring(row.entry.path), vim.log.levels.INFO)
+    return
+  end
+  vim.ui.select(actions, {
+    prompt = "DiffBandit file action",
+    format_item = function(action)
+      return action.label
+    end,
+  }, function(action)
+    if action then
+      execute_file_action(session, row, action, {})
+    end
+  end)
 end
 
 function M.render_nav(session, preferred_entry_index, opts)
@@ -706,6 +921,11 @@ function M.setup_keymaps(session)
   if keys.focus_commit then
     vim.keymap.set("n", keys.focus_commit, function()
       M.focus_commit(session)
+    end, opts)
+  end
+  if keys.file_actions then
+    vim.keymap.set("n", keys.file_actions, function()
+      M.open_file_actions(session)
     end, opts)
   end
   vim.keymap.set("n", "]c", function()
