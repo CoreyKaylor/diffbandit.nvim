@@ -40,6 +40,16 @@ local function to_text(lines)
   return table.concat(lines, "\n") .. "\n"
 end
 
+local function test_source(label, lines)
+  return {
+    label = label,
+    path = label,
+    lines = lines,
+    text = to_text(lines),
+    filetype = "",
+  }
+end
+
 local function assert_eq(a, b, msg)
   if a ~= b then
     error((msg or "assertion failed") .. string.format("\nExpected: %s\nActual:   %s", tostring(b), tostring(a)))
@@ -62,6 +72,109 @@ assert_eq(config.ui.overview.width, 1, "Overview gutter should default to one co
 assert_eq(config.ui.scroll_debounce_ms, 16, "Viewport scroll rerenders should debounce by default")
 assert_eq(config.merge.result_initial_content, "base", "Merge result should initialize from the base by default")
 assert_eq(config.merge.keys.accept_local, ">>", "Merge accept-local key should default to >>")
+
+do
+  local original_showtabline = vim.o.showtabline
+  for _, value in ipairs({ 0, 1, 2 }) do
+    vim.o.showtabline = value
+    local session = assert((Session.start({
+      left = test_source("tabline-left.txt", { "one" }),
+      right = test_source("tabline-right.txt", { "two" }),
+    }, config, {})))
+    assert_eq(vim.o.showtabline, value,
+      "Starting a diff session should not mutate global showtabline=" .. tostring(value))
+    session:close()
+    assert_eq(vim.o.showtabline, value,
+      "Closing a diff session should preserve global showtabline=" .. tostring(value))
+  end
+  vim.o.showtabline = original_showtabline
+end
+
+do
+  local original_list = vim.o.list
+  local original_listchars = vim.o.listchars
+  vim.o.list = true
+  vim.o.listchars = "trail:·"
+
+  local function win_list(win)
+    return vim.api.nvim_get_option_value("list", { scope = "local", win = win })
+  end
+
+  local session = assert((Session.start({
+    left = test_source("list-left.txt", { "one  " }),
+    right = test_source("list-right.txt", { "two  " }),
+  }, config, {
+    panel = true,
+    queue = { entries = {} },
+  })))
+  assert_eq(win_list(session.left_win), true,
+    "Diff source panes should retain user list rendering")
+  assert_eq(win_list(session.right_win), true,
+    "Diff target panes should retain user list rendering")
+  for _, win in ipairs({
+    session.left_overview_win,
+    session.left_num_win,
+    session.connector_win,
+    session.right_num_win,
+    session.right_overview_win,
+    session.left_header_win,
+    session.center_header_win,
+    session.right_header_win,
+    session.panel and session.panel.nav_win,
+    session.panel and session.panel.commit_win,
+  }) do
+    if win then
+      assert_eq(win_list(win), false,
+        "Diff visual chrome panes should suppress listchars")
+    end
+  end
+  session:close()
+
+  local merge_session = assert((merge_mod.start({
+    root = root,
+    path = "merge-list.txt",
+    base_lines = { "base  " },
+    local_lines = { "local  " },
+    remote_lines = { "remote  " },
+    result_lines = { "base  " },
+    conflicts = {},
+    non_conflicting = {},
+    local_hunks = {},
+    remote_hunks = {},
+  }, config, {
+    panel = true,
+    queue = { entries = {} },
+  })))
+  assert_eq(win_list(merge_session.local_win), true,
+    "Merge local pane should retain user list rendering")
+  assert_eq(win_list(merge_session.result_win), true,
+    "Merge result pane should retain user list rendering")
+  assert_eq(win_list(merge_session.remote_win), true,
+    "Merge remote pane should retain user list rendering")
+  for _, win in ipairs({
+    merge_session.local_num_win,
+    merge_session.local_result_connector_win,
+    merge_session.result_left_num_win,
+    merge_session.result_right_num_win,
+    merge_session.result_remote_connector_win,
+    merge_session.remote_num_win,
+    merge_session.local_header_win,
+    merge_session.result_header_win,
+    merge_session.remote_header_win,
+    merge_session.panel and merge_session.panel.nav_win,
+    merge_session.panel and merge_session.panel.commit_win,
+  }) do
+    if win then
+      assert_eq(win_list(win), false,
+        "Merge visual chrome panes should suppress listchars")
+    end
+  end
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = merge_session.result_buf })
+  merge_session:close()
+
+  vim.o.list = original_list
+  vim.o.listchars = original_listchars
+end
 
 local function get_hl(name)
   return vim.api.nvim_get_hl(0, { name = name, link = false })

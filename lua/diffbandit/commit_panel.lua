@@ -113,6 +113,7 @@ function CommitPanel:show_commit_panel()
     set_window_options(win, {
       number = false,
       relativenumber = false,
+      list = false,
       cursorline = true,
       wrap = false,
       signcolumn = "no",

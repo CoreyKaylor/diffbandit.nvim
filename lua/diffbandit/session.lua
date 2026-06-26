@@ -648,6 +648,7 @@ function Session:open_layout()
       set_window_options(win, {
         number = false,
         relativenumber = false,
+        list = false,
         cursorline = false,
         wrap = false,
         signcolumn = "no",
@@ -662,6 +663,7 @@ function Session:open_layout()
   set_window_options(left_num_win, {
     number = false,
     relativenumber = false,
+    list = false,
     cursorline = false,
     wrap = false,
     signcolumn = "no",
@@ -673,6 +675,7 @@ function Session:open_layout()
   set_window_options(connector_win, {
     number = false,
     relativenumber = false,
+    list = false,
     cursorline = false,
     wrap = false,
     signcolumn = "no",
@@ -684,6 +687,7 @@ function Session:open_layout()
   set_window_options(right_num_win, {
     number = false,
     relativenumber = false,
+    list = false,
     cursorline = false,
     wrap = false,
     signcolumn = "no",
@@ -706,6 +710,7 @@ function Session:open_layout()
       set_window_options(win, {
         number = false,
         relativenumber = false,
+        list = false,
         cursorline = false,
         wrap = false,
         signcolumn = "no",
@@ -726,6 +731,7 @@ function Session:open_layout()
         set_window_options(win, {
           number = false,
           relativenumber = false,
+          list = false,
           cursorline = true,
           wrap = false,
           signcolumn = "no",
@@ -782,7 +788,6 @@ function Session:open_layout()
   local right_name = self.right.label or self.right.path or ""
   self.title = string.format("DiffBandit: %s ↔ %s", left_name, right_name)
   vim.api.nvim_tabpage_set_var(self.tabpage, "diffbandit_title", self.title)
-  vim.api.nvim_set_option_value("showtabline", 2, { scope = "global" })
 end
 
 function Session:resize_layout()
@@ -3654,6 +3659,7 @@ function Session:show_commit_panel(opts)
     set_window_options(win, {
       number = false,
       relativenumber = false,
+      list = false,
       cursorline = true,
       wrap = false,
       signcolumn = "no",

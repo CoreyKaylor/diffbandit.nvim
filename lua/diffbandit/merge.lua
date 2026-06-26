@@ -542,6 +542,7 @@ function Merge:configure_windows()
       set_win_options(win, {
         number = false,
         relativenumber = false,
+        list = false,
         signcolumn = "no",
         foldcolumn = "0",
         wrap = false,
@@ -556,6 +557,7 @@ function Merge:configure_windows()
       set_win_options(win, {
         number = false,
         relativenumber = false,
+        list = false,
         signcolumn = "no",
         foldcolumn = "0",
         wrap = false,
@@ -599,6 +601,7 @@ function Merge:configure_windows()
         set_win_options(win, {
           number = false,
           relativenumber = false,
+          list = false,
           signcolumn = "no",
           foldcolumn = "0",
           wrap = false,

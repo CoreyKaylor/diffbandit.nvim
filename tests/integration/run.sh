@@ -2,7 +2,7 @@
 # Integration tests for diffbandit.nvim using tmux
 # Usage: ./run.sh [test_name]
 #   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'dense-mixed',
-#              'theme-default', 'comprehensive',
+#              'theme-default', 'comprehensive', 'listchars',
 #              'navigation', 'git', 'git-merge', 'git-scroll-perf',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
@@ -263,6 +263,45 @@ run_scroll_test() {
     esac
 
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    echo "  PASSED: $test_name"
+    echo "  Captures: $case_dir"
+}
+
+run_listchars_test() {
+    local test_name="listchars"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+    local left_file="$case_dir/left.txt"
+    local right_file="$case_dir/right.txt"
+    local plain_capture="$case_dir/capture.txt"
+
+    echo "Running integration test: $test_name"
+    rm -rf "$case_dir"
+    mkdir -p "$case_dir"
+    printf "same  \nleft\n" > "$left_file"
+    printf "same  \nright\n" > "$right_file"
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 24
+    start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":set list listchars=trail:·" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
+    sleep 2
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    if ! grep -q "same··" "$plain_capture"; then
+        echo "Listchars test failed: source panes did not retain trailing-space markers"
+        cat "$plain_capture"
+        exit 1
+    fi
+    if grep -q "····" "$plain_capture"; then
+        echo "Listchars test failed: connector or gutter panes rendered trailing-space markers"
+        cat "$plain_capture"
+        exit 1
+    fi
 
     echo "  PASSED: $test_name"
     echo "  Captures: $case_dir"
@@ -1482,6 +1521,9 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
             "$PROJECT_ROOT/tests/files/right_comprehensive.txt"
         ;;
+    listchars)
+        run_listchars_test
+        ;;
     navigation)
         run_navigation_test
         ;;
@@ -1548,6 +1590,8 @@ case "$TEST_TO_RUN" in
             "$PROJECT_ROOT/tests/files/left_comprehensive.txt" \
             "$PROJECT_ROOT/tests/files/right_comprehensive.txt"
 
+        run_listchars_test
+
         run_navigation_test
 
         run_git_test
@@ -1559,7 +1603,7 @@ case "$TEST_TO_RUN" in
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|git|git-merge|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|listchars|navigation|git|git-merge|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac
