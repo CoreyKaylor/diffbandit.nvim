@@ -803,10 +803,10 @@ function Merge:build_status_lines()
     modified_text(self.result_buf),
   }
   return {
-    left = table.concat({ local_label, "local/current", self.path or "" }, "  "),
+    left = table.concat({ "local/current", local_label, self.path or "" }, "  "),
     result = table.concat(result_parts, "  "),
     result_action = self:selection_summary(),
-    remote = table.concat({ operation .. " " .. remote_label, "remote/incoming", self.path or "" }, "  "),
+    remote = table.concat({ "remote/incoming", operation .. " " .. remote_label, self.path or "" }, "  "),
   }
 end
 
