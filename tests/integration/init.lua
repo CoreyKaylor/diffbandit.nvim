@@ -213,6 +213,52 @@ function _G.DiffBanditTestWritePanelState(path)
   vim.fn.writefile(lines, path)
 end
 
+function _G.DiffBanditTestOpenQueuePath(path)
+  local session = _G.DiffBanditTestSession() or _G.DiffBanditTestPanel()
+  if not session or not session.file_queue then
+    error("missing DiffBandit queue")
+  end
+  for index, entry in ipairs(session.file_queue.entries or {}) do
+    if entry.path == path or entry.old_path == path then
+      if (entry.status == "U" or entry.kind == "unmerged") and type(session.open_merge_file) == "function" then
+        assert(session:open_merge_file(index, { preserve_focus = true }))
+      elseif type(session.goto_queue_file) == "function" then
+        assert(session:goto_queue_file(index, { preserve_focus = true }))
+      else
+        error("queue session cannot open " .. tostring(path))
+      end
+      return
+    end
+  end
+  error("queue path not found: " .. tostring(path))
+end
+
+function _G.DiffBanditTestAcceptResolve(side)
+  local session = _G.DiffBanditTestSession()
+  if not session or type(session.accept) ~= "function" or type(session.resolve) ~= "function" then
+    error("missing merge session")
+  end
+  assert(session:accept(side))
+  assert(session:resolve())
+end
+
+function _G.DiffBanditTestWritePanelCommit(message)
+  local session = _G.DiffBanditTestSession() or _G.DiffBanditTestPanel()
+  if not session or not session.panel or not session.panel.commit_buf then
+    error("missing commit panel")
+  end
+  local panel = session.panel
+  local lines = vim.split(message or "", "\n", { plain = true })
+  if #lines == 0 then
+    lines = { "" }
+  end
+  panel.message_lines = lines
+  panel.message_initialized = false
+  require("diffbandit.panel").render_commit(session)
+  vim.api.nvim_set_current_win(panel.commit_win)
+  vim.cmd("write")
+end
+
 vim.api.nvim_create_user_command("DBViewport", function(opts)
   local left_topline = tonumber(opts.fargs[1])
   local right_topline = tonumber(opts.fargs[2])
@@ -252,3 +298,18 @@ vim.api.nvim_create_user_command("DBWritePanelState", function(opts)
   _G.DiffBanditTestWritePanelState(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBOpenQueuePath", function(opts)
+  _G.DiffBanditTestOpenQueuePath(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBAcceptResolve", function(opts)
+  _G.DiffBanditTestAcceptResolve(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1 })
+
+vim.api.nvim_create_user_command("DBPanelCommit", function(opts)
+  _G.DiffBanditTestWritePanelCommit(opts.args)
+  vim.cmd("redraw!")
+end, { nargs = "*" })

@@ -258,6 +258,10 @@ local function relpath(root, path)
   return normalize_path(path)
 end
 
+function M.relpath(root, path)
+  return relpath(root, path)
+end
+
 local function append_pathspecs(args, pathspecs)
   args[#args + 1] = "--"
   for _, pathspec in ipairs(pathspecs or {}) do
@@ -1035,6 +1039,153 @@ function M.read_head(root, path, base)
   return read_blob(root, (base or "HEAD") .. ":" .. path)
 end
 
+function M.read_conflict_stage(root, path, stage)
+  stage = tonumber(stage)
+  if not stage or stage < 1 or stage > 3 then
+    return nil, "invalid conflict stage: " .. tostring(stage)
+  end
+  return read_blob(root, ":" .. tostring(stage) .. ":" .. path)
+end
+
+function M.conflict_stages(root, path)
+  local base = M.read_conflict_stage(root, path, 1)
+  local local_text = M.read_conflict_stage(root, path, 2)
+  local remote_text = M.read_conflict_stage(root, path, 3)
+  if not local_text and not remote_text then
+    return nil, "no unmerged stages for " .. tostring(path)
+  end
+  return {
+    base = base,
+    local_text = local_text,
+    remote = remote_text,
+    has_base = base ~= nil,
+    has_local = local_text ~= nil,
+    has_remote = remote_text ~= nil,
+  }, nil
+end
+
+local function first_line(text)
+  if not text or text == "" then
+    return nil
+  end
+  return vim.split(text, "\n", { plain = true })[1]
+end
+
+local function git_path(root, name)
+  local output = git_output(root, { "rev-parse", "--git-path", name })
+  output = output and vim.trim(output) or ""
+  if output == "" then
+    return nil
+  end
+  if is_absolute(output) then
+    return output
+  end
+  return abs_path(root, output)
+end
+
+local function read_git_path(root, name)
+  local path = git_path(root, name)
+  if not path then
+    return nil
+  end
+  local ok, lines = pcall(vim.fn.readfile, path)
+  if not ok or not lines or not lines[1] then
+    return nil
+  end
+  return lines[1]
+end
+
+local function short_commit(root, rev)
+  local output = git_output(root, { "rev-parse", "--short", rev })
+  output = output and vim.trim(output) or ""
+  return output ~= "" and output or nil
+end
+
+local function current_branch_label(root)
+  local branch = git_output(root, { "symbolic-ref", "--quiet", "--short", "HEAD" })
+  branch = branch and vim.trim(branch) or ""
+  if branch ~= "" then
+    return branch
+  end
+  local short = short_commit(root, "HEAD")
+  return short and ("detached " .. short) or "detached HEAD"
+end
+
+local function commit_name(root, rev)
+  local name = git_output(root, { "name-rev", "--name-only", "--exclude=tags/*", rev })
+  name = name and vim.trim(name) or ""
+  if name ~= "" and name ~= "undefined" then
+    name = name:gsub("^remotes/", "")
+    name = name:gsub("%^0$", "")
+    return name
+  end
+  return short_commit(root, rev)
+end
+
+function M.merge_context(root)
+  local current = current_branch_label(root)
+  local merge_head = first_line(read_git_path(root, "MERGE_HEAD"))
+  if merge_head then
+    return {
+      operation = "merge",
+      current = current,
+      incoming = commit_name(root, merge_head) or short_commit(root, merge_head) or "incoming",
+      incoming_ref = merge_head,
+    }
+  end
+
+  local cherry_pick_head = first_line(read_git_path(root, "CHERRY_PICK_HEAD"))
+  if cherry_pick_head then
+    return {
+      operation = "cherry-pick",
+      current = current,
+      incoming = commit_name(root, cherry_pick_head) or short_commit(root, cherry_pick_head) or "incoming commit",
+      incoming_ref = cherry_pick_head,
+    }
+  end
+
+  local rebase_head = first_line(read_git_path(root, "REBASE_HEAD"))
+  if rebase_head then
+    return {
+      operation = "rebase",
+      current = current,
+      incoming = commit_name(root, rebase_head) or short_commit(root, rebase_head) or "rebased commit",
+      incoming_ref = rebase_head,
+    }
+  end
+
+  local revert_head = first_line(read_git_path(root, "REVERT_HEAD"))
+  if revert_head then
+    return {
+      operation = "revert",
+      current = current,
+      incoming = commit_name(root, revert_head) or short_commit(root, revert_head) or "reverted commit",
+      incoming_ref = revert_head,
+    }
+  end
+
+  local rebase_branch = read_git_path(root, "rebase-merge/head-name")
+    or read_git_path(root, "rebase-apply/head-name")
+  if rebase_branch then
+    return {
+      operation = "rebase",
+      current = current,
+      incoming = rebase_branch:gsub("^refs/heads/", ""),
+      incoming_ref = rebase_branch,
+    }
+  end
+
+  return {
+    operation = "merge",
+    current = current,
+    incoming = "incoming",
+  }
+end
+
+function M.unmerged_entries(root, pathspecs)
+  return list_unmerged(root, pathspecs or {})
+end
+
 function M.read_worktree(root, path, use_buffer)
   return read_worktree(root, path, use_buffer)
 end
@@ -1297,6 +1448,18 @@ function M.has_any_staged_changes(root)
   return code == 1
 end
 
+function M.has_pending_merge_commit(root)
+  return read_git_path(root, "MERGE_HEAD") ~= nil
+end
+
+function M.has_unmerged(root)
+  local output, err = git_output(root, { "ls-files", "-u", "-z" })
+  if not output then
+    return false, err
+  end
+  return output ~= "", nil
+end
+
 function M.last_commit_message(root)
   local output, err = git_output(root, { "log", "-1", "--pretty=%B" })
   if not output then
@@ -1311,11 +1474,17 @@ function M.commit(root, message, opts)
   if vim.trim(message) == "" then
     return false, "commit message cannot be empty"
   end
+  local unmerged, unmerged_err = M.has_unmerged(root)
+  if unmerged_err then
+    return false, unmerged_err
+  elseif unmerged then
+    return false, "merge conflicts must be resolved before committing"
+  end
   if opts.amend then
     if not has_head(root) then
       return false, "cannot amend before the first commit"
     end
-  elseif not M.has_any_staged_changes(root) then
+  elseif not M.has_any_staged_changes(root) and not M.has_pending_merge_commit(root) then
     return false, "no staged changes to commit"
   end
 

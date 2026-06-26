@@ -9,6 +9,7 @@ local plain_icons = {
   renamed = "R",
   copied = "C",
   untracked = "?",
+  unmerged = "U",
   staged = "S",
   partial = "P",
 }
@@ -20,6 +21,7 @@ local nerd_icons = {
   renamed = "󰑕",
   copied = "󰆏",
   untracked = "󰋗",
+  unmerged = "",
   staged = "󰄬",
   partial = "󰡖",
 }
@@ -103,6 +105,8 @@ local function entry_kind(entry)
     return "renamed"
   elseif status == "C" then
     return "copied"
+  elseif status == "U" then
+    return "unmerged"
   end
   return "modified"
 end
@@ -115,7 +119,12 @@ local function row_for_entry(session, entry, index, width)
   local state = (session.panel and session.panel.stage_states or {})[index] or "unstaged"
   local name = filename(entry.path)
   local parent = dirname(entry.path)
-  local prefix = string.format("  %s %s ", stage_symbol(session, state), status_icon(session, entry))
+  local prefix
+  if entry_kind(entry) == "unmerged" then
+    prefix = string.format("  ! %s ", status_icon(session, entry))
+  else
+    prefix = string.format("  %s %s ", stage_symbol(session, state), status_icon(session, entry))
+  end
   local base = prefix .. name
   local parent_width = math.max(0, width - vim.fn.strdisplaywidth(base) - 1)
   local text
@@ -132,6 +141,9 @@ local function row_for_entry(session, entry, index, width)
 end
 
 local function row_group(entry)
+  if entry_kind(entry) == "unmerged" then
+    return "Merge Conflicts"
+  end
   if entry.untracked then
     return "Unversioned Files"
   end
@@ -144,12 +156,20 @@ function M.build_rows(session)
   local rows = {}
   local width = math.max(20, tonumber(panel_config(session).width) or 42)
   local groups = {
+    { name = "Merge Conflicts", entries = {} },
     { name = "Changes", entries = {} },
     { name = "Unversioned Files", entries = {} },
   }
   for index, entry in ipairs(entries) do
     local group_name = row_group(entry)
-    local target = group_name == "Unversioned Files" and groups[2] or groups[1]
+    local target
+    if group_name == "Merge Conflicts" then
+      target = groups[1]
+    elseif group_name == "Unversioned Files" then
+      target = groups[3]
+    else
+      target = groups[2]
+    end
     target.entries[#target.entries + 1] = { entry = entry, index = index }
   end
 
@@ -227,6 +247,9 @@ end
 
 local function row_highlight(entry)
   local kind = entry_kind(entry or {})
+  if kind == "unmerged" then
+    return "DiffBanditDelete"
+  end
   if kind == "added" or kind == "untracked" then
     return "DiffBanditAdd"
   elseif kind == "deleted" then
@@ -259,6 +282,35 @@ local function commit_message_lines_from_buffer(buf)
   return { "" }
 end
 
+function M.capture_message_lines(session)
+  local panel = session.panel or {}
+  if panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) then
+    panel.message_lines = commit_message_lines_from_buffer(panel.commit_buf)
+  end
+  return panel.message_lines or { "" }
+end
+
+function M.clear_amend_opts(opts)
+  local clean = vim.tbl_extend("force", {}, opts or {})
+  clean.stage_base = nil
+  clean.amend_mode = nil
+  return clean
+end
+
+function M.lines_equal(left, right)
+  left = left or {}
+  right = right or {}
+  if #left ~= #right then
+    return false
+  end
+  for index, line in ipairs(left) do
+    if line ~= right[index] then
+      return false
+    end
+  end
+  return true
+end
+
 function M.refresh_stage_states(session)
   local panel = session.panel
   if not panel then
@@ -267,6 +319,68 @@ function M.refresh_stage_states(session)
   local queue = session.file_queue or {}
   panel.stage_states = git.file_stage_states(queue.root, queue.entries, queue.opts or {})
   return panel.stage_states
+end
+
+function M.refresh_git_queue(session, opts)
+  opts = opts or {}
+  local queue = session.file_queue
+  if not queue or queue.kind ~= "git" then
+    return false, "no Git file queue configured"
+  end
+
+  if opts.capture_message ~= false then
+    M.capture_message_lines(session)
+  end
+
+  local current_entry = queue.entries and queue.entries[session.file_queue_index or queue.index or 1]
+  local preferred_path = opts.preferred_path or (current_entry and (current_entry.path or current_entry.old_path))
+  local queue_opts = vim.tbl_extend("force", {}, queue.opts or {})
+  queue_opts.pathspecs = queue_opts.pathspecs or {}
+  local git_config = vim.tbl_extend("force", {}, (session.config or {}).git or {}, {
+    hex = ((session.config or {}).ui or {}).hex or {},
+  })
+  local next_queue, err = git.queue(queue_opts, git_config)
+  if not next_queue then
+    if err ~= "no git changes" then
+      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+      return false, err
+    end
+    queue.entries = {}
+    queue.index = opts.empty_index or 0
+    session.file_queue = queue
+    session.file_queue_index = queue.index
+    if opts.on_no_changes then
+      opts.on_no_changes(session, queue)
+    elseif session.panel and opts.render_panel ~= false then
+      M.render(session, nil, { no_initial_selection = true, refresh_stage_states = true })
+    end
+    return true, nil
+  end
+
+  local target_index = opts.default_index
+  if target_index == nil then
+    target_index = next_queue.index or 1
+  end
+  if preferred_path then
+    for index, entry in ipairs(next_queue.entries or {}) do
+      if entry.path == preferred_path or entry.old_path == preferred_path then
+        target_index = index
+        break
+      end
+    end
+  end
+  next_queue.index = target_index
+  session.file_queue = next_queue
+  session.file_queue_index = target_index
+  if opts.on_queue then
+    opts.on_queue(session, next_queue, target_index)
+  elseif session.panel and opts.render_panel ~= false then
+    M.render(session, target_index > 0 and target_index or nil, {
+      no_initial_selection = target_index == 0,
+      refresh_stage_states = true,
+    })
+  end
+  return true, nil
 end
 
 function M.render_nav(session, preferred_entry_index, opts)
@@ -363,6 +477,10 @@ local function preview_selected(session)
   if not row or row.type ~= "file" then
     return
   end
+  if entry_kind(row.entry) == "unmerged" and type(session.open_merge_file) == "function" then
+    session:open_merge_file(row.index, { preserve_focus = true })
+    return
+  end
   if row.index == session.file_queue_index then
     return
   end
@@ -445,6 +563,10 @@ function M.navigate_change(session, direction)
     row = selected_row(session)
   end
   if row and row.type == "file" and type(session.goto_queue_file) == "function" then
+    if entry_kind(row.entry) == "unmerged" and type(session.open_merge_file) == "function" then
+      session:open_merge_file(row.index, { navigate_change = direction })
+      return
+    end
     session:goto_queue_file(row.index, { navigate_change = direction })
   end
 end
@@ -452,6 +574,10 @@ end
 function M.toggle_stage(session)
   local row, row_index = selected_row(session)
   if not row or row.type ~= "file" then
+    return
+  end
+  if entry_kind(row.entry) == "unmerged" then
+    vim.notify("DiffBandit: resolve merge conflicts before staging " .. tostring(row.entry.path), vim.log.levels.INFO)
     return
   end
   local queue = session.file_queue or {}

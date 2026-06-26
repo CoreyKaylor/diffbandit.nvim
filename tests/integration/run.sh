@@ -3,7 +3,7 @@
 # Usage: ./run.sh [test_name]
 #   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'dense-mixed',
 #              'theme-default', 'comprehensive',
-#              'navigation', 'git', 'git-scroll-perf',
+#              'navigation', 'git', 'git-merge', 'git-scroll-perf',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
 
@@ -1251,6 +1251,198 @@ run_git_test() {
     echo "  Captures: $case_dir"
 }
 
+run_git_merge_test() {
+    local test_name="git-merge"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+    local repo="$case_dir/repo"
+    local plain_capture="$case_dir/capture.txt"
+
+    echo "Running integration test: $test_name"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    printf "one\nbase\nthree\n" > "$repo/conflict.txt"
+    printf "alpha\nbase two\nomega\n" > "$repo/second_conflict.txt"
+    git -C "$repo" add conflict.txt
+    git -C "$repo" add second_conflict.txt
+    git -C "$repo" commit -m baseline >/dev/null
+    local main_branch
+    main_branch="$(git -C "$repo" branch --show-current)"
+    git -C "$repo" checkout -b feature >/dev/null
+    printf "one\nremote\nthree\n" > "$repo/conflict.txt"
+    printf "alpha\nremote two\nomega\n" > "$repo/second_conflict.txt"
+    git -C "$repo" commit -am "remote change" >/dev/null
+    git -C "$repo" checkout "$main_branch" >/dev/null
+    printf "one\nlocal\nthree\n" > "$repo/conflict.txt"
+    printf "alpha\nlocal two\nomega\n" > "$repo/second_conflict.txt"
+    git -C "$repo" commit -am "local change" >/dev/null
+    if git -C "$repo" merge feature >/dev/null 2>&1; then
+        echo "Git merge resolver test failed: fixture merge did not conflict"
+        exit 1
+    fi
+
+    local panel_state="$case_dir/panel_after_conflict_open.state"
+    local second_panel_state="$case_dir/panel_after_second_conflict_open.state"
+    local panel_capture="$case_dir/panel_conflict_preview.txt"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 32 -c "$repo"
+    start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditCommitPanel" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" "j"
+    sleep 1
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$panel_capture"
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $panel_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "j"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $second_panel_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    assert_git_state_contains "$panel_state" "surface=session" "panel conflict preview should open a merge session"
+    assert_git_state_contains "$panel_state" "panel_visible=true" "panel should remain visible after opening a conflict"
+    assert_git_state_contains "$panel_state" "focus=panel" "panel should keep focus after opening a conflict"
+    assert_git_state_contains "$panel_state" "row=  ! U conflict.txt" "panel should keep the selected conflict row visible"
+    if ! grep -q "Merge Conflicts" "$panel_capture" \
+        || ! grep -q "local/c" "$panel_capture" \
+        || ! grep -q "merge result" "$panel_capture" \
+        || ! grep -q "remote/incom" "$panel_capture"; then
+        echo "Git merge resolver test failed: panel conflict preview did not render merge status headers"
+        cat "$panel_capture"
+        exit 1
+    fi
+    assert_git_state_contains "$second_panel_state" "surface=session" "panel second conflict preview should stay in a merge session"
+    assert_git_state_contains "$second_panel_state" "panel_visible=true" "panel should remain visible after opening a second conflict"
+    assert_git_state_contains "$second_panel_state" "focus=panel" "panel should keep focus after opening a second conflict"
+    assert_git_state_contains "$second_panel_state" "row=  ! U second_conflict.txt" "panel should move to the second conflict row"
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 32 -c "$repo"
+    start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditMerge conflict.txt" C-m
+    sleep 1
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$plain_capture"
+    if ! grep -q "local/current" "$plain_capture" \
+        || ! grep -q "merge result" "$plain_capture" \
+        || ! grep -q "conflict 1/1" "$plain_capture" \
+        || ! grep -q "remote/incoming" "$plain_capture"; then
+        echo "Git merge resolver test failed: merge status headers did not render"
+        cat "$plain_capture"
+        exit 1
+    fi
+    tmux send-keys -t "$TMUX_SESSION" ">>"
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":w" C-m
+    sleep 1
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    if git -C "$repo" ls-files -u -- conflict.txt | grep -q .; then
+        echo "Git merge resolver test failed: conflict remains unmerged"
+        git -C "$repo" ls-files -u -- conflict.txt
+        exit 1
+    fi
+    if [[ "$(cat "$repo/conflict.txt")" != $'one\nlocal\nthree' ]]; then
+        echo "Git merge resolver test failed: accept-local result was not written"
+        cat "$repo/conflict.txt"
+        exit 1
+    fi
+
+    local full_repo="$case_dir/full-repo"
+    local full_panel_state="$case_dir/full_after_commit.state"
+    rm -rf "$full_repo"
+    mkdir -p "$full_repo"
+    git -C "$full_repo" init >/dev/null
+    git -C "$full_repo" config user.email "diffbandit@example.test"
+    git -C "$full_repo" config user.name "DiffBandit Test"
+    printf "base delete/modify\n" > "$full_repo/delete_vs_modify.txt"
+    printf "base modify/delete\n" > "$full_repo/modify_vs_delete.txt"
+    printf "base same\n" > "$full_repo/same_line.txt"
+    git -C "$full_repo" add delete_vs_modify.txt modify_vs_delete.txt same_line.txt
+    git -C "$full_repo" commit -m baseline >/dev/null
+    main_branch="$(git -C "$full_repo" branch --show-current)"
+    git -C "$full_repo" checkout -b incoming >/dev/null
+    printf "incoming add/add\n" > "$full_repo/add_add.txt"
+    printf "incoming modifies\n" > "$full_repo/delete_vs_modify.txt"
+    git -C "$full_repo" rm modify_vs_delete.txt >/dev/null
+    printf "incoming same\n" > "$full_repo/same_line.txt"
+    git -C "$full_repo" add -A
+    git -C "$full_repo" commit -m "incoming conflict sides" >/dev/null
+    git -C "$full_repo" checkout "$main_branch" >/dev/null
+    printf "local add/add\n" > "$full_repo/add_add.txt"
+    git -C "$full_repo" rm delete_vs_modify.txt >/dev/null
+    printf "local modifies\n" > "$full_repo/modify_vs_delete.txt"
+    printf "local same\n" > "$full_repo/same_line.txt"
+    git -C "$full_repo" add -A
+    git -C "$full_repo" commit -m "local conflict sides" >/dev/null
+    if git -C "$full_repo" merge incoming >/dev/null 2>&1; then
+        echo "Git merge resolver test failed: full fixture merge did not conflict"
+        exit 1
+    fi
+    local full_unmerged
+    full_unmerged="$(git -C "$full_repo" status --porcelain | grep -E '^(AA|DU|UD|UU) ' | wc -l | tr -d ' ')"
+    if [[ "$full_unmerged" != "4" ]]; then
+        echo "Git merge resolver test failed: full fixture should have four unmerged paths"
+        git -C "$full_repo" status --porcelain
+        exit 1
+    fi
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 32 -c "$full_repo"
+    start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditCommitPanel" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBOpenQueuePath add_add.txt" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBAcceptResolve local" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBOpenQueuePath delete_vs_modify.txt" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBAcceptResolve local" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBOpenQueuePath modify_vs_delete.txt" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBAcceptResolve local" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBOpenQueuePath same_line.txt" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBAcceptResolve local" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DBPanelCommit full fixture merge" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWritePanelState $full_panel_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    if git -C "$full_repo" ls-files -u | grep -q .; then
+        echo "Git merge resolver test failed: full fixture left unmerged entries"
+        git -C "$full_repo" ls-files -u
+        exit 1
+    fi
+    if [[ "$(git -C "$full_repo" status --porcelain)" != "" ]]; then
+        echo "Git merge resolver test failed: full fixture should be clean after commit"
+        git -C "$full_repo" status --porcelain
+        exit 1
+    fi
+    if git -C "$full_repo" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+        echo "Git merge resolver test failed: full fixture should complete the merge commit"
+        exit 1
+    fi
+    if [[ "$(git -C "$full_repo" log -1 --pretty=%B | tr -d '\n')" != "full fixture merge" ]]; then
+        echo "Git merge resolver test failed: full fixture commit message mismatch"
+        git -C "$full_repo" log -1 --pretty=%B
+        exit 1
+    fi
+    assert_git_state_contains "$full_panel_state" "queue_count=0" "full fixture commit should leave an empty queue"
+
+    echo "  PASSED: $test_name"
+    echo "  Captures: $case_dir"
+}
+
 # Parse arguments
 TEST_TO_RUN="${1:-all}"
 
@@ -1295,6 +1487,9 @@ case "$TEST_TO_RUN" in
         ;;
     git)
         run_git_test
+        ;;
+    git-merge)
+        run_git_merge_test
         ;;
     git-scroll-perf)
         run_git_scroll_perf_test
@@ -1357,12 +1552,14 @@ case "$TEST_TO_RUN" in
 
         run_git_test
 
+        run_git_merge_test
+
         run_git_scroll_perf_test
 
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|git|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|navigation|git|git-merge|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac

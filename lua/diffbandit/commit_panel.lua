@@ -35,35 +35,6 @@ local function panel_config(self)
   return (((self.config or {}).git or {}).panel or {})
 end
 
-local function capture_message_lines(self)
-  local panel = self.panel or {}
-  if panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) then
-    panel.message_lines = vim.api.nvim_buf_get_lines(panel.commit_buf, 2, -1, false)
-  end
-  return panel.message_lines or { "" }
-end
-
-local function clear_amend_opts(opts)
-  local clean = vim.tbl_extend("force", {}, opts or {})
-  clean.stage_base = nil
-  clean.amend_mode = nil
-  return clean
-end
-
-local function lines_equal(left, right)
-  left = left or {}
-  right = right or {}
-  if #left ~= #right then
-    return false
-  end
-  for index, line in ipairs(left) do
-    if line ~= right[index] then
-      return false
-    end
-  end
-  return true
-end
-
 local function create_buffer(buftype, name)
   local buf = vim.api.nvim_create_buf(false, true)
   if name then
@@ -90,6 +61,7 @@ function CommitPanel.start(config, queue, opts)
   self.id = state.next_session_id()
   self.ns = vim.api.nvim_create_namespace("DiffBanditCommitPanel" .. tostring(self.id))
   self.start_diff = opts.start_diff
+  self.start_merge = opts.start_merge
   self.panel = {
     nav_buf = create_buffer("nofile"),
     commit_buf = create_buffer("acwrite", "diffbandit-commit-" .. tostring(self.id)),
@@ -181,41 +153,11 @@ function CommitPanel:close()
 end
 
 function CommitPanel:refresh_git_queue(preferred_path)
-  local opts = vim.tbl_extend("force", {}, (self.file_queue or {}).opts or {})
-  opts.pathspecs = opts.pathspecs or {}
-  local git_config = vim.tbl_extend("force", {}, (self.config or {}).git or {}, {
-    hex = ((self.config or {}).ui or {}).hex or {},
+  return panel_mod.refresh_git_queue(self, {
+    preferred_path = preferred_path,
+    default_index = 0,
+    empty_index = 0,
   })
-  local queue, err = git.queue(opts, git_config)
-  if not queue then
-    if err ~= "no git changes" then
-      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
-      return false, err
-    end
-    self.file_queue.entries = {}
-    self.file_queue.index = 0
-    self.file_queue_index = 0
-    panel_mod.render(self, nil, { no_initial_selection = true, refresh_stage_states = true })
-    return true, nil
-  end
-
-  local target_index = 0
-  if preferred_path then
-    for index, entry in ipairs(queue.entries or {}) do
-      if entry.path == preferred_path or entry.old_path == preferred_path then
-        target_index = index
-        break
-      end
-    end
-  end
-  queue.index = target_index
-  self.file_queue = queue
-  self.file_queue_index = target_index
-  panel_mod.render(self, target_index > 0 and target_index or nil, {
-    no_initial_selection = target_index == 0,
-    refresh_stage_states = true,
-  })
-  return true, nil
 end
 
 function CommitPanel:set_amend_mode(enabled)
@@ -223,7 +165,7 @@ function CommitPanel:set_amend_mode(enabled)
     return false, "no Git file queue configured"
   end
 
-  capture_message_lines(self)
+  panel_mod.capture_message_lines(self)
   local current_entry = self.file_queue.entries and self.file_queue.entries[self.file_queue_index or self.file_queue.index or 1]
   local preferred_path = current_entry and (current_entry.path or current_entry.old_path)
 
@@ -234,7 +176,7 @@ function CommitPanel:set_amend_mode(enabled)
       return false, err
     end
     if not self.normal_queue_opts then
-      self.normal_queue_opts = clear_amend_opts((self.file_queue or {}).opts or {})
+      self.normal_queue_opts = panel_mod.clear_amend_opts((self.file_queue or {}).opts or {})
     end
     local opts = vim.tbl_extend("force", {}, self.normal_queue_opts, {
       mode = "all",
@@ -257,13 +199,13 @@ function CommitPanel:set_amend_mode(enabled)
     end
   else
     if self.panel.amend_loaded_message_lines
-        and lines_equal(self.panel.message_lines, self.panel.amend_loaded_message_lines) then
+        and panel_mod.lines_equal(self.panel.message_lines, self.panel.amend_loaded_message_lines) then
       self.panel.message_lines = self.panel.pre_amend_message_lines or { "" }
       self.panel.message_initialized = false
     end
     self.panel.pre_amend_message_lines = nil
     self.panel.amend_loaded_message_lines = nil
-    self.file_queue.opts = clear_amend_opts(self.normal_queue_opts or (self.file_queue or {}).opts or {})
+    self.file_queue.opts = panel_mod.clear_amend_opts(self.normal_queue_opts or (self.file_queue or {}).opts or {})
     self.normal_queue_opts = nil
     self.panel.amend = false
   end
@@ -273,9 +215,9 @@ end
 
 function CommitPanel:clear_amend_mode()
   if self.file_queue and self.normal_queue_opts then
-    self.file_queue.opts = clear_amend_opts(self.normal_queue_opts)
+    self.file_queue.opts = panel_mod.clear_amend_opts(self.normal_queue_opts)
   elseif self.file_queue then
-    self.file_queue.opts = clear_amend_opts(self.file_queue.opts or {})
+    self.file_queue.opts = panel_mod.clear_amend_opts(self.file_queue.opts or {})
   end
   self.normal_queue_opts = nil
   if self.panel then
@@ -300,7 +242,7 @@ function CommitPanel:goto_queue_file(index, opts)
 
   queue.index = index
   self.file_queue_index = index
-  local message_lines = capture_message_lines(self)
+  local message_lines = panel_mod.capture_message_lines(self)
   local amend = self.panel.amend == true
   queue.normal_opts = self.normal_queue_opts
   self:close()
@@ -326,6 +268,43 @@ function CommitPanel:goto_queue_file(index, opts)
     panel_mod.focus_nav(session)
   elseif opts.navigate_change == "next" then
     session:goto_next_chunk()
+    panel_mod.focus_nav(session)
+  end
+  return true
+end
+
+function CommitPanel:open_merge_file(index, opts)
+  opts = opts or {}
+  local queue = self.file_queue
+  local entry = queue and queue.entries and queue.entries[index]
+  if not entry then
+    return false
+  end
+  queue.index = index
+  self.file_queue_index = index
+  local message_lines = panel_mod.capture_message_lines(self)
+  local amend = self.panel.amend == true
+  self:close()
+  if type(self.start_merge) ~= "function" then
+    vim.notify("DiffBandit: merge resolver is not configured", vim.log.levels.ERROR)
+    return false
+  end
+  local session, err = self.start_merge(entry, queue, {
+    queue_index = index,
+    panel = true,
+    panel_initial_selection = index,
+    panel_message_lines = message_lines,
+    panel_amend = amend,
+  })
+  if not session then
+    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+    return false
+  end
+  if opts.navigate_change == "prev" then
+    session:goto_prev_conflict()
+    panel_mod.focus_nav(session)
+  elseif opts.navigate_change == "next" then
+    session:goto_next_conflict()
     panel_mod.focus_nav(session)
   end
   return true

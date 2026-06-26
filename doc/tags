@@ -6,6 +6,7 @@
 :DiffBanditDiscardHunk	diffbandit.txt	/*:DiffBanditDiscardHunk*
 :DiffBanditGit	diffbandit.txt	/*:DiffBanditGit*
 :DiffBanditGitCurrent	diffbandit.txt	/*:DiffBanditGitCurrent*
+:DiffBanditMerge	diffbandit.txt	/*:DiffBanditMerge*
 :DiffBanditStageHunk	diffbandit.txt	/*:DiffBanditStageHunk*
 :DiffBanditToggleStageHunk	diffbandit.txt	/*:DiffBanditToggleStageHunk*
 :DiffBanditUndo	diffbandit.txt	/*:DiffBanditUndo*
@@ -29,6 +30,7 @@ diffbandit-hunk-actions	diffbandit.txt	/*diffbandit-hunk-actions*
 diffbandit-installation	diffbandit.txt	/*diffbandit-installation*
 diffbandit-lua-api	diffbandit.txt	/*diffbandit-lua-api*
 diffbandit-mappings	diffbandit.txt	/*diffbandit-mappings*
+diffbandit-merge	diffbandit.txt	/*diffbandit-merge*
 diffbandit-overview	diffbandit.txt	/*diffbandit-overview*
 diffbandit-q	diffbandit.txt	/*diffbandit-q*
 diffbandit-testing	diffbandit.txt	/*diffbandit-testing*

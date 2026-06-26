@@ -110,8 +110,22 @@ function M.changed_spans(left_line, right_line)
   local right_change_start = prefix + 1
   local right_add_start = right_change_start + change_len
 
+  local function is_word_char(char)
+    return char ~= nil and char:match("[%w_]") ~= nil
+  end
+
+  if left_mid_len > 0 and addition_len > 0 then
+    local before_add = right_line:sub(right_add_start - 1, right_add_start - 1)
+    local at_add = right_line:sub(right_add_start, right_add_start)
+    if is_word_char(before_add) and is_word_char(at_add) then
+      change_len = right_mid_len
+      addition_len = 0
+      right_add_start = right_change_start + change_len
+    end
+  end
+
   local shared_change_suffix = 0
-  if change_len > 0 then
+  if change_len > 0 and addition_len > 0 then
     while shared_change_suffix < change_len do
       local left_pos = left_span_start + left_mid_len - shared_change_suffix - 1
       local right_pos = right_change_start + change_len - shared_change_suffix - 1

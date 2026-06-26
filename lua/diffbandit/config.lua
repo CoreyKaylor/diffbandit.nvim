@@ -111,6 +111,24 @@ local defaults = {
       staged = "▣",
     },
   },
+  merge = {
+    result_initial_content = "base",
+    auto_apply_non_conflicting = false,
+    resolve_on_write = true,
+    line_endings = {
+      warn = true,
+    },
+    keys = {
+      next_conflict = "]c",
+      prev_conflict = "[c",
+      accept_local = ">>",
+      accept_remote = "<<",
+      accept_both = "gb",
+      apply_non_conflicting = "gA",
+      focus_panel = "C",
+      close = "q",
+    },
+  },
 }
 
 function M.defaults()

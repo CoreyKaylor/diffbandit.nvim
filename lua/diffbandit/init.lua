@@ -5,6 +5,7 @@ local highlights = require("diffbandit.highlights")
 local git_mod = require("diffbandit.git")
 local hex = require("diffbandit.hex")
 local CommitPanel = require("diffbandit.commit_panel")
+local Merge = require("diffbandit.merge")
 
 local M = {}
 
@@ -228,6 +229,29 @@ function M.git(opts)
   return start_session(loaded.left, loaded.right, { queue = queue, chunk_position = "top" })
 end
 
+local function start_merge_for_entry(queue, entry, opts)
+  opts = opts or {}
+  if not queue or not entry then
+    return nil, "no conflict entry selected"
+  end
+  local config = state.get_config()
+  ensure_highlights(config)
+  local data, err = Merge.load(queue.root, entry.path, config)
+  if not data then
+    return nil, err
+  end
+  return Merge.start(data, config, vim.tbl_extend("force", opts, {
+    queue = queue,
+    queue_index = opts.queue_index or queue.index,
+  }))
+end
+
+function M.merge(path, opts)
+  local config = state.get_config()
+  ensure_highlights(config)
+  return Merge.start_for_path(path, opts or {}, config)
+end
+
 function M.commit_panel(opts)
   local existing_panel = current_panel()
   if existing_panel and not existing_panel.disposed then
@@ -235,7 +259,7 @@ function M.commit_panel(opts)
   end
 
   local existing = current_session()
-  if existing and existing.file_queue and existing.file_queue.kind == "git" then
+  if existing and existing.file_queue and existing.file_queue.kind == "git" and type(existing.toggle_commit_panel) == "function" then
     return existing:toggle_commit_panel()
   end
 
@@ -253,6 +277,9 @@ function M.commit_panel(opts)
   return CommitPanel.start(config, queue, {
     start_diff = function(left, right, start_opts)
       return start_session(left, right, start_opts)
+    end,
+    start_merge = function(entry, merge_queue, start_opts)
+      return start_merge_for_entry(merge_queue or queue, entry, start_opts)
     end,
   })
 end

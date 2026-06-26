@@ -9,17 +9,19 @@ CONTENTS                                                     *diffbandit*
   4. Default mappings                              |diffbandit-mappings|
   5. Git diffs                                     |diffbandit-git|
   6. Commit panel                                  |diffbandit-commit-panel|
-  7. Hunk actions                                  |diffbandit-hunk-actions|
-  8. Configuration                                 |diffbandit-configuration|
-  9. Lua API                                       |diffbandit-lua-api|
- 10. Testing                                       |diffbandit-testing|
+  7. Merge conflicts                               |diffbandit-merge|
+  8. Hunk actions                                  |diffbandit-hunk-actions|
+  9. Configuration                                 |diffbandit-configuration|
+ 10. Lua API                                       |diffbandit-lua-api|
+ 11. Testing                                       |diffbandit-testing|
 
 ==============================================================================
 OVERVIEW                                            *diffbandit-overview*
 
 DiffBandit is a Neovim diff viewer with independent source panes, docked line
 number panes, compact connector geometry, Git-aware navigation, hunk actions,
-a commit panel, binary hex diffs, and theme-adaptive highlights.
+a commit panel, binary hex diffs, 3-way merge conflict resolution, and
+theme-adaptive highlights.
 
 The layout is designed around source buffers that keep natural scrolling while
 the gutter explains how changed regions relate. Line numbers stay attached to
@@ -33,6 +35,7 @@ Core features:
 - Git queue navigation with |diffbandit-]f| and |diffbandit-[f|.
 - Hunk staging, unstaging, apply/discard actions, and undo.
 - Optional commit panel with file staging and commit message entry.
+- Merge conflict group with a local/result/remote resolver.
 - One-column overview gutters at the outer document edges.
 - Read-only binary hex comparison view.
 - Theme-friendly colors derived from the active colorscheme.
@@ -81,6 +84,11 @@ COMMANDS                                            *diffbandit-commands*
 :DiffBanditCommitPanel [flags] [--] [pathspec...]
         Toggle the Git commit panel. When used outside an active Git diff
         session, it opens as a standalone side panel.
+
+                                                   *:DiffBanditMerge*
+:DiffBanditMerge [path]
+        Open a three-pane resolver for an unmerged Git conflict. If [path] is
+        omitted, the current buffer path is used.
 
                                            *:DiffBanditToggleStageHunk*
 :DiffBanditToggleStageHunk
@@ -216,8 +224,31 @@ Commit message window mappings:
   :w            Commit staged changes using the buffer contents as the message.
 
 The panel validates empty commit messages and missing staged changes before
-committing. In amend mode, the panel compares against the previous commit so
-the file state reflects what the amended commit would contain.
+committing, and rejects commits while merge conflicts remain unresolved. In
+amend mode, the panel compares against the previous commit so the file state
+reflects what the amended commit would contain.
+
+==============================================================================
+MERGE CONFLICTS                                          *diffbandit-merge*
+
+Conflict files appear in a "Merge Conflicts" group above normal changes in the
+commit panel. Selecting a conflict opens a three-pane resolver:
+
+  left    Local/current Git stage (ours), read-only.
+  center  Editable result, initialized from the base stage.
+  right   Remote/incoming Git stage (theirs), read-only.
+
+Merge mappings:
+
+  ]c / [c       Move to the next or previous conflict.
+  >>            Accept local/current into the result.
+  <<            Accept remote/incoming into the result.
+  gb            Accept both sides, local then remote.
+  gA            Apply non-conflicting changes from both sides.
+  :w            Write the result and mark the file resolved with git add.
+
+DiffBandit warns when conflict stages have mixed line endings, but it does not
+normalize line endings automatically.
 
 ==============================================================================
 HUNK ACTIONS                                    *diffbandit-hunk-actions*
@@ -281,6 +312,24 @@ Common configuration:
         },
       },
     },
+    merge = {
+      result_initial_content = "base",
+      auto_apply_non_conflicting = false,
+      resolve_on_write = true,
+      line_endings = {
+        warn = true,
+      },
+      keys = {
+        next_conflict = "]c",
+        prev_conflict = "[c",
+        accept_local = ">>",
+        accept_remote = "<<",
+        accept_both = "gb",
+        apply_non_conflicting = "gA",
+        focus_panel = "C",
+        close = "q",
+      },
+    },
     ui = {
       connector_width = 12,
       scroll_debounce_ms = 16,
@@ -339,6 +388,7 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.buffers(left_bufnr, right_bufnr)
   diffbandit.git({ mode = "all" })
   diffbandit.git_file(nil, { mode = "all" })
+  diffbandit.merge("path/to/conflicted-file")
   diffbandit.commit_panel({})
 
   diffbandit.toggle_stage_hunk()

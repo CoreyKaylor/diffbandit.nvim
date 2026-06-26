@@ -143,6 +143,18 @@ end, {
   desc = "Toggle the DiffBandit Git commit panel",
 })
 
+vim.api.nvim_create_user_command("DiffBanditMerge", function(opts)
+  local path = opts.fargs[1]
+  local session, err = diffbandit.merge(path)
+  if not session and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "?",
+  complete = "file",
+  desc = "Open DiffBandit merge conflict resolver",
+})
+
 vim.api.nvim_create_user_command("DiffBanditToggleStageHunk", function()
   diffbandit.toggle_stage_hunk()
 end, {
