@@ -133,6 +133,18 @@ Resolve a Git conflict:
   <img src="screenshots/git_commit_amend.png" alt="Git commit panel with amend mode and live diff preview" width="720">
 </p>
 
+### Folder Diff
+
+<p>
+  <img src="screenshots/folder_diff.png" alt="Recursive folder comparison with aligned file trees and centered status gutter" width="720">
+</p>
+
+### Merge Conflicts
+
+<p>
+  <img src="screenshots/three_way_merge.png" alt="Three-way merge conflict resolver with local, editable result, and incoming panes" width="720">
+</p>
+
 ## Git Modes
 
 `:DiffBanditGit` accepts common diff scopes:
