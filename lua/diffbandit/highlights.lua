@@ -12,6 +12,8 @@ local base_defaults = {
   DiffBanditStatusLine = { link = "StatusLine" },
   DiffBanditStatusAccent = { link = "StatusLine" },
   DiffBanditStatusMuted = { link = "StatusLineNC" },
+  DiffBanditMutedText = { link = "Comment" },
+  DiffBanditAccentText = { link = "Identifier" },
   DiffBanditOverviewContext = { link = "Normal" },
   DiffBanditOverviewCursor = { link = "CursorLineNr" },
   -- Neutral cursorline so it doesn't wash out range backgrounds
@@ -255,6 +257,15 @@ local function apply_diff_variants(config)
   apply_group("DiffBanditStatusMuted", {
     bg = status_bg,
     fg = status_muted,
+  })
+  apply_group("DiffBanditMutedText", {
+    bg = "NONE",
+    fg = status_muted,
+  })
+  apply_group("DiffBanditAccentText", {
+    bg = "NONE",
+    fg = status_accent,
+    bold = true,
   })
 
   -- Separator line highlights for text buffers (use underline attribute)

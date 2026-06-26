@@ -100,6 +100,37 @@ local defaults = {
       },
     },
   },
+  folder = {
+    gutter_width = 7,
+    columns = {
+      size = true,
+      modified = true,
+    },
+    compare = {
+      mode = "digest",
+      backend = "auto",
+      batch_size = 64,
+      max_concurrency = 2,
+      debounce_ms = 50,
+    },
+    filters = {
+      include = {},
+      exclude = {},
+    },
+    keys = {
+      open = "<CR>",
+      alternate_open = "o",
+      toggle_expand = "<Space>",
+      alternate_toggle_expand = "za",
+      expand_all = "zR",
+      collapse_all = "zM",
+      next_diff = "]c",
+      prev_diff = "[c",
+      refresh = "R",
+      filter = "s",
+      close = "q",
+    },
+  },
   actions = {
     keys = {
       toggle_stage = "<Space>",

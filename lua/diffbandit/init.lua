@@ -6,6 +6,7 @@ local git_mod = require("diffbandit.git")
 local hex = require("diffbandit.hex")
 local CommitPanel = require("diffbandit.commit_panel")
 local Merge = require("diffbandit.merge")
+local Folder = require("diffbandit.folder")
 
 local M = {}
 
@@ -89,6 +90,28 @@ local function source_from_hex_file(path, label, text, config)
     hex_visible_bytes = dump.visible_bytes,
     hex_truncated = dump.truncated,
   }
+end
+
+local function source_from_text(text, path, label, metadata)
+  local lines = {}
+  text = text or ""
+  if text ~= "" then
+    lines = vim.split(text, "\n", { plain = true })
+    if lines[#lines] == "" then
+      table.remove(lines, #lines)
+    end
+  end
+  local source = {
+    path = path,
+    label = label or path,
+    lines = lines,
+    text = #lines > 0 and (table.concat(lines, "\n") .. "\n") or "",
+    filetype = detect_filetype(path),
+  }
+  for key, value in pairs(metadata or {}) do
+    source[key] = value
+  end
+  return source
 end
 
 local function make_source_from_file(path, label, config)
@@ -200,14 +223,14 @@ function M.files(left_path, right_path, opts)
     return nil, right_err
   end
 
-  return start_session(left_source, right_source)
+  return start_session(left_source, right_source, opts)
 end
 
 function M.buffers(bufnr_a, bufnr_b, opts)
   opts = opts or {}
   local left_source = make_source_from_buffer(bufnr_a, opts.left_label)
   local right_source = make_source_from_buffer(bufnr_b, opts.right_label)
-  return start_session(left_source, right_source)
+  return start_session(left_source, right_source, opts)
 end
 
 function M.git(opts)
@@ -250,6 +273,57 @@ function M.merge(path, opts)
   local config = state.get_config()
   ensure_highlights(config)
   return Merge.start_for_path(path, opts or {}, config)
+end
+
+local function start_folder_file_diff(folder_session, row, context)
+  if not row then
+    return nil, "no folder row selected"
+  end
+  local config = state.get_config()
+  local left_source
+  local right_source
+  if row.left then
+    left_source = make_source_from_file(row.left.path, row.rel, config)
+  else
+    left_source = source_from_text("", row.rel, row.rel .. " (missing left)", {
+      empty_reason = "missing from left folder",
+    })
+  end
+  if not left_source then
+    return nil, "unable to read left file"
+  end
+  if row.right then
+    right_source = make_source_from_file(row.right.path, row.rel, config)
+  else
+    right_source = source_from_text("", row.rel, row.rel .. " (missing right)", {
+      empty_reason = "missing from right folder",
+    })
+  end
+  if not right_source then
+    return nil, "unable to read right file"
+  end
+
+  local session, err = start_session(left_source, right_source, {
+    return_to = {
+      session = folder_session,
+      tabpage = context and context.tabpage,
+      context = context,
+    },
+  })
+  if not session then
+    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+    return nil, err
+  end
+  return session, nil
+end
+
+function M.folder_diff(left_path, right_path, opts)
+  opts = opts or {}
+  local config = state.get_config()
+  ensure_highlights(config)
+  return Folder.start(left_path, right_path, config, vim.tbl_extend("force", opts, {
+    open_file_diff = opts.open_file_diff or start_folder_file_diff,
+  }))
 end
 
 function M.commit_panel(opts)

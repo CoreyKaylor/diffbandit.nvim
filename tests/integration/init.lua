@@ -30,8 +30,16 @@ end
 
 function _G.DiffBanditTestSession()
   local sessions = require("diffbandit.state").sessions
+  local current = sessions[vim.api.nvim_get_current_tabpage()]
+  if current then
+    return current
+  end
   local _, session = next(sessions)
   return session
+end
+
+local function current_diffbandit_session()
+  return require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
 end
 
 function _G.DiffBanditTestPanel()
@@ -112,6 +120,61 @@ function _G.DiffBanditTestWriteState(path)
     session.current_chunk or -1
   )
   vim.fn.writefile({ state }, path)
+end
+
+function _G.DiffBanditTestSelectFolderPath(rel)
+  local session = current_diffbandit_session()
+  if not session or not session.left_root or type(session.set_selected_index) ~= "function" then
+    error("missing DiffBandit folder session")
+  end
+  for index, row in ipairs(session.visible_rows or {}) do
+    if row.rel == rel then
+      session:set_selected_index(index)
+      if session.left_win and vim.api.nvim_win_is_valid(session.left_win) then
+        vim.api.nvim_set_current_win(session.left_win)
+      end
+      return
+    end
+  end
+  error("folder path not found: " .. tostring(rel))
+end
+
+function _G.DiffBanditTestWriteFolderState(path)
+  local session = current_diffbandit_session()
+  if not session then
+    vim.fn.writefile({ "missing_session" }, path)
+    return
+  end
+  if session.left_root then
+    local selected = session.selected_rel or ""
+    local row = selected ~= "" and session.rows_by_rel and session.rows_by_rel[selected] or nil
+    local focus = "other"
+    local current = vim.api.nvim_get_current_win()
+    if current == session.left_win then
+      focus = "left"
+    elseif current == session.right_win then
+      focus = "right"
+    elseif current == session.gutter_win then
+      focus = "gutter"
+    end
+    vim.fn.writefile({
+      "surface=folder",
+      "focus=" .. focus,
+      "selected_rel=" .. selected,
+      "selected_status=" .. tostring(row and row.status or ""),
+      "filter=" .. tostring(session.filter or ""),
+      "visible_count=" .. tostring(#(session.visible_rows or {})),
+      "left_root=" .. tostring(session.left_root or ""),
+      "right_root=" .. tostring(session.right_root or ""),
+    }, path)
+    return
+  end
+  vim.fn.writefile({
+    "surface=file",
+    "left_label=" .. tostring(session.left and (session.left.label or session.left.path or "") or ""),
+    "right_label=" .. tostring(session.right and (session.right.label or session.right.path or "") or ""),
+    "has_return_to=" .. tostring(session.return_to ~= nil),
+  }, path)
 end
 
 function _G.DiffBanditTestResetPerf()
@@ -301,6 +364,16 @@ end, { nargs = "*" })
 
 vim.api.nvim_create_user_command("DBWriteState", function(opts)
   _G.DiffBanditTestWriteState(opts.fargs[1])
+  vim.cmd("redraw!")
+end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("DBSelectFolderPath", function(opts)
+  _G.DiffBanditTestSelectFolderPath(opts.args)
+  vim.cmd("redraw!")
+end, { nargs = 1 })
+
+vim.api.nvim_create_user_command("DBWriteFolderState", function(opts)
+  _G.DiffBanditTestWriteFolderState(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = 1, complete = "file" })
 

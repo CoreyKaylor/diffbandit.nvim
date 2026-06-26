@@ -65,6 +65,12 @@ Compare two loaded buffers by buffer number:
 :DiffBanditBuffers 3 7
 ```
 
+Compare two folders recursively:
+
+```vim
+:DiffBanditFolderDiff path/to/left-folder path/to/right-folder
+```
+
 Open the current repository's changed files:
 
 ```vim
@@ -167,6 +173,35 @@ Inside a diff view:
 At a file boundary, `]c` and `[c` first notify that the next press will move to
 the next or previous file. This keeps hunk navigation deliberate while still
 making multi-file Git review quick.
+
+## Folder Diff
+
+Open a read-only recursive folder comparison with:
+
+```vim
+:DiffBanditFolderDiff path/to/left path/to/right
+```
+
+DiffBandit scans both folder trees, aligns matching relative paths, and compares
+same-size files with an external digest command such as `md5sum`, `md5`, or
+`shasum`. File contents are not read into Lua during folder comparison; the
+ordinary text or hex diff is loaded only when you open a file row.
+
+Default folder keys:
+
+| Key | Action |
+| --- | --- |
+| `<CR>` / `o` | Open the selected file pair, or toggle a directory |
+| `]c` / `[c` | Next or previous visible difference |
+| `<Space>` / `za` | Expand or collapse the selected directory |
+| `zR` / `zM` | Expand or collapse all directories |
+| `s` | Change the status filter |
+| `R` | Refresh the folder comparison |
+| `q` | Close the folder diff |
+
+When a file row is opened, it appears as a child DiffBandit file diff. Pressing
+`q` in that child diff returns to the original folder comparison with the row
+selection restored.
 
 ## Commit Panel
 
@@ -322,6 +357,37 @@ require("diffbandit").setup({
       close = "q",
     },
   },
+  folder = {
+    gutter_width = 7,
+    columns = {
+      size = true,
+      modified = true,
+    },
+    compare = {
+      mode = "digest",
+      backend = "auto",
+      batch_size = 64,
+      max_concurrency = 2,
+      debounce_ms = 50,
+    },
+    filters = {
+      include = {},
+      exclude = {},
+    },
+    keys = {
+      open = "<CR>",
+      alternate_open = "o",
+      toggle_expand = "<Space>",
+      alternate_toggle_expand = "za",
+      expand_all = "zR",
+      collapse_all = "zM",
+      next_diff = "]c",
+      prev_diff = "[c",
+      refresh = "R",
+      filter = "s",
+      close = "q",
+    },
+  },
   ui = {
     connector_width = 12,
     scroll_debounce_ms = 16,
@@ -370,6 +436,7 @@ local diffbandit = require("diffbandit")
 diffbandit.setup({})
 diffbandit.files("left.txt", "right.txt")
 diffbandit.buffers(left_bufnr, right_bufnr)
+diffbandit.folder_diff("left-dir", "right-dir")
 diffbandit.git({ mode = "all" })
 diffbandit.git_file(nil, { mode = "all" })
 diffbandit.merge("path/to/conflicted-file")

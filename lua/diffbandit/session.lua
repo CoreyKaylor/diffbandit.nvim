@@ -279,6 +279,7 @@ function Session.start(sources, config, opts)
   self.panel_message_lines = opts.panel_message_lines
   self.panel_amend = opts.panel_amend == true
   self.normal_queue_opts = opts.panel_normal_queue_opts or (self.file_queue and self.file_queue.normal_opts)
+  self.return_to = opts.return_to
 
   self:open_layout()
   if self.panel_enabled then
@@ -1476,6 +1477,25 @@ end
 
 function Session:close()
   if self.disposed then
+    return
+  end
+  local return_to = self.return_to
+  if return_to then
+    local parent_session = return_to.session
+    local parent_tab = return_to.tabpage
+    if self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
+      pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
+      pcall(vim.cmd, "tabclose")
+    else
+      self:dispose()
+    end
+    if parent_session and not parent_session.disposed
+        and parent_tab and vim.api.nvim_tabpage_is_valid(parent_tab) then
+      pcall(vim.api.nvim_set_current_tabpage, parent_tab)
+      if type(parent_session.restore_from_child) == "function" then
+        parent_session:restore_from_child(return_to.context or {})
+      end
+    end
     return
   end
   if vim.api.nvim_tabpage_is_valid(self.tabpage) then

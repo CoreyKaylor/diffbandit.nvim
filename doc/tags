@@ -4,6 +4,7 @@
 :DiffBanditBuffers	diffbandit.txt	/*:DiffBanditBuffers*
 :DiffBanditCommitPanel	diffbandit.txt	/*:DiffBanditCommitPanel*
 :DiffBanditDiscardHunk	diffbandit.txt	/*:DiffBanditDiscardHunk*
+:DiffBanditFolderDiff	diffbandit.txt	/*:DiffBanditFolderDiff*
 :DiffBanditGit	diffbandit.txt	/*:DiffBanditGit*
 :DiffBanditGitCurrent	diffbandit.txt	/*:DiffBanditGitCurrent*
 :DiffBanditMerge	diffbandit.txt	/*:DiffBanditMerge*
@@ -25,6 +26,7 @@ diffbandit-]f	diffbandit.txt	/*diffbandit-]f*
 diffbandit-commands	diffbandit.txt	/*diffbandit-commands*
 diffbandit-commit-panel	diffbandit.txt	/*diffbandit-commit-panel*
 diffbandit-configuration	diffbandit.txt	/*diffbandit-configuration*
+diffbandit-folder-diff	diffbandit.txt	/*diffbandit-folder-diff*
 diffbandit-git	diffbandit.txt	/*diffbandit-git*
 diffbandit-hunk-actions	diffbandit.txt	/*diffbandit-hunk-actions*
 diffbandit-installation	diffbandit.txt	/*diffbandit-installation*

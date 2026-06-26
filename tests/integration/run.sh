@@ -3,7 +3,7 @@
 # Usage: ./run.sh [test_name]
 #   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'dense-mixed',
 #              'theme-default', 'comprehensive', 'listchars',
-#              'navigation', 'git', 'git-merge', 'git-scroll-perf',
+#              'navigation', 'git', 'git-merge', 'folder', 'git-scroll-perf',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
 #              'scroll-changes', or 'all' (default: stable non-scroll suite)
 
@@ -1576,6 +1576,84 @@ run_git_merge_test() {
     echo "  Captures: $case_dir"
 }
 
+run_folder_diff_test() {
+    local test_name="folder"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+    local left="$case_dir/left"
+    local right="$case_dir/right"
+    local initial_state="$case_dir/folder-initial.state"
+    local child_state="$case_dir/folder-child.state"
+    local return_state="$case_dir/folder-return.state"
+    local capture="$case_dir/capture.txt"
+
+    echo "Running integration test: $test_name"
+    rm -rf "$left" "$right"
+    mkdir -p "$left/nested" "$right/nested"
+    printf "same\n" > "$left/same.txt"
+    printf "same\n" > "$right/same.txt"
+    printf "left\n" > "$left/diff.txt"
+    printf "rght\n" > "$right/diff.txt"
+    printf "left-only\n" > "$left/left-only.txt"
+    printf "right-only\n" > "$right/right-only.txt"
+    printf "nested-left\n" > "$left/nested/inner.txt"
+    printf "nested-right\n" > "$right/nested/inner.txt"
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 32
+    start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditFolderDiff $left $right" C-m
+    sleep 2
+    tmux capture-pane -t "$TMUX_SESSION" -p > "$capture"
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteFolderState $initial_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBSelectFolderPath diff.txt" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteFolderState $child_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" q
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteFolderState $return_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    if ! grep -q "same.txt" "$capture" || ! grep -q "left-only.txt" "$capture" || ! grep -q "right-only.txt" "$capture"; then
+        echo "Folder diff test failed: capture did not include expected folder rows"
+        cat "$capture"
+        exit 1
+    fi
+    grep -q "surface=folder" "$initial_state" || {
+        echo "Folder diff test failed: initial state was not a folder session"
+        cat "$initial_state"
+        exit 1
+    }
+    grep -q "surface=file" "$child_state" || {
+        echo "Folder diff test failed: opening a row did not create a child file diff"
+        cat "$child_state"
+        exit 1
+    }
+    grep -q "has_return_to=true" "$child_state" || {
+        echo "Folder diff test failed: child file diff did not carry return metadata"
+        cat "$child_state"
+        exit 1
+    }
+    grep -q "surface=folder" "$return_state" || {
+        echo "Folder diff test failed: q from child diff did not return to folder session"
+        cat "$return_state"
+        exit 1
+    }
+    grep -q "selected_rel=diff.txt" "$return_state" || {
+        echo "Folder diff test failed: return did not restore selected folder row"
+        cat "$return_state"
+        exit 1
+    }
+
+    echo "  PASSED: $test_name"
+    echo "  Captures: $case_dir"
+}
+
 # Parse arguments
 TEST_TO_RUN="${1:-all}"
 
@@ -1626,6 +1704,9 @@ case "$TEST_TO_RUN" in
         ;;
     git-merge)
         run_git_merge_test
+        ;;
+    folder)
+        run_folder_diff_test
         ;;
     git-scroll-perf)
         run_git_scroll_perf_test
@@ -1692,12 +1773,14 @@ case "$TEST_TO_RUN" in
 
         run_git_merge_test
 
+        run_folder_diff_test
+
         run_git_scroll_perf_test
 
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|listchars|navigation|git|git-merge|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|listchars|navigation|git|git-merge|folder|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac

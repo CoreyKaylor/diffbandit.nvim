@@ -155,6 +155,25 @@ end, {
   desc = "Open DiffBandit merge conflict resolver",
 })
 
+vim.api.nvim_create_user_command("DiffBanditFolderDiff", function(opts)
+  local args = opts.fargs
+  if #args < 2 then
+    vim.notify("DiffBanditFolderDiff: provide two folder paths", vim.log.levels.ERROR)
+    return
+  end
+
+  local left = vim.fn.expand(args[1])
+  local right = vim.fn.expand(args[2])
+  local session, err = diffbandit.folder_diff(left, right)
+  if not session and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "+",
+  complete = "dir",
+  desc = "Open DiffBandit folder diff view",
+})
+
 vim.api.nvim_create_user_command("DiffBanditToggleStageHunk", function()
   diffbandit.toggle_stage_hunk()
 end, {

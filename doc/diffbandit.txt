@@ -7,13 +7,14 @@ CONTENTS                                                     *diffbandit*
   2. Installation                                  |diffbandit-installation|
   3. Commands                                      |diffbandit-commands|
   4. Default mappings                              |diffbandit-mappings|
-  5. Git diffs                                     |diffbandit-git|
-  6. Commit panel                                  |diffbandit-commit-panel|
-  7. Merge conflicts                               |diffbandit-merge|
-  8. Hunk actions                                  |diffbandit-hunk-actions|
-  9. Configuration                                 |diffbandit-configuration|
- 10. Lua API                                       |diffbandit-lua-api|
- 11. Testing                                       |diffbandit-testing|
+  5. Folder diff                                   |diffbandit-folder-diff|
+  6. Git diffs                                     |diffbandit-git|
+  7. Commit panel                                  |diffbandit-commit-panel|
+  8. Merge conflicts                               |diffbandit-merge|
+  9. Hunk actions                                  |diffbandit-hunk-actions|
+ 10. Configuration                                 |diffbandit-configuration|
+ 11. Lua API                                       |diffbandit-lua-api|
+ 12. Testing                                       |diffbandit-testing|
 
 ==============================================================================
 OVERVIEW                                            *diffbandit-overview*
@@ -21,7 +22,7 @@ OVERVIEW                                            *diffbandit-overview*
 DiffBandit is a Neovim diff viewer with independent source panes, docked line
 number panes, compact connector geometry, Git-aware navigation, hunk actions,
 a commit panel, binary hex diffs, 3-way merge conflict resolution, and
-theme-adaptive highlights.
+read-only folder comparison, and theme-adaptive highlights.
 
 The layout is designed around source buffers that keep natural scrolling while
 the gutter explains how changed regions relate. Line numbers stay attached to
@@ -36,6 +37,7 @@ Core features:
 - Hunk staging, unstaging, apply/discard actions, and undo.
 - Optional commit panel with file staging and commit message entry.
 - Merge conflict group with a local/result/remote resolver.
+- Recursive folder comparison using external digest commands.
 - One-column overview gutters at the outer document edges.
 - Read-only binary hex comparison view.
 - Theme-friendly colors derived from the active colorscheme.
@@ -70,6 +72,10 @@ COMMANDS                                            *diffbandit-commands*
                                                  *:DiffBanditBuffers*
 :DiffBanditBuffers {left-bufnr} {right-bufnr}
         Open a DiffBandit view comparing two loaded buffers.
+
+                                             *:DiffBanditFolderDiff*
+:DiffBanditFolderDiff {left-folder} {right-folder}
+        Open a read-only recursive folder comparison.
 
                                                      *:DiffBanditGit*
 :DiffBanditGit [flags] [--] [pathspec...]
@@ -164,6 +170,33 @@ Diff view mappings:
 At a file boundary, |diffbandit-]c| and |diffbandit-[c| first notify that the
 next press will move to the next or previous file. This keeps file navigation
 deliberate while reviewing a Git queue.
+
+==============================================================================
+FOLDER DIFF                                      *diffbandit-folder-diff*
+
+Open a read-only recursive folder comparison with:
+>
+  :DiffBanditFolderDiff path/to/left path/to/right
+<
+
+DiffBandit aligns matching relative paths from both folder roots and compares
+same-size files with an external digest command such as md5sum, md5, or
+shasum. Folder comparison does not read file contents into Lua; the ordinary
+text or hex diff is loaded only after opening a file row.
+
+Folder diff mappings:
+
+  <CR> or o      Open the selected file pair, or toggle a directory.
+  ]c / [c        Jump to the next or previous visible difference.
+  <Space> / za   Expand or collapse the selected directory.
+  zR / zM        Expand or collapse all directories.
+  s              Change the status filter.
+  R              Refresh the folder comparison.
+  q              Close the folder diff.
+
+Opening a file row creates a child DiffBandit file diff. Pressing q in that
+child diff returns to the original folder comparison with the selected row
+restored.
 
 ==============================================================================
 GIT DIFFS                                                *diffbandit-git*
@@ -336,6 +369,37 @@ Common configuration:
         close = "q",
       },
     },
+    folder = {
+      gutter_width = 7,
+      columns = {
+        size = true,
+        modified = true,
+      },
+      compare = {
+        mode = "digest",
+        backend = "auto",
+        batch_size = 64,
+        max_concurrency = 2,
+        debounce_ms = 50,
+      },
+      filters = {
+        include = {},
+        exclude = {},
+      },
+      keys = {
+        open = "<CR>",
+        alternate_open = "o",
+        toggle_expand = "<Space>",
+        alternate_toggle_expand = "za",
+        expand_all = "zR",
+        collapse_all = "zM",
+        next_diff = "]c",
+        prev_diff = "[c",
+        refresh = "R",
+        filter = "s",
+        close = "q",
+      },
+    },
     ui = {
       connector_width = 12,
       scroll_debounce_ms = 16,
@@ -392,6 +456,7 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.setup({})
   diffbandit.files("left.txt", "right.txt")
   diffbandit.buffers(left_bufnr, right_bufnr)
+  diffbandit.folder_diff("left-dir", "right-dir")
   diffbandit.git({ mode = "all" })
   diffbandit.git_file(nil, { mode = "all" })
   diffbandit.merge("path/to/conflicted-file")

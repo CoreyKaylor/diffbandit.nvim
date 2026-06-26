@@ -19,6 +19,7 @@ local overview_mod = require("diffbandit.overview")
 local merge_mod = require("diffbandit.merge")
 local diff_pair_mod = require("diffbandit.diff_pair")
 local state_mod = require("diffbandit.state")
+local folder_mod = require("diffbandit.folder")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -74,6 +75,11 @@ assert_eq(config.ui.overview.width, 1, "Overview gutter should default to one co
 assert_eq(config.ui.scroll_debounce_ms, 16, "Viewport scroll rerenders should debounce by default")
 assert_eq(config.merge.result_initial_content, "base", "Merge result should initialize from the base by default")
 assert_eq(config.merge.keys.accept_local, ">>", "Merge accept-local key should default to >>")
+assert_eq(config.folder.compare.mode, "digest", "Folder diff should default to digest comparison")
+assert_eq(config.folder.gutter_width, 7, "Folder diff gutter should default to a centered seven-column status pane")
+assert_eq(config.folder.compare.batch_size, 64, "Folder diff digest batching should default to 64 file pairs")
+assert_eq(config.folder.compare.max_concurrency, 2, "Folder diff should default to bounded digest concurrency")
+assert_eq(config.folder.keys.open, "<CR>", "Folder diff open key should default to enter")
 
 do
   local original_showtabline = vim.o.showtabline
@@ -1747,6 +1753,66 @@ end
 local function commit_baseline(root_dir)
   git_test_command({ "add", "." }, root_dir)
   git_test_command({ "commit", "-m", "baseline" }, root_dir)
+end
+
+do
+  local left = vim.fn.tempname()
+  local right = vim.fn.tempname()
+  vim.fn.mkdir(left .. "/nested", "p")
+  vim.fn.mkdir(right .. "/nested", "p")
+  write_repo_file(left, "same.txt", { "same" })
+  write_repo_file(right, "same.txt", { "same" })
+  write_repo_file(left, "size.txt", { "short" })
+  write_repo_file(right, "size.txt", { "longer" })
+  write_repo_file(left, "left-only.txt", { "left" })
+  write_repo_file(right, "right-only.txt", { "right" })
+  write_repo_file(left, "nested/pending.bin", { "aa" })
+  write_repo_file(right, "nested/pending.bin", { "bb" })
+
+  local private = folder_mod._private
+  local left_entries = private.scan_tree(left, {})
+  local right_entries = private.scan_tree(right, {})
+  local rows, by_rel = private.build_rows(left_entries, right_entries)
+  private.recompute_aggregate(rows, by_rel)
+
+  assert_eq(by_rel["left-only.txt"].direct_status, "left_only",
+    "Folder model should mark left-only files")
+  assert_eq(by_rel["right-only.txt"].direct_status, "right_only",
+    "Folder model should mark right-only files")
+  assert_eq(by_rel["size.txt"].direct_status, "different",
+    "Folder model should mark size mismatches as different without digesting")
+  assert_eq(by_rel["nested/pending.bin"].direct_status, "pending",
+    "Folder model should defer same-size regular files to digest comparison")
+  assert_eq(by_rel["nested"].status, "pending",
+    "Folder model should aggregate pending descendants into parent folders")
+
+  by_rel["nested/pending.bin"].direct_status = "different"
+  private.recompute_aggregate(rows, by_rel)
+  assert_eq(by_rel["nested"].status, "different",
+    "Folder model should aggregate differing descendants into parent folders")
+end
+
+do
+  local private = folder_mod._private
+  local nul_output = "abc123  /tmp/space name.txt\0def456  /tmp/new\nline.bin\0"
+  local parsed_nul = private.parse_md5sum_z(nul_output)
+  assert_eq(parsed_nul["/tmp/space name.txt"], "abc123",
+    "Folder digest parser should preserve spaces in md5sum -z paths")
+  assert_eq(parsed_nul["/tmp/new\nline.bin"], "def456",
+    "Folder digest parser should preserve newline paths in md5sum -z output")
+
+  local parsed_order = private.parse_line_order("aaa\nbbb\n", { "/left", "/right" })
+  assert_eq(parsed_order["/left"], "aaa",
+    "macOS md5 -q parser should associate digests by input order")
+  assert_eq(parsed_order["/right"], "bbb",
+    "macOS md5 -q parser should parse the second digest by input order")
+
+  local parsed_lines = private.parse_digest_lines("ccc  /tmp/file one\n")
+  assert_eq(parsed_lines["/tmp/file one"], "ccc",
+    "shasum parser should preserve paths with spaces")
+
+  local backend = private.detect_backend(config)
+  assert_ne(backend, nil, "Folder diff should detect an external digest or cmp backend")
 end
 
 do
