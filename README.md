@@ -2,14 +2,16 @@
 
 [![CI](https://github.com/CoreyKaylor/diffbandit.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/CoreyKaylor/diffbandit.nvim/actions/workflows/ci.yml)
 
-DiffBandit is a Neovim diff viewer with independent panes, compact connector
-geometry, Git-aware navigation, hunk actions, a commit panel, binary hex diffs,
-3-way merge conflict resolution, and theme-adaptive highlights.
+DiffBandit is a Neovim diff viewer built around a more natural comparison
+model: the source document keeps its original shape and line numbers, the
+destination document keeps its own shape and line numbers, and a compact
+connector gutter draws the relationship between them.
 
-It is designed to feel like a focused editor-native diff tool: source buffers
-keep natural scrolling, line numbers stay docked to their side, and the middle
-gutter shows the relationship between changed regions without repeating source
-content.
+Instead of inserting visual diff noise into either document or stretching rows
+to force alignment, DiffBandit preserves each side as the editor would normally
+show it. The middle gutter carries the explanation: additions, deletions,
+changes, scroll-clipped regions, and merge relationships are routed between the
+documents without distorting either one.
 
 ## Features
 
@@ -21,8 +23,11 @@ content.
 - Hunk staging, unstaging, discard/apply actions, and undo.
 - Optional Git commit panel with file staging, amend mode, commit message entry,
   and live diff preview.
-- Merge conflict group in the commit panel with a dedicated local/result/remote
-  resolver.
+- Merge conflict group in the commit panel with a local/result/remote resolver,
+  editable result pane, gutter-guided accept actions, and resolve-on-write
+  staging.
+- Recursive folder comparison with efficient external digest checks and child
+  file diffs that return to the folder view.
 - One-column overview gutters that show changed regions proportionally across
   each document.
 - Binary file support through a read-only hex comparison view.
