@@ -1,37 +1,8 @@
 local M = {}
 
-local function pad_connector(str, width)
-  local display = vim.fn.strdisplaywidth(str)
-  if display >= width then
-    return str
-  end
-  return str .. string.rep(" ", width - display)
-end
-
-local function connector_for(chunk_type, position, total, cfg, width)
-  local shapes = cfg[chunk_type] or cfg.change
-  if not shapes then
-    return pad_connector(cfg.context or "", width)
-  end
-
-  local key
-  if total <= 1 then
-    key = "single"
-  elseif position == 1 then
-    key = "start"
-  elseif position == total then
-    key = "finish"
-  else
-    key = "mid"
-  end
-
-  local value = shapes[key] or cfg.context or ""
-  return pad_connector(value, width)
-end
-
 function M.build(left_lines, right_lines, hunks, config)
   local connector_width = config.ui.connector_width or 3
-  local connectors_cfg = config.ui.connectors or {}
+  local blank_connector = string.rep(" ", connector_width)
 
   local left_view, right_view, connector_view, line_meta = {}, {}, {}, {}
   local chunks = {}
@@ -39,7 +10,7 @@ function M.build(left_lines, right_lines, hunks, config)
   local prev_a_end = 0
   local prev_b_end = 0
 
-  local function add_line(left_text, right_text, connector_text, meta)
+  local function add_line(left_text, right_text, meta)
     -- Only add actual content lines to each buffer
     -- Filler rows exist only in connector view for alignment
     local left_index = nil
@@ -58,7 +29,7 @@ function M.build(left_lines, right_lines, hunks, config)
     end
 
     -- Connector always has full aligned view
-    connector_view[#connector_view + 1] = pad_connector(connector_text or connectors_cfg.context or "", connector_width)
+    connector_view[#connector_view + 1] = blank_connector
     line_meta[#line_meta + 1] = meta
 
     meta.left_index = left_index
@@ -101,7 +72,7 @@ function M.build(left_lines, right_lines, hunks, config)
         b_idx = b_idx + 1
       end
 
-      add_line(left_text, right_text, connectors_cfg.context or "", {
+      add_line(left_text, right_text, {
         kind = "context",
         chunk = nil,
         left_line = left_line_num,
@@ -170,25 +141,9 @@ function M.build(left_lines, right_lines, hunks, config)
         end
       end
 
-      -- Connector text is driven by per-row kind, not hunk type.
-      -- Add/delete rows (including those produced inside change hunks) are rendered
-      -- via session.lua path rendering (triangles/bars/underlines).
-      local connector_text
-      if kind == "add" or kind == "delete" then
-        connector_text = string.rep(" ", connector_width)
-      elseif kind == "change" then
-        local change_total = math.min(h.left.count, h.right.count)
-        if change_total <= 0 then
-          change_total = 1
-        end
-        connector_text = connector_for("change", math.min(i, change_total), change_total, connectors_cfg, connector_width)
-      else
-        connector_text = connectors_cfg.context or ""
-      end
-
       -- Keep change classification at the line level; intra-line coloring decides blue/green mix.
-
-      add_line(left_text, right_text, connector_text, {
+      -- Connector glyphs are rendered from route paths in session.lua.
+      add_line(left_text, right_text, {
         kind = kind,
         chunk = h.index,
         left_line = left_line_num,
@@ -258,7 +213,7 @@ function M.build(left_lines, right_lines, hunks, config)
       b_idx = b_idx + 1
     end
 
-    add_line(left_text, right_text, connectors_cfg.context or "", {
+    add_line(left_text, right_text, {
       kind = "context",
       chunk = nil,
       left_line = left_line_num,

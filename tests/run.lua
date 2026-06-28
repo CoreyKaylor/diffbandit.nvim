@@ -1638,6 +1638,8 @@ do
     "Add override should propagate to overview add markers")
   assert_eq(get_hl("DiffBanditConnectorAddLine").fg, 0x112233,
     "Add override should propagate to add connector rails")
+  assert_eq(get_hl("DiffBanditConnectorAddLine").bold, true,
+    "Connector rail glyphs should render bold by default")
   assert_eq(get_hl("DiffBanditDelete").bg, 0x445566,
     "Delete override should accept hex strings")
   assert_eq(get_hl("DiffBanditOverviewDelete").bg, 0x445566,
@@ -1650,6 +1652,8 @@ do
     "Change override should propagate to overview change markers")
   assert_eq(get_hl("DiffBanditConnectorExpansionChange").fg, 0x778899,
     "Change override should propagate to change wedges")
+  assert_eq(get_hl("DiffBanditConnectorExpansionChange").bold, true,
+    "Connector transition glyphs should render bold by default")
   assert_eq(get_hl("DiffBanditChangeEmphasis").bg, 0xABCDEF,
     "Change emphasis override should win over adaptive derivation")
 

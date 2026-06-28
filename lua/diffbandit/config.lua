@@ -42,15 +42,6 @@ local defaults = {
       },
       highlights = {},
     },
-    connectors = {
-      context = "   ",
-      change = {
-        single = "──",
-        start = "╭─",
-        mid = "│ ",
-        finish = "╰─",
-      },
-    },
   },
   navigation = {
     align_on_jump = true,

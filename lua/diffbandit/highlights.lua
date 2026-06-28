@@ -286,12 +286,6 @@ local function apply_diff_variants(config)
     sp = add_bg,
   })
 
-  apply_group("DiffBanditDeleteLeftSeparatorConnector", {
-    fg = delete_bg,
-    underline = true,
-    sp = delete_bg,
-  })
-
   apply_group("DiffBanditDeleteRightSeparatorConnector", {
     fg = delete_bg,
     underline = true,
@@ -338,9 +332,9 @@ local function apply_diff_variants(config)
   })
 
   -- Stroke colors for connector routing (use background colors for visual continuity with diff regions)
-  apply_group("DiffBanditConnectorAddLine", { fg = add_bg })
-  apply_group("DiffBanditConnectorDeleteLine", { fg = delete_bg })
-  apply_group("DiffBanditConnectorChangeLine", { fg = change_bg })
+  apply_group("DiffBanditConnectorAddLine", { fg = add_bg, bold = true })
+  apply_group("DiffBanditConnectorDeleteLine", { fg = delete_bg, bold = true })
+  apply_group("DiffBanditConnectorChangeLine", { fg = change_bg, bold = true })
 
   -- Expansion glyphs: foreground matches the background color for seamless visual bridging
   -- The ◥/◤ triangles appear with fg color matching the add/delete background, creating
@@ -348,24 +342,24 @@ local function apply_diff_variants(config)
   apply_group("DiffBanditConnectorExpansionAdd", {
     fg = add_bg,
     bg = normal_bg,
+    bold = true,
   })
   apply_group("DiffBanditConnectorExpansionAddUnderline", {
     fg = add_bg,
     bg = normal_bg,
     underline = true,
     sp = add_bg,
+    bold = true,
   })
   apply_group("DiffBanditConnectorExpansionDelete", {
     fg = delete_bg,
     bg = normal_bg,
+    bold = true,
   })
   apply_group("DiffBanditConnectorExpansionChange", {
     fg = change_bg,
     bg = normal_bg,
-  })
-  apply_group("DiffBanditConnectorDeleteCutout", {
-    fg = normal_bg,
-    bg = delete_bg,
+    bold = true,
   })
 
   apply_group("DiffBanditConnectorContext", {
