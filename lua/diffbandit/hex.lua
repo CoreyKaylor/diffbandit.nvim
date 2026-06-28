@@ -124,8 +124,4 @@ function M.dump(text, opts)
   return result
 end
 
-M._private = {
-  offset_width = offset_width,
-}
-
 return M

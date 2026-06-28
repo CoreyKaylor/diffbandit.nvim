@@ -1288,21 +1288,6 @@ function Merge:pair_context_for_side(side)
   }
 end
 
-function Merge:focused_pair_side(default_side)
-  local win = vim.api.nvim_get_current_win()
-  if win == self.remote_win then
-    return "remote"
-  elseif win == self.local_win then
-    return "local"
-  elseif win == self.result_win then
-    if self.last_content_win == self.remote_win then
-      return "remote"
-    end
-    return default_side or "local"
-  end
-  return default_side or "local"
-end
-
 function Merge:cursor_row_for_pair(ctx)
   local win = vim.api.nvim_get_current_win()
   if win == self.result_win then
@@ -1384,23 +1369,8 @@ function Merge:selected_item()
         return item
       end
     end
-    return nil
   end
-  local ctx = self:pair_context_for_side(selected.side)
-  local hunk = ctx.pair and ctx.pair.hunks and ctx.pair.hunks[selected.index]
-  if not hunk then
-    return nil
-  end
-  return {
-    side = selected.side,
-    index = selected.index,
-    hunk = hunk,
-    [selected.side .. "_index"] = selected.index,
-    [selected.side .. "_hunk"] = hunk,
-    key = tostring(hunk_range_for_side(hunk, "right")) .. ":" .. tostring(select(3, hunk_range_for_side(hunk, "right"))),
-    result_start = hunk_range_for_side(hunk, "right"),
-    result_count = select(3, hunk_range_for_side(hunk, "right")),
-  }
+  return nil
 end
 
 function Merge:selection_summary()
@@ -1417,46 +1387,6 @@ function Merge:selection_summary()
     return string.format("<< I%s -> %s", range_text(item.remote_hunk, "left"), result)
   end
   return string.format(">> L%s -> %s", range_text(item.local_hunk, "left"), result)
-end
-
-function Merge:hunk_index_at_or_after(ctx, row, range_side, direction)
-  local hunks = (ctx.pair and ctx.pair.hunks) or {}
-  if #hunks == 0 then
-    return nil
-  end
-
-  local current
-  for index, hunk in ipairs(hunks) do
-    local start, finish = hunk_range_for_side(hunk, range_side)
-    if row >= start and row <= finish then
-      current = index
-      break
-    end
-  end
-
-  if direction > 0 then
-    if current and current < #hunks then
-      return current + 1
-    end
-    for index, hunk in ipairs(hunks) do
-      local start = hunk_range_for_side(hunk, range_side)
-      if start > row then
-        return index
-      end
-    end
-    return current or #hunks
-  end
-
-  if current and current > 1 then
-    return current - 1
-  end
-  for index = #hunks, 1, -1 do
-    local _, finish = hunk_range_for_side(hunks[index], range_side)
-    if finish < row then
-      return index
-    end
-  end
-  return current or 1
 end
 
 function Merge:hunk_index_at_row(ctx, row, range_side)
@@ -1510,36 +1440,6 @@ function Merge:rerender_pair_viewports()
     self.local_result_session:rerender_for_viewport()
   end
   pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = self.result_buf })
-end
-
-function Merge:align_pair_hunk_viewports(side, source_row, result_row)
-  local navigation = self.config.navigation or {}
-  local context = math.max(0, tonumber(navigation.jump_context) or 0)
-  local local_anchor
-  local remote_anchor
-  if side == "remote" then
-    remote_anchor = source_row
-    local_anchor = self:source_row_for_result_row("local", result_row)
-  else
-    local_anchor = source_row
-    remote_anchor = self:source_row_for_result_row("remote", result_row)
-  end
-
-  local local_cursor = math.min(math.max(1, local_anchor or 1), math.max(1, vim.api.nvim_buf_line_count(self.local_buf)))
-  local result_cursor = math.min(math.max(1, result_row or 1), math.max(1, vim.api.nvim_buf_line_count(self.result_buf)))
-  local remote_cursor = math.min(math.max(1, remote_anchor or 1), math.max(1, vim.api.nvim_buf_line_count(self.remote_buf)))
-  pcall(vim.api.nvim_win_set_cursor, self.local_win, { local_cursor, 0 })
-  pcall(vim.api.nvim_win_set_cursor, self.result_win, { result_cursor, 0 })
-  pcall(vim.api.nvim_win_set_cursor, self.remote_win, { remote_cursor, 0 })
-
-  local local_topline = math.max(1, (local_anchor or 1) - context)
-  local result_topline = math.max(1, (result_row or 1) - context)
-  local remote_topline = math.max(1, (remote_anchor or 1) - context)
-  self:set_viewports(local_topline, result_topline, remote_topline)
-  pcall(vim.api.nvim_win_set_cursor, self.local_win, { local_cursor, 0 })
-  pcall(vim.api.nvim_win_set_cursor, self.result_win, { result_cursor, 0 })
-  pcall(vim.api.nvim_win_set_cursor, self.remote_win, { remote_cursor, 0 })
-  self:rerender_pair_viewports()
 end
 
 function Merge:align_hunk_item_viewports(item)
@@ -1620,43 +1520,6 @@ function Merge:goto_document_edge(edge)
   self:render_headers()
 end
 
-function Merge:goto_pair_hunk(side, index)
-  local ctx = self:pair_context_for_side(side)
-  local hunk = ctx.pair and ctx.pair.hunks and ctx.pair.hunks[index]
-  if not hunk then
-    return false
-  end
-  self.selected_pair_hunk = {
-    side = side,
-    index = index,
-  }
-  local source_row = hunk_range_for_side(hunk, "left")
-  local result_row = hunk_range_for_side(hunk, "right")
-  source_row = math.max(1, source_row)
-  result_row = math.max(1, result_row)
-
-  if ctx.source_win and vim.api.nvim_win_is_valid(ctx.source_win) then
-    pcall(vim.api.nvim_win_set_cursor, ctx.source_win, {
-      math.min(source_row, math.max(1, vim.api.nvim_buf_line_count(ctx.source_buf))),
-      0,
-    })
-  end
-  if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.result_win, {
-      math.min(result_row, math.max(1, vim.api.nvim_buf_line_count(self.result_buf))),
-      0,
-    })
-  end
-
-  local target = vim.api.nvim_get_current_win() == self.result_win and self.result_win or ctx.source_win
-  self:align_pair_hunk_viewports(side, source_row, result_row)
-  if target and vim.api.nvim_win_is_valid(target) then
-    pcall(vim.api.nvim_set_current_win, target)
-  end
-  self:render_headers()
-  return true
-end
-
 function Merge:goto_pair_hunk_by_direction(direction)
   local items = self:all_pair_hunks()
   if #items == 0 then
@@ -1672,9 +1535,6 @@ function Merge:goto_pair_hunk_by_direction(direction)
   if selected then
     for rank, item in ipairs(items) do
       if selected.key and item.key == selected.key then
-        selected_rank = rank
-        break
-      elseif item.side == selected.side and item.index == selected.index then
         selected_rank = rank
         break
       end

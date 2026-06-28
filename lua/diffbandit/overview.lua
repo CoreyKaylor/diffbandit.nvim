@@ -147,19 +147,4 @@ function M.render_side_with_marks(buf, namespace, marks, line_count, height, cur
   end
 end
 
-function M.render_side(buf, namespace, view, side, line_count, height, cursor_line, current_chunk, config)
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
-    return
-  end
-
-  local marks = M.build_marks(view, side, current_chunk)
-  M.render_side_with_marks(buf, namespace, marks, line_count, height, cursor_line, current_chunk, config)
-end
-
-M._private = {
-  row_for_line = row_for_line,
-  mark_for_meta = mark_for_meta,
-  should_replace = should_replace,
-}
-
 return M

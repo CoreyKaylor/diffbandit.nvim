@@ -657,25 +657,6 @@ local function format_side(row, side, width, columns, by_rel)
   }
 end
 
-local function summary_text(self)
-  local total = #(self.rows or {})
-  local diff = 0
-  local pending = 0
-  local errors = 0
-  for _, row in ipairs(self.rows or {}) do
-    if row.direct_status == "pending" then
-      pending = pending + 1
-    elseif row.direct_status == "error" then
-      errors = errors + 1
-    elseif is_difference_status(row.direct_status) then
-      diff = diff + 1
-    end
-  end
-  local filter = filter_labels[self.filter] or self.filter or "All"
-  local backend = self.backend and self.backend.name or "none"
-  return string.format("%s  %d paths  %d diffs  %d pending  %d errors  %s", filter, total, diff, pending, errors, backend)
-end
-
 local function count_kind(entries, kind)
   local count = 0
   for _, entry in pairs(entries or {}) do
@@ -1502,8 +1483,6 @@ Folder._private = {
   parse_md5sum_z = parse_md5sum_z,
   parse_digest_lines = parse_digest_lines,
   parse_line_order = parse_line_order,
-  compare_direct = compare_direct,
-  cache_key = cache_key,
 }
 
 return Folder

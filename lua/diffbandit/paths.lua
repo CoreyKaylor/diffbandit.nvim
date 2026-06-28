@@ -1362,10 +1362,6 @@ end
 local function add_change_plan_routes(routes, path, viewport_topline)
   for link_index, link in ipairs(path.viewport_change_links or {}) do
     link.overflow_hidden = nil
-    if link.no_vertical and link.from_row == link.to_row then
-      -- Same-row change transitions are a single underline and do not need a rail
-      -- reservation, but keeping them in the planner gives rendering one path.
-    end
 
     local from_row = (link.from_visible and link.underline_row)
       or endpoint_underline_row(link.from_side, link.from_row, link.from_glyph, viewport_topline)
@@ -1558,7 +1554,7 @@ function M.plan_routes(paths, layout)
   end
 
   local strategy = "greedy"
-  local success, unplaced_routes = solve_greedy()
+  local success = solve_greedy()
   if not success then
     strategy = "backtrack"
     occupied = {}
@@ -1567,7 +1563,7 @@ function M.plan_routes(paths, layout)
   end
   if not success then
     strategy = backtrack_steps > backtrack_limit and "bounded-hidden" or "greedy-hidden"
-    success, unplaced_routes = solve_greedy()
+    local _, unplaced_routes = solve_greedy()
     hidden_routes = hidden_routes or {}
     for _, route in ipairs(unplaced_routes or {}) do
       mark_route_overflow_hidden(route)

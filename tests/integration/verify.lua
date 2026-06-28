@@ -519,9 +519,6 @@ local function verify_deletions(lines, ansi_lines)
   local second_delete_triangle_after_left_number = false
   local pure_delete_rail_after_left_number = false
   local delete_origin_underline_reaches_edge = false
-  local delete_origin_stops_at_rail = true
-  local delete_tail_underscore_left_of_pipe = true
-  local delete_tail_line_number_clean = true
   for _, line in ipairs(lines) do
     local stripped = strip_ansi(line)
     for _, triangle in ipairs(delete_triangles) do
@@ -1661,24 +1658,6 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
   local delete_glyphs = { "\226\151\164", "\226\151\163", "\226\151\165" } -- ◤, ◣, ◥
   local require_plain_fragment, forbid_plain_fragment = plain_fragment_requirements(errors, lines)
 
-  local function delete_connector_tail_reaches_glyph(label, glyph)
-    if not ansi_lines then
-      return false
-    end
-    local separator_width = #"\226\148\130" -- │
-    for _, line in ipairs(ansi_lines) do
-      local stripped = strip_ansi(line)
-      if stripped:find(label, 1, true) and stripped:find(glyph, 1, true) then
-        local glyph_pos = stripped:find(glyph, 1, true)
-        local tail_pos = glyph_pos and (glyph_pos + #glyph + separator_width) or nil
-        if tail_pos and ansi_underline_at_plain_byte(line, tail_pos) then
-          return true
-        end
-      end
-    end
-    return false
-  end
-
   if phase == "origin-offscreen" then
     if not find_plain_line(lines, { "Deleted scroll" }) then
       table.insert(errors, "Expected scroll deletion viewport to include deleted content")
@@ -2236,13 +2215,6 @@ local function verify_dense_mixed(lines, ansi_lines, phase)
   local errors = {}
   local saw_dense_row = false
   local saw_core_width = false
-  local distinct_pipe_cols = {}
-
-  local function require_plain_fragment(fragment, message)
-    if not find_plain_line(lines, { fragment }) then
-      table.insert(errors, message)
-    end
-  end
 
   local function require_no_left_number_underline(label, message)
     if not ansi_lines then
@@ -2295,38 +2267,6 @@ local function verify_dense_mixed(lines, ansi_lines, phase)
     end
   end
 
-  local function require_core_underline(label, message)
-    if not ansi_lines then
-      return
-    end
-    for _, line in ipairs(ansi_lines) do
-      local stripped = strip_ansi(line)
-      if stripped:find(label, 1, true) then
-        local separators = {}
-        local from = 1
-        while true do
-          local pos = stripped:find("│", from, true)
-          if not pos then
-            break
-          end
-          separators[#separators + 1] = pos
-          from = pos + #"│"
-        end
-        local core_start = separators[2]
-        local core_end = separators[#separators - 1]
-        if core_start and core_end then
-          for pos = core_start + 1, core_end - 1 do
-            if ansi_underline_at_plain_byte(line, pos) then
-              return
-            end
-          end
-        end
-        table.insert(errors, message)
-        return
-      end
-    end
-  end
-
   local minimum_width = 12
   local maximum_width = 24
   for _, line in ipairs(lines) do
@@ -2352,11 +2292,6 @@ local function verify_dense_mixed(lines, ansi_lines, phase)
             #chars
           ))
           break
-        end
-        for col, ch in ipairs(chars) do
-          if ch == "│" then
-            distinct_pipe_cols[col] = true
-          end
         end
       end
     end

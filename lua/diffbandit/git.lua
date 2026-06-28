@@ -1679,10 +1679,6 @@ end
 
 M._private = {
   parse_name_status = parse_name_status,
-  split_nul = split_nul,
-  normalize_opts = normalize_opts,
-  split_lines = split_lines,
-  to_text = to_text,
 }
 
 return M

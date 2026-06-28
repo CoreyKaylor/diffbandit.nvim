@@ -1524,37 +1524,6 @@ function Session:update_title()
   vim.api.nvim_tabpage_set_var(self.tabpage, "diffbandit_title", self.title)
 end
 
-local function truncate_display(text, width)
-  text = text or ""
-  width = math.max(0, width or 0)
-  if vim.fn.strdisplaywidth(text) <= width then
-    return text
-  end
-  if width <= 1 then
-    return string.rep(" ", width)
-  end
-
-  local ellipsis = "…"
-  local target_width = width - vim.fn.strdisplaywidth(ellipsis)
-  local out = {}
-  local used = 0
-  local char_count = vim.fn.strchars(text)
-  for i = 0, char_count - 1 do
-    local char = vim.fn.strcharpart(text, i, 1)
-    local char_width = vim.fn.strdisplaywidth(char)
-    if used + char_width > target_width then
-      break
-    end
-    out[#out + 1] = char
-    used = used + char_width
-  end
-  return table.concat(out) .. ellipsis
-end
-
-local function set_header_line(buf, namespace, text, width)
-  ui.set_header_line(buf, namespace, text, width)
-end
-
 function Session:render_status_headers()
   if not self.status_enabled then
     return
@@ -1576,9 +1545,9 @@ function Session:render_status_headers()
     lines.center = lines.center_compact
   end
   self.status_lines = lines
-  set_header_line(self.left_header_buf, self.ns, self.status_lines.left, vim.api.nvim_win_get_width(self.left_header_win))
-  set_header_line(self.center_header_buf, self.ns, self.status_lines.center, center_width)
-  set_header_line(self.right_header_buf, self.ns, self.status_lines.right, vim.api.nvim_win_get_width(self.right_header_win))
+  ui.set_header_line(self.left_header_buf, self.ns, self.status_lines.left, vim.api.nvim_win_get_width(self.left_header_win))
+  ui.set_header_line(self.center_header_buf, self.ns, self.status_lines.center, center_width)
+  ui.set_header_line(self.right_header_buf, self.ns, self.status_lines.right, vim.api.nvim_win_get_width(self.right_header_win))
 end
 
 function Session:replace_sources(sources, opts)
@@ -1700,13 +1669,6 @@ end
 
 local function highlight_for_right(meta)
   return get_highlight(HIGHLIGHT_RIGHT, meta, "filler_right")
-end
-
-local function connector_line_highlight(kind)
-  if kind == "add" then
-    return "DiffBanditConnectorAddLine"
-  end
-  return "DiffBanditConnectorDeleteLine"
 end
 
 function Session:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
@@ -2180,66 +2142,6 @@ function Session:render()
     viewport_height = left_height,
   })
 
-  -- Build active_vertical_bars[row][lane] tracking which lanes have active bars at each row
-  local active_vertical_bars = paths_mod.compute_active_bars(route_paths)
-
-  -- Define positioning functions now that connector_core_width is finalized
-  -- Glyphs are positioned per lane with indentation; vertical bars (rails) sit to the left
-  local rail_spacing = 1
-  local glyph_base_col = self.connector_core_width - 1
-  local function rail_col_for_lane(lane)
-    local idx = math.max(0, lane - 1)
-    return glyph_base_col - (idx * (rail_spacing + 1)) - 1
-  end
-  local function lane_col(lane)
-    return rail_col_for_lane(lane)
-  end
-  local function delete_lane_col(lane)
-    local idx = math.max(0, lane - 1)
-    return 1 + (idx * (rail_spacing + 1))
-  end
-  local default_change_rail_col = math.max(2, math.floor(self.connector_core_width / 3))
-  local use_lane_bound_change_rails = #route_paths >= 5
-  local has_projected_change_path = false
-  for _, p in ipairs(route_paths) do
-    if p.kind == "change" then
-      has_projected_change_path = true
-      break
-    end
-  end
-
-  local function is_clipped_change_path(path)
-    if not path or path.kind ~= "change" then
-      return false
-    end
-    for _, link in ipairs(path.viewport_change_links or {}) do
-      if link.from_visible == false or link.to_visible == false then
-        return true
-      end
-    end
-    return false
-  end
-
-  local function change_rail_col_for_path(path)
-    if path and path.planned_rail_col ~= nil then
-      return path.planned_rail_col
-    end
-    if path and path.lane and path.lane > 0 then
-      if not use_lane_bound_change_rails
-          and path.kind == "change"
-          and path.mixed_add
-          and path.lane == 1 then
-        return math.min(self.connector_core_width - 1, default_change_rail_col + 1)
-      end
-      local col = delete_lane_col(path.lane)
-      if is_clipped_change_path(path) and path.lane > 1 then
-        col = math.min(self.connector_core_width - 1, col + 2)
-      end
-      return col
-    end
-    return default_change_rail_col
-  end
-
   -- Compute underline data using extracted helper
   local underline_layout = {
     left_number_width = 0,
@@ -2247,14 +2149,9 @@ function Session:render()
     rail_spacing = 1,
     sidecar_numbers = true,
   }
-  local underline_data = paths_mod.compute_underlines(route_paths, active_vertical_bars, underline_layout)
-  local origin_glyph_cols = underline_data.origin_glyph_cols
-  local origin_bar_cols = underline_data.origin_bar_cols
-  local origin_has_bar = underline_data.origin_has_bar
-  local tail_underlines = underline_data.tail_underlines
+  local underline_data = paths_mod.compute_underlines(route_paths, paths_mod.compute_active_bars(route_paths), underline_layout)
   local delete_origin_right_lines = underline_data.delete_origin_right_lines or {}
   local add_origin_row_has_transition = {}
-  local delete_target_rows = {}
   for _, p in ipairs(route_paths) do
     if p.kind == "add"
         and not p.embedded_in_change
@@ -2263,15 +2160,6 @@ function Session:render()
         and p.origin_display_row
         and (p.triangle_display_row or p.display_start_row) == p.origin_display_row then
       add_origin_row_has_transition[p.origin_display_row] = true
-    end
-    if p.kind == "delete" and not p.hide_triangle and not p.overflow_hidden then
-      local target_start = p.block_display_start or p.target_start_index or p.display_start_row or p.triangle_display_row
-      local target_end = p.block_display_end or p.target_end_index or p.display_end_row or target_start
-      if target_start and target_end then
-        for target_row = target_start, target_end do
-          delete_target_rows[target_row] = true
-        end
-      end
     end
   end
   local embedded_add_terminal_right_indexes = {}
@@ -2345,301 +2233,6 @@ function Session:render()
   for i = 1, connector_height do
     -- Initialize with spaces for the full gutter width
     connector_lines[i] = string.rep(" ", self.gutter_width)
-  end
-
-  local change_vertical_cols_by_row = {}
-  local function reserve_change_vertical(row, rail_col)
-    if row >= 1 and row <= connector_height then
-      change_vertical_cols_by_row[row] = change_vertical_cols_by_row[row] or {}
-      change_vertical_cols_by_row[row][rail_col] = true
-    end
-  end
-
-  for _, p in ipairs(route_paths) do
-    if p.kind == "change" then
-      local rail_col = change_rail_col_for_path(p)
-      for _, link in ipairs(p.viewport_change_links or {}) do
-        if not link.overflow_hidden and not link.no_vertical then
-          local start_row = math.min(link.from_row, link.to_row) + 1
-          local end_row = math.max(link.from_row, link.to_row) - 1
-          for row = start_row, end_row do
-            reserve_change_vertical(row, rail_col)
-          end
-        end
-      end
-    end
-  end
-
-  local function each_active_vertical_bar(lanes_at_row, callback)
-    if not lanes_at_row then
-      return
-    end
-    if lanes_at_row.__items then
-      for _, item in ipairs(lanes_at_row.__items) do
-        callback(item.lane, item.path)
-      end
-      return
-    end
-    for lane, path in pairs(lanes_at_row) do
-      if type(lane) == "number" then
-        callback(lane, path)
-      end
-    end
-  end
-
-  local function route_bar_col(path, lane)
-    if path and path.planned_rail_col ~= nil then
-      return path.planned_rail_col
-    end
-    if path and path.kind == "delete" then
-      return delete_lane_col(lane)
-    end
-    return lane_col(lane)
-  end
-
-  local function route_key(kind, lane)
-    return tostring(kind or "add") .. ":" .. tostring(lane or 1)
-  end
-
-  local function build_rendered_active_bars()
-    local rendered_bars = {}
-    local glyph_rows_by_lane = {}
-    local visible_glyph_rows_by_kind = {}
-
-    local function add_rendered_bar(row, lane, path)
-      rendered_bars[row] = rendered_bars[row] or {}
-      local row_bars = rendered_bars[row]
-      row_bars.__items = row_bars.__items or {}
-      row_bars.__items[#row_bars.__items + 1] = {
-        lane = lane,
-        path = path,
-        fg_group = connector_line_highlight(path.kind),
-      }
-    end
-
-    for _, p in ipairs(route_paths) do
-      if (p.kind == "add" or p.kind == "delete")
-          and not p.embedded_in_change
-          and not p.hide_triangle
-          and not p.overflow_hidden then
-        local lane = p.lane or 1
-        local key = route_key(p.kind, lane)
-        glyph_rows_by_lane[key] = glyph_rows_by_lane[key] or {}
-        glyph_rows_by_lane[key][p.triangle_display_row or p.display_start_row or p.start_row] = true
-        local glyph_row = p.triangle_display_row or p.display_start_row or p.start_row
-        visible_glyph_rows_by_kind[glyph_row] = visible_glyph_rows_by_kind[glyph_row] or {}
-        visible_glyph_rows_by_kind[glyph_row][p.kind] = true
-      end
-    end
-
-    for row, lanes_at_row in pairs(active_vertical_bars) do
-      each_active_vertical_bar(lanes_at_row, function(lane, p)
-        local key = route_key(p.kind, lane)
-        local lane_has_glyph = glyph_rows_by_lane[key] and glyph_rows_by_lane[key][row]
-        if not lane_has_glyph or p.connect_tail_on_triangle_row then
-          local render_lane = lane
-          if p.kind == "delete"
-              and p.hide_triangle
-              and lane == 1
-              and visible_glyph_rows_by_kind[row]
-              and visible_glyph_rows_by_kind[row].delete then
-            render_lane = lane + 1
-          end
-          add_rendered_bar(row, render_lane, p)
-        end
-      end)
-    end
-
-    return rendered_bars
-  end
-
-  local active_bars = build_rendered_active_bars()
-
-  local function occupied_route_cols(row)
-    local occupied = {}
-    local function reserve_col(col, with_spacer)
-      if with_spacer then
-        occupied[col - 1] = true
-        occupied[col] = true
-        occupied[col + 1] = true
-      else
-        occupied[col] = true
-      end
-    end
-    local lanes_at_row = active_bars[row]
-    each_active_vertical_bar(lanes_at_row, function(lane, path)
-      reserve_col(route_bar_col(path, lane), false)
-    end)
-    if change_vertical_cols_by_row[row] then
-      for col, _ in pairs(change_vertical_cols_by_row[row]) do
-        reserve_col(col, true)
-      end
-    end
-    return occupied
-  end
-
-  local function occupied_route_cols_for_span(row, start_row, end_row)
-    local occupied = occupied_route_cols(row)
-    if not start_row or not end_row then
-      return occupied
-    end
-    local function reserve_route_bar(path, col)
-      if path and (path.kind == "add" or path.kind == "delete") then
-        occupied[col - 1] = true
-        occupied[col] = true
-        occupied[col + 1] = true
-      else
-        occupied[col] = true
-      end
-    end
-    local span_start = math.max(1, math.min(start_row, end_row))
-    local span_end = math.min(connector_height, math.max(start_row, end_row))
-    for span_row = span_start, span_end do
-      each_active_vertical_bar(active_bars[span_row], function(lane, path)
-        reserve_route_bar(path, route_bar_col(path, lane))
-      end)
-      each_active_vertical_bar(active_vertical_bars[span_row], function(lane, path)
-        reserve_route_bar(path, route_bar_col(path, lane))
-      end)
-    end
-    return occupied
-  end
-
-  local function render_connector_underline_run(row, start_col, end_col, hl_group, occupied, namespace)
-    if row < 1 or row > connector_height or end_col < start_col then
-      return
-    end
-    namespace = namespace or self.path_ns
-    start_col = math.max(0, start_col)
-    end_col = math.min(self.connector_core_width - 1, end_col)
-    if self.mirror_connector_sides then
-      start_col, end_col = self.connector_core_width - 1 - end_col, self.connector_core_width - 1 - start_col
-    end
-    if end_col < start_col then
-      return
-    end
-
-    local run_start = nil
-    for col = start_col, end_col do
-      if occupied and occupied[col] then
-        if run_start and col > run_start then
-          vim.api.nvim_buf_set_extmark(self.connector_buf, namespace, row - 1, run_start, {
-            virt_text = { { string.rep(" ", col - run_start), hl_group } },
-            virt_text_pos = "overlay",
-          })
-        end
-        run_start = nil
-      elseif not run_start then
-        run_start = col
-      end
-    end
-    if run_start and end_col >= run_start then
-      vim.api.nvim_buf_set_extmark(self.connector_buf, namespace, row - 1, run_start, {
-        virt_text = { { string.rep(" ", end_col - run_start + 1), hl_group } },
-        virt_text_pos = "overlay",
-      })
-    end
-  end
-
-  local function endpoint_underline_row(side, row, glyph)
-    if side == "left" and glyph == "◤" then
-      return math.max(left_topline, row - 1)
-    end
-    if side == "right" and glyph == "◥" then
-      return math.max(left_topline, row - 1)
-    end
-    return row
-  end
-
-  local change_horizontal_cols_by_row = {}
-  local function reserve_change_horizontal(row, side, rail_col)
-    if row < 1 or row > connector_height then
-      return
-    end
-    local start_col, end_col
-    if side == "left" then
-      start_col = 0
-      end_col = rail_col - 1
-    else
-      start_col = math.min(self.connector_core_width - 1, rail_col + 1)
-      end_col = self.connector_core_width - 1
-    end
-    if end_col < start_col then
-      return
-    end
-    change_horizontal_cols_by_row[row] = change_horizontal_cols_by_row[row] or {}
-    for col = start_col, end_col do
-      change_horizontal_cols_by_row[row][col] = true
-    end
-  end
-
-  for _, p in ipairs(route_paths) do
-    if p.kind == "change" and p.viewport_change_links then
-      local rail_col = change_rail_col_for_path(p)
-      for _, link in ipairs(p.viewport_change_links) do
-        if not link.overflow_hidden and link.from_visible then
-          local row = link.underline_row
-            or endpoint_underline_row(link.from_side, link.from_row, link.from_glyph)
-          reserve_change_horizontal(row, link.from_side, rail_col)
-        end
-        if not link.overflow_hidden and link.to_visible then
-          local row = link.underline_row
-            or endpoint_underline_row(link.to_side, link.to_row, link.to_glyph)
-          reserve_change_horizontal(row, link.to_side, rail_col)
-        end
-      end
-    end
-  end
-
-  local same_row_horizontal_cols_by_row = {}
-
-  local function reserve_same_row_horizontal(row, start_col, end_col)
-    if row < 1 or row > connector_height or end_col < start_col then
-      return
-    end
-    same_row_horizontal_cols_by_row[row] = same_row_horizontal_cols_by_row[row] or {}
-    start_col = math.max(0, start_col - 1)
-    end_col = math.min(self.connector_core_width - 1, end_col + 1)
-    for col = start_col, end_col do
-      same_row_horizontal_cols_by_row[row][col] = true
-    end
-  end
-
-  local function leftmost_same_row_horizontal(row)
-    local cols = same_row_horizontal_cols_by_row[row]
-    local leftmost
-    for col, _ in pairs(cols or {}) do
-      if not leftmost or col < leftmost then
-        leftmost = col
-      end
-    end
-    return leftmost
-  end
-
-  local function rightmost_same_row_horizontal(row)
-    local cols = same_row_horizontal_cols_by_row[row]
-    local rightmost
-    for col, _ in pairs(cols or {}) do
-      if not rightmost or col > rightmost then
-        rightmost = col
-      end
-    end
-    return rightmost
-  end
-
-  local function occupied_underline_cols(row)
-    local occupied = occupied_route_cols(row)
-    if change_horizontal_cols_by_row[row] then
-      for col, _ in pairs(change_horizontal_cols_by_row[row]) do
-        occupied[col] = true
-      end
-    end
-    if same_row_horizontal_cols_by_row[row] then
-      for col, _ in pairs(same_row_horizontal_cols_by_row[row]) do
-        occupied[col] = true
-      end
-    end
-    return occupied
   end
 
   local right_stage_markers = {}
@@ -2811,10 +2404,6 @@ function Session:render()
   -- rows as their owner buffers.
   local ctx_hl = "DiffBanditConnectorContext"
 
-  local function right_index_to_connector_row(right_index)
-    return left_topline + (right_index - right_topline)
-  end
-
   for row = 0, connector_height - 1 do
     vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, ctx_hl, row, 0, -1)
   end
@@ -2840,20 +2429,7 @@ function Session:render()
     end
   end
 
-  local function set_delete_origin_core(row, right_line)
-    local del_info = delete_origin_right_lines[right_line]
-    if not del_info then
-      return
-    end
-    if row < 0 or row >= connector_height then
-      return
-    end
-    if delete_target_rows[row + 1] and del_info.origin_display_row ~= row + 1 then
-      return
-    end
-  end
-
-  for idx, meta in ipairs(self.view.line_meta) do
+  for _, meta in ipairs(self.view.line_meta) do
     if meta.left_index then
       local row = meta.left_index - 1
 
@@ -2899,8 +2475,6 @@ function Session:render()
       end
 
       if is_delete_origin then
-        local connector_row = right_index_to_connector_row(meta.right_index) - 1
-        set_delete_origin_core(connector_row, meta.right_line)
         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, row, self:right_triangle_col(), {
           virt_text = { { " ", "DiffBanditDeleteRightSeparatorConnector" } },
           virt_text_pos = "overlay",
@@ -2989,7 +2563,6 @@ function Session:render()
         end
 
         local right_line_len = spans.right_len or #right_line
-        local change_end = spans.change_end or spans.prefix_len
         local has_change = spans.right_changes and #spans.right_changes > 0
 
         do

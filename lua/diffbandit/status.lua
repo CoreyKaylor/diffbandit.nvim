@@ -206,8 +206,6 @@ end
 
 M._private = {
   icons_for = icons_for,
-  source_ref = source_ref,
-  source_path = source_path,
 }
 
 return M

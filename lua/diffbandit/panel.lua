@@ -987,8 +987,6 @@ end
 
 M._private = {
   build_rows = M.build_rows,
-  row_for_entry = row_for_entry,
-  row_group = row_group,
 }
 
 return M

@@ -86,12 +86,4 @@ function M.digits_of(count)
   return math.max(3, #tostring(math.max(1, count or 1)))
 end
 
-function M.format_line_number(num, width, align_left)
-  if not num then
-    return string.rep(" ", width)
-  end
-  local fmt = align_left and string.format("%%-%dd", width) or string.format("%%%dd", width)
-  return string.format(fmt, num)
-end
-
 return M

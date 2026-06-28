@@ -284,10 +284,7 @@ local function apply_sides(session, source_side, target_side, opts)
     end
   end
 
-  local current, read_err = read_target(ctx, target)
-  if current == nil and read_err and not read_err:match("exists on disk, but not in") then
-    -- Missing index/worktree blobs are valid for new/deleted file actions.
-  end
+  local current = read_target(ctx, target)
   if expected ~= nil and (current or "") ~= expected then
     return false, "target changed outside DiffBandit; refresh before applying this hunk"
   end
@@ -580,11 +577,6 @@ end
 
 M._private = {
   replace_range = replace_range,
-  copy_range = copy_range,
-  split_lines = split_lines,
-  to_text = to_text,
-  ranges_overlap = ranges_overlap,
-  hunk_matches_staged = hunk_matches_staged,
 }
 
 return M
