@@ -1,18 +1,13 @@
-local M = {}
+local text = require("diffbandit.text")
 
-local function to_text(lines)
-  if #lines == 0 then
-    return ""
-  end
-  return table.concat(lines, "\n") .. "\n"
-end
+local M = {}
 
 function M.read_file(path)
   local ok, contents = pcall(vim.fn.readfile, path)
   if not ok then
     return nil, nil, string.format("Unable to read file: %s", contents)
   end
-  return contents, to_text(contents)
+  return contents, text.to_text(contents)
 end
 
 function M.compute_hunks(left_text, right_text, opts)

@@ -1,4 +1,7 @@
 local state = require("diffbandit.state")
+local folder_model = require("diffbandit.folder_model")
+local nvim = require("diffbandit.nvim")
+local process = require("diffbandit.process")
 local ui = require("diffbandit.ui")
 
 local Folder = {}
@@ -36,31 +39,9 @@ local filter_order = {
   "errors",
 }
 
-local function set_buffer_options(buf, opts)
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    return
-  end
-  for key, value in pairs(opts or {}) do
-    if value ~= nil then
-      vim.api.nvim_set_option_value(key, value, { buf = buf })
-    end
-  end
-end
-
-local function set_window_options(win, opts)
-  if not win or not vim.api.nvim_win_is_valid(win) then
-    return
-  end
-  for key, value in pairs(opts or {}) do
-    vim.api.nvim_set_option_value(key, value, { scope = "local", win = win })
-  end
-end
-
-local function set_window_width(win, width)
-  if win and vim.api.nvim_win_is_valid(win) then
-    pcall(vim.api.nvim_win_set_width, win, math.max(1, width))
-  end
-end
+local set_buffer_options = nvim.set_buffer_options
+local set_window_options = nvim.set_window_options
+local set_window_width = nvim.set_window_width
 
 local function normalize_root(path)
   if not path or path == "" then
@@ -355,11 +336,7 @@ local function build_rows(left_entries, right_entries)
 end
 
 local function is_difference_status(status)
-  return status == "different"
-    or status == "type_mismatch"
-    or status == "left_only"
-    or status == "right_only"
-    or status == "error"
+  return folder_model.is_difference_status(status)
 end
 
 local function recompute_aggregate(rows, by_rel)
@@ -428,73 +405,11 @@ local function detect_backend(config)
   return nil
 end
 
-local function split_lines(text)
-  if not text or text == "" then
-    return {}
-  end
-  local lines = vim.split(text, "\n", { plain = true })
-  if lines[#lines] == "" then
-    table.remove(lines, #lines)
-  end
-  return lines
-end
+local parse_md5sum_z = folder_model.parse_md5sum_z
+local parse_digest_lines = folder_model.parse_digest_lines
+local parse_line_order = folder_model.parse_line_order
 
-local function parse_md5sum_z(output)
-  local digests = {}
-  local start = 1
-  while start <= #(output or "") do
-    local stop = output:find("\0", start, true)
-    if not stop then
-      break
-    end
-    local record = output:sub(start, stop - 1)
-    local digest, path = record:match("^([%da-fA-F]+)%s+(.+)$")
-    if digest and path then
-      digests[path] = digest
-    end
-    start = stop + 1
-  end
-  return digests
-end
-
-local function parse_digest_lines(output)
-  local digests = {}
-  for _, line in ipairs(split_lines(output)) do
-    local digest, path = line:match("^([%da-fA-F]+)%s+(.+)$")
-    if digest and path then
-      path = path:gsub("^%*", "")
-      digests[path] = digest
-    end
-  end
-  return digests
-end
-
-local function parse_line_order(output, paths)
-  local digests = {}
-  local lines = split_lines(output)
-  for index, path in ipairs(paths or {}) do
-    if lines[index] and lines[index] ~= "" then
-      digests[path] = vim.trim(lines[index])
-    end
-  end
-  return digests
-end
-
-local function run_async(cmd, callback)
-  if vim.system then
-    vim.system(cmd, { text = false }, function(result)
-      vim.schedule(function()
-        callback(result.code or 0, result.stdout or "", result.stderr or "")
-      end)
-    end)
-    return
-  end
-  local output = vim.fn.system(cmd)
-  local code = vim.v.shell_error
-  vim.schedule(function()
-    callback(code, output or "", "")
-  end)
-end
+local run_async = process.run_raw_async
 
 local function row_status_hl(status)
   if status == "left_only" or status == "error" then

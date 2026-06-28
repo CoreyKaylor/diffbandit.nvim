@@ -857,7 +857,7 @@ local function endpoint_underline_row(side, row, glyph, viewport_topline)
   return row
 end
 
-local function add_route_cells(cells, row, start_col, end_col, kind)
+local function add_route_cells(cells, row, start_col, end_col, kind, side)
   if not row or not start_col or not end_col then
     return
   end
@@ -870,6 +870,7 @@ local function add_route_cells(cells, row, start_col, end_col, kind)
     start_col = start_col,
     end_col = end_col,
     kind = kind,
+    side = side,
   }
 end
 
@@ -920,6 +921,17 @@ local function route_preferred_columns(route, connector_core_width)
     cols[#cols + 1] = col
   end
 
+  if route.shared_visible_endpoint
+      and route.direction > 0
+      and route.source_side == "right"
+      and route.target_side == "left" then
+    local reversed = {}
+    for index = #cols, 1, -1 do
+      reversed[#reversed + 1] = cols[index]
+    end
+    return reversed
+  end
+
   return cols
 end
 
@@ -932,6 +944,14 @@ local function route_priority(a, b)
       return true
     end
     return a.direction < b.direction
+  end
+
+  local a_hidden_endpoints = ((a.source_visible == false) and 1 or 0)
+    + ((a.target_visible == false) and 1 or 0)
+  local b_hidden_endpoints = ((b.source_visible == false) and 1 or 0)
+    + ((b.target_visible == false) and 1 or 0)
+  if a_hidden_endpoints ~= b_hidden_endpoints then
+    return a_hidden_endpoints < b_hidden_endpoints
   end
 
   if a.direction < 0 then
@@ -1044,12 +1064,22 @@ local function prune_overflow_routes(routes, layout)
     return routes, {}
   end
 
+  local active_by_row = {}
+  local active_count_by_row = {}
+  for _, route in ipairs(vertical_routes) do
+    for row = route.vertical_start_row, route.vertical_end_row do
+      active_by_row[row] = active_by_row[row] or {}
+      active_by_row[row][#active_by_row[row] + 1] = route
+      active_count_by_row[row] = (active_count_by_row[row] or 0) + 1
+    end
+  end
+
   local hidden = {}
   local hidden_set = {}
 
   local function active_routes_on(row)
     local active = {}
-    for _, route in ipairs(vertical_routes) do
+    for _, route in ipairs(active_by_row[row] or {}) do
       if not hidden_set[route]
           and route.vertical_start_row <= row
           and route.vertical_end_row >= row then
@@ -1095,10 +1125,9 @@ local function prune_overflow_routes(routes, layout)
     for _, route in ipairs(vertical_routes) do
       if not hidden_set[route] then
         for row = route.vertical_start_row, route.vertical_end_row do
-          local active = active_routes_on(row)
-          if #active > cap then
+          if (active_count_by_row[row] or 0) > cap then
             overflow_row = row
-            overflow_active = active
+            overflow_active = active_routes_on(row)
             break
           end
         end
@@ -1119,6 +1148,9 @@ local function prune_overflow_routes(routes, layout)
     hidden_set[route] = true
     hidden[#hidden + 1] = route
     mark_route_overflow_hidden(route)
+    for row = route.vertical_start_row, route.vertical_end_row do
+      active_count_by_row[row] = math.max(0, (active_count_by_row[row] or 0) - 1)
+    end
   end
 
   if #hidden == 0 then
@@ -1155,9 +1187,9 @@ local function build_route_segments(route, rail_col, connector_core_width)
       return
     end
     if side == "left" then
-      add_route_cells(segments, row, 0, math.max(-1, rail_col - 1), h_hl)
+      add_route_cells(segments, row, 0, math.max(-1, rail_col - 1), h_hl, side)
     else
-      add_route_cells(segments, row, math.min(connector_core_width, rail_col + 1), connector_core_width - 1, h_hl)
+      add_route_cells(segments, row, math.min(connector_core_width, rail_col + 1), connector_core_width - 1, h_hl, side)
     end
   end
 
@@ -1171,7 +1203,8 @@ local function build_route_segments(route, rail_col, connector_core_width)
         route.source_row,
         math.min(source_edge_col, target_edge_col),
         math.max(source_edge_col, target_edge_col),
-        h_hl
+        h_hl,
+        "both"
       )
     else
       if route.source_visible ~= false and route.suppress_source ~= true then
@@ -1236,7 +1269,7 @@ end
 local function iter_segment_cells(segment, callback)
   if segment.type == "horizontal" then
     for col = segment.start_col, segment.end_col do
-      callback(segment.row, col, "horizontal")
+      callback(segment.row, col, "horizontal", segment.side)
     end
   elseif segment.type == "vertical" then
     for row = segment.start_row, segment.end_row do
@@ -1245,15 +1278,30 @@ local function iter_segment_cells(segment, callback)
   end
 end
 
-local function route_collides(segments, occupied, group)
+local function route_has_endpoint(route, side, row)
+  return (route.source_side == side and route.source_row == row and route.source_visible ~= false)
+    or (route.target_side == side and route.target_row == row and route.target_visible ~= false)
+end
+
+local function routes_can_share_cell(route, owner, row, cell_type, side)
+  if owner == route or owner.group == route.group then
+    return true
+  end
+  if cell_type ~= "horizontal" or not side or side == "both" then
+    return false
+  end
+  return route_has_endpoint(route, side, row) and route_has_endpoint(owner, side, row)
+end
+
+local function route_collides(segments, occupied, route)
   for _, segment in ipairs(segments) do
     local hit = false
-    local function check_cell(row, col)
+    local function check_cell(row, col, cell_type, side)
       local row_occupied = occupied[row]
       if row_occupied then
         for check_col = col - 1, col + 1 do
           local owner = row_occupied[check_col]
-          if owner and owner ~= group then
+          if owner and not routes_can_share_cell(route, owner, row, cell_type, side) then
             return true
           end
         end
@@ -1261,11 +1309,11 @@ local function route_collides(segments, occupied, group)
       return false
     end
 
-    iter_segment_cells(segment, function(row, col)
+    iter_segment_cells(segment, function(row, col, cell_type, side)
       if hit then
         return
       end
-      hit = check_cell(row, col)
+      hit = check_cell(row, col, cell_type, side)
     end)
     if hit then
       return true
@@ -1274,12 +1322,12 @@ local function route_collides(segments, occupied, group)
   return false
 end
 
-local function reserve_route_segments(segments, occupied, group, marks)
+local function reserve_route_segments(segments, occupied, route, marks)
   for _, segment in ipairs(segments) do
     iter_segment_cells(segment, function(row, col)
       occupied[row] = occupied[row] or {}
       if occupied[row][col] == nil then
-        occupied[row][col] = group
+        occupied[row][col] = route
         if marks then
           marks[#marks + 1] = { row = row, col = col }
         end
@@ -1446,6 +1494,35 @@ function M.plan_routes(paths, layout)
     end
   end
 
+  local visible_endpoint_counts = {}
+  local function endpoint_key(side, row)
+    if not side or not row then
+      return nil
+    end
+    return side .. "\0" .. tostring(row)
+  end
+  for _, route in ipairs(routes) do
+    if route.source_visible ~= false then
+      local key = endpoint_key(route.source_side, route.source_row)
+      if key then
+        visible_endpoint_counts[key] = (visible_endpoint_counts[key] or 0) + 1
+      end
+    end
+    if route.target_visible ~= false then
+      local key = endpoint_key(route.target_side, route.target_row)
+      if key then
+        visible_endpoint_counts[key] = (visible_endpoint_counts[key] or 0) + 1
+      end
+    end
+  end
+  for _, route in ipairs(routes) do
+    local source_key = route.source_visible ~= false and endpoint_key(route.source_side, route.source_row) or nil
+    local target_key = route.target_visible ~= false and endpoint_key(route.target_side, route.target_row) or nil
+    route.shared_visible_endpoint = (source_key and (visible_endpoint_counts[source_key] or 0) > 1)
+      or (target_key and (visible_endpoint_counts[target_key] or 0) > 1)
+      or false
+  end
+
   table.sort(routes, route_priority)
   local hidden_routes
   routes, hidden_routes = prune_overflow_routes(routes, {
@@ -1469,7 +1546,7 @@ function M.plan_routes(paths, layout)
       local has_candidate = false
       for _, check_col in ipairs(route_preferred_columns(check_route, connector_core_width)) do
         local check_segments = build_route_segments(check_route, check_col, connector_core_width)
-        if not route_collides(check_segments, occupied, check_route.group) then
+        if not route_collides(check_segments, occupied, check_route) then
           has_candidate = true
           break
         end
@@ -1489,15 +1566,15 @@ function M.plan_routes(paths, layout)
       local placed = false
       for _, col in ipairs(route_preferred_columns(route, connector_core_width)) do
         local segments = build_route_segments(route, col, connector_core_width)
-        if not route_collides(segments, occupied, route.group) then
+        if not route_collides(segments, occupied, route) then
           local marks = {}
-          reserve_route_segments(segments, occupied, route.group, marks)
+          reserve_route_segments(segments, occupied, route, marks)
           local leaves_room = remaining_routes_have_candidate(route_index + 1)
           unreserve_route_segments(occupied, marks)
           if leaves_room then
             route.rail_col = col
             route.segments = segments
-            reserve_route_segments(segments, occupied, route.group)
+            reserve_route_segments(segments, occupied, route)
             placed = true
             break
           end
@@ -1506,10 +1583,10 @@ function M.plan_routes(paths, layout)
       if not placed then
         for _, col in ipairs(route_preferred_columns(route, connector_core_width)) do
           local segments = build_route_segments(route, col, connector_core_width)
-          if not route_collides(segments, occupied, route.group) then
+          if not route_collides(segments, occupied, route) then
             route.rail_col = col
             route.segments = segments
-            reserve_route_segments(segments, occupied, route.group)
+            reserve_route_segments(segments, occupied, route)
             placed = true
             break
           end
@@ -1536,9 +1613,9 @@ function M.plan_routes(paths, layout)
     local route = routes[index]
     for _, col in ipairs(route_preferred_columns(route, connector_core_width)) do
       local segments = build_route_segments(route, col, connector_core_width)
-      if not route_collides(segments, occupied, route.group) then
+      if not route_collides(segments, occupied, route) then
         local marks = {}
-        reserve_route_segments(segments, occupied, route.group, marks)
+        reserve_route_segments(segments, occupied, route, marks)
         route.rail_col = col
         route.segments = segments
         if solve_route(index + 1) then

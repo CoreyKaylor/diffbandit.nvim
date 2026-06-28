@@ -1,18 +1,12 @@
 local diff = require("diffbandit.diff")
+local text = require("diffbandit.text")
 local ui = require("diffbandit.ui")
 local view_builder = require("diffbandit.view")
 
 local M = {}
 
-local function to_text(lines)
-  if not lines or #lines == 0 then
-    return ""
-  end
-  return table.concat(lines, "\n") .. "\n"
-end
-
 function M.build(left_lines, right_lines, config)
-  local hunks, err = diff.compute_hunks(to_text(left_lines or {}), to_text(right_lines or {}), (config or {}).diff or {})
+  local hunks, err = diff.compute_hunks(text.to_text(left_lines or {}), text.to_text(right_lines or {}), (config or {}).diff or {})
   if err then
     return nil, err
   end

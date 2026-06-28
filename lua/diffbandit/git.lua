@@ -1,45 +1,12 @@
 local hex = require("diffbandit.hex")
+local process = require("diffbandit.process")
+local source_mod = require("diffbandit.source")
+local text = require("diffbandit.text")
 
 local M = {}
 
-local function to_text(lines)
-  if #lines == 0 then
-    return ""
-  end
-  return table.concat(lines, "\n") .. "\n"
-end
-
-local function split_lines(text)
-  if not text or text == "" then
-    return {}
-  end
-  local lines = vim.split(text, "\n", { plain = true })
-  if lines[#lines] == "" then
-    table.remove(lines, #lines)
-  end
-  return lines
-end
-
-local function detect_filetype(path)
-  if not path or path == "" then
-    return nil
-  end
-  return vim.filetype.match({ filename = path })
-end
-
 local function source_from_text(text, path, label, metadata)
-  local lines = split_lines(text or "")
-  local source = {
-    path = path,
-    label = label or path,
-    lines = lines,
-    text = to_text(lines),
-    filetype = detect_filetype(path),
-  }
-  for key, value in pairs(metadata or {}) do
-    source[key] = value
-  end
-  return source
+  return source_mod.from_text(text, path, label, metadata)
 end
 
 local function source_from_hex(text, path, label, metadata, opts)
@@ -71,39 +38,6 @@ local function source_from_binary_notice(path, label, metadata)
   return source
 end
 
-local function run_command(cmd)
-  if vim.system then
-    local result = vim.system(cmd, { text = false }):wait()
-    if result.code ~= 0 then
-      return nil, vim.trim(result.stderr or result.stdout or "")
-    end
-    return result.stdout or "", nil
-  end
-
-  local output = vim.fn.system(cmd)
-  local code = vim.v.shell_error
-  if code ~= 0 then
-    return nil, vim.trim(output or "")
-  end
-  return output or "", nil
-end
-
-local function run_command_async(cmd, callback)
-  if vim.system then
-    vim.system(cmd, { text = false }, function(result)
-      local err
-      if result.code ~= 0 then
-        err = vim.trim(result.stderr or result.stdout or "")
-      end
-      vim.schedule(function()
-        callback(result.code == 0, err, result.stdout or "")
-      end)
-    end)
-    return true
-  end
-  return false
-end
-
 local function git_output(root, args)
   local cmd = { "git" }
   if root and root ~= "" then
@@ -114,7 +48,7 @@ local function git_output(root, args)
     cmd[#cmd + 1] = arg
   end
 
-  return run_command(cmd)
+  return process.run(cmd)
 end
 
 local function git_async(root, args, callback)
@@ -127,11 +61,11 @@ local function git_async(root, args, callback)
     cmd[#cmd + 1] = arg
   end
 
-  if run_command_async(cmd, callback) then
+  if process.run_async(cmd, callback) then
     return true
   end
 
-  local output, err = run_command(cmd)
+  local output, err = process.run(cmd)
   vim.schedule(function()
     callback(err == nil, err, output or "")
   end)
@@ -148,13 +82,7 @@ local function git_exit_code(root, args)
     cmd[#cmd + 1] = arg
   end
 
-  if vim.system then
-    local result = vim.system(cmd, { text = true }):wait()
-    return result.code, result.stdout or "", result.stderr or ""
-  end
-
-  local output = vim.fn.system(cmd)
-  return vim.v.shell_error, output or "", ""
+  return process.run_exit_code(cmd)
 end
 
 local function git_lines(root, args)
@@ -163,7 +91,7 @@ local function git_lines(root, args)
     return nil, err
   end
 
-  return split_lines(output), nil
+  return text.split_lines(output), nil
 end
 
 local empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -480,7 +408,7 @@ local function read_worktree(root, path, use_buffer)
     local bufnr = find_loaded_buffer(full_path)
     if bufnr and vim.api.nvim_get_option_value("modified", { buf = bufnr }) then
       local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-      return to_text(lines), nil, "buffer"
+      return text.to_text(lines), nil, "buffer"
     end
   end
 
@@ -488,7 +416,7 @@ local function read_worktree(root, path, use_buffer)
   if not ok then
     return nil, string.format("unable to read worktree file: %s", full_path)
   end
-  return to_text(lines), nil, "working tree"
+  return text.to_text(lines), nil, "working tree"
 end
 
 local function read_worktree_raw(root, path)
@@ -1607,14 +1535,14 @@ local function index_mode(root, path)
   return "100644"
 end
 
-function M.write_index(root, path, text)
-  if text == nil then
+function M.write_index(root, path, value)
+  if value == nil then
     local _, err = git_output(root, { "update-index", "--force-remove", "--", path })
     return err == nil, err
   end
 
   local tmp = vim.fn.tempname()
-  local lines = split_lines(text)
+  local lines = text.split_lines(value)
   local ok, write_err = pcall(vim.fn.writefile, lines, tmp)
   if not ok then
     return false, tostring(write_err)
@@ -1635,7 +1563,7 @@ function M.write_index(root, path, text)
   return true, nil
 end
 
-function M.write_worktree(root, path, text, use_buffer)
+function M.write_worktree(root, path, value, use_buffer)
   local full_path = abs_path(root, path)
   if use_buffer ~= false then
     local bufnr = find_loaded_buffer(full_path)
@@ -1647,7 +1575,7 @@ function M.write_worktree(root, path, text, use_buffer)
           return false, tostring(mod_err)
         end
       end
-      local lines = text == nil and {} or split_lines(text)
+      local lines = value == nil and {} or text.split_lines(value)
       local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
       if not was_modifiable then
         pcall(vim.api.nvim_set_option_value, "modifiable", false, { buf = bufnr })
@@ -1659,7 +1587,7 @@ function M.write_worktree(root, path, text, use_buffer)
     end
   end
 
-  if text == nil then
+  if value == nil then
     if vim.fn.filereadable(full_path) == 1 then
       local ok, err = os.remove(full_path)
       if not ok then
@@ -1670,7 +1598,7 @@ function M.write_worktree(root, path, text, use_buffer)
   end
 
   vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
-  local ok, err = pcall(vim.fn.writefile, split_lines(text), full_path)
+  local ok, err = pcall(vim.fn.writefile, text.split_lines(value), full_path)
   if not ok then
     return false, tostring(err)
   end

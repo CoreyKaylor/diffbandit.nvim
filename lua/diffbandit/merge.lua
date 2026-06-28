@@ -1,31 +1,17 @@
-local diff = require("diffbandit.diff")
 local diff_pair = require("diffbandit.diff_pair")
 local git = require("diffbandit.git")
+local merge_model = require("diffbandit.merge_model")
+local nvim = require("diffbandit.nvim")
+local pair_renderer = require("diffbandit.pair_renderer")
 local panel_mod = require("diffbandit.panel")
-local Session = require("diffbandit.session")
+local queue_host = require("diffbandit.queue_host")
+local source_mod = require("diffbandit.source")
 local state = require("diffbandit.state")
+local text = require("diffbandit.text")
 local ui = require("diffbandit.ui")
 
 local Merge = {}
 Merge.__index = Merge
-
-local function split_lines(text)
-  if not text or text == "" then
-    return {}
-  end
-  local lines = vim.split(text, "\n", { plain = true })
-  if lines[#lines] == "" then
-    table.remove(lines, #lines)
-  end
-  return lines
-end
-
-local function to_text(lines)
-  if not lines or #lines == 0 then
-    return ""
-  end
-  return table.concat(lines, "\n") .. "\n"
-end
 
 local function logical_buffer_lines(buf)
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then
@@ -38,247 +24,17 @@ local function logical_buffer_lines(buf)
   return lines
 end
 
-local function detect_filetype(path)
-  if not path or path == "" then
-    return nil
-  end
-  return vim.filetype.match({ filename = path })
-end
-
-local function make_buffer(name, lines, opts)
-  opts = opts or {}
-  local buf = vim.api.nvim_create_buf(false, true)
-  if name then
-    pcall(vim.api.nvim_buf_set_name, buf, name)
-  end
-  vim.api.nvim_set_option_value("buftype", opts.buftype or "nofile", { buf = buf })
-  vim.api.nvim_set_option_value("bufhidden", opts.bufhidden or "wipe", { buf = buf })
-  vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
-  vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines or {})
-  vim.api.nvim_set_option_value("modified", false, { buf = buf })
-  vim.api.nvim_set_option_value("modifiable", opts.modifiable ~= false, { buf = buf })
-  if opts.filetype and opts.filetype ~= "" then
-    vim.api.nvim_set_option_value("filetype", opts.filetype, { buf = buf })
-  end
-  return buf
-end
-
-local function set_win_width(win, width)
-  if win and vim.api.nvim_win_is_valid(win) then
-    pcall(vim.api.nvim_win_set_width, win, math.max(1, width))
-  end
-end
-
-local function set_win_height(win, height)
-  if win and vim.api.nvim_win_is_valid(win) then
-    pcall(vim.api.nvim_win_set_height, win, math.max(1, height))
-  end
-end
-
-local function set_win_view_topline(win, topline)
-  if not (win and vim.api.nvim_win_is_valid(win)) then
-    return
-  end
-  topline = math.max(1, topline or 1)
-  local line_count = math.max(1, vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win)))
-  local cursor_line = math.min(topline, line_count)
-  pcall(vim.api.nvim_win_call, win, function()
-    pcall(vim.api.nvim_win_set_cursor, win, { cursor_line, 0 })
-    local view = vim.fn.winsaveview()
-    view.topline = topline
-    pcall(vim.fn.winrestview, view)
-  end)
-end
-
-local function get_win_view_topline(win)
-  if not (win and vim.api.nvim_win_is_valid(win)) then
-    return 1
-  end
-  local ok, view = pcall(vim.api.nvim_win_call, win, vim.fn.winsaveview)
-  if ok and view and view.topline then
-    return view.topline
-  end
-  return 1
-end
-
-local function get_win_width(win)
-  if win and vim.api.nvim_win_is_valid(win) then
-    return vim.api.nvim_win_get_width(win)
-  end
-  return 0
-end
-
-local function get_win_height(win)
-  if win and vim.api.nvim_win_is_valid(win) then
-    return vim.api.nvim_win_get_height(win)
-  end
-  return 0
-end
-
-local function set_win_options(win, opts)
-  for key, value in pairs(opts) do
-    vim.api.nvim_set_option_value(key, value, { scope = "local", win = win })
-  end
-end
-
-local function hunk_base_start(hunk)
-  return hunk.left.start
-end
-
-local function hunk_base_end(hunk)
-  if hunk.left.count <= 0 then
-    return hunk.left.start
-  end
-  return hunk.left.start + hunk.left.count - 1
-end
-
-local function ranges_overlap(left, right)
-  return hunk_base_start(left) <= hunk_base_end(right) and hunk_base_start(right) <= hunk_base_end(left)
-end
-
-local function merged_base_count(left, right, start_row, end_row)
-  if (not left or left.left.count <= 0) and (not right or right.left.count <= 0) then
-    return 0
-  end
-  return math.max(0, end_row - start_row + 1)
-end
-
-local function hunk_replacement(lines, hunk)
-  local replacement = {}
-  for index = hunk.right.start, hunk.right.start + hunk.right.count - 1 do
-    replacement[#replacement + 1] = lines[index] or ""
-  end
-  return replacement
-end
+local make_buffer = nvim.make_buffer
+local set_win_width = nvim.set_window_width
+local set_win_height = nvim.set_window_height
+local set_win_view_topline = nvim.set_win_view_topline
+local get_win_view_topline = nvim.get_win_view_topline
+local get_win_width = nvim.get_window_width
+local get_win_height = nvim.get_window_height
+local set_win_options = nvim.set_window_options
 
 local function source_label(path, suffix)
   return string.format("%s (%s)", path or "[conflict]", suffix)
-end
-
-local function line_ending(text)
-  if not text or text == "" then
-    return "none"
-  end
-  local crlf = text:find("\r\n", 1, true) ~= nil
-  local lf = text:find("[^\r]\n") ~= nil
-  if crlf and lf then
-    return "mixed"
-  elseif crlf then
-    return "crlf"
-  end
-  return "lf"
-end
-
-local function line_ending_warning(parts)
-  local seen = {}
-  for _, text in pairs(parts) do
-    local ending = line_ending(text)
-    if ending ~= "none" then
-      seen[ending] = true
-    end
-  end
-  local count = 0
-  for _ in pairs(seen) do
-    count = count + 1
-  end
-  if count > 1 then
-    return "line endings differ across conflict stages"
-  end
-  return nil
-end
-
-local function replace_range(lines, start, count, replacement)
-  local result = {}
-  local insert_at = count == 0 and (start + 1) or start
-  if insert_at < 1 then
-    insert_at = 1
-  end
-  for index = 1, insert_at - 1 do
-    result[#result + 1] = lines[index]
-  end
-  for _, line in ipairs(replacement or {}) do
-    result[#result + 1] = line
-  end
-  local resume_at = count == 0 and insert_at or (start + count)
-  if resume_at < 1 then
-    resume_at = 1
-  end
-  for index = resume_at, #lines do
-    result[#result + 1] = lines[index]
-  end
-  return result
-end
-
-local function build_regions(base_lines, local_lines, remote_lines, config)
-  local base_text = to_text(base_lines)
-  local local_hunks = diff.compute_hunks(base_text, to_text(local_lines), config.diff or {})
-  local remote_hunks = diff.compute_hunks(base_text, to_text(remote_lines), config.diff or {})
-  if type(local_hunks) ~= "table" then
-    local_hunks = {}
-  end
-  if type(remote_hunks) ~= "table" then
-    remote_hunks = {}
-  end
-
-  local local_conflicted = {}
-  local remote_conflicted = {}
-  local conflicts = {}
-  for local_index, local_hunk in ipairs(local_hunks) do
-    for remote_index, remote_hunk in ipairs(remote_hunks) do
-      if ranges_overlap(local_hunk, remote_hunk) then
-        local_conflicted[local_index] = true
-        remote_conflicted[remote_index] = true
-        local start_row = math.min(hunk_base_start(local_hunk), hunk_base_start(remote_hunk))
-        local end_row = math.max(hunk_base_end(local_hunk), hunk_base_end(remote_hunk))
-        local base_count = merged_base_count(local_hunk, remote_hunk, start_row, end_row)
-        conflicts[#conflicts + 1] = {
-          type = "conflict",
-          base_start = start_row,
-          base_count = base_count,
-          result_start = start_row,
-          result_count = base_count,
-          local_hunk = local_hunk,
-          remote_hunk = remote_hunk,
-          local_replacement = hunk_replacement(local_lines, local_hunk),
-          remote_replacement = hunk_replacement(remote_lines, remote_hunk),
-        }
-      end
-    end
-  end
-
-  table.sort(conflicts, function(left, right)
-    return left.base_start < right.base_start
-  end)
-
-  local non_conflicting = {}
-  for index, hunk in ipairs(local_hunks) do
-    if not local_conflicted[index] then
-      non_conflicting[#non_conflicting + 1] = {
-        side = "local",
-        base_start = hunk_base_start(hunk),
-        base_count = hunk.left.count,
-        hunk = hunk,
-        replacement = hunk_replacement(local_lines, hunk),
-      }
-    end
-  end
-  for index, hunk in ipairs(remote_hunks) do
-    if not remote_conflicted[index] then
-      non_conflicting[#non_conflicting + 1] = {
-        side = "remote",
-        base_start = hunk_base_start(hunk),
-        base_count = hunk.left.count,
-        hunk = hunk,
-        replacement = hunk_replacement(remote_lines, hunk),
-      }
-    end
-  end
-  table.sort(non_conflicting, function(left, right)
-    return left.base_start > right.base_start
-  end)
-
-  return conflicts, non_conflicting, local_hunks, remote_hunks
 end
 
 function Merge.load(root, path, config)
@@ -289,10 +45,11 @@ function Merge.load(root, path, config)
   local base_text = stages.base or ""
   local local_text = stages.local_text or ""
   local remote_text = stages.remote or ""
-  local base_lines = split_lines(base_text)
-  local local_lines = split_lines(local_text)
-  local remote_lines = split_lines(remote_text)
-  local conflicts, non_conflicting, local_hunks, remote_hunks = build_regions(base_lines, local_lines, remote_lines, config or {})
+  local base_lines = text.split_lines(base_text)
+  local local_lines = text.split_lines(local_text)
+  local remote_lines = text.split_lines(remote_text)
+  local conflicts, non_conflicting, local_hunks, remote_hunks =
+    merge_model.build_regions(base_lines, local_lines, remote_lines, config or {})
   return {
     root = root,
     path = path,
@@ -309,7 +66,7 @@ function Merge.load(root, path, config)
     non_conflicting = non_conflicting,
     local_hunks = local_hunks,
     remote_hunks = remote_hunks,
-    line_ending_warning = line_ending_warning({
+    line_ending_warning = merge_model.line_ending_warning({
       base = base_text,
       local_text = local_text,
       remote = remote_text,
@@ -355,7 +112,7 @@ function Merge.start(data, config, opts)
   self.merge_context = git.merge_context(self.root)
   self.connector_width = math.max((((self.config or {}).ui or {}).connector_width or 12), 1)
 
-  local ft = detect_filetype(self.path)
+  local ft = source_mod.detect_filetype(self.path)
   self.local_buf = make_buffer(source_label(self.path, "local"), self.local_lines, { modifiable = false, filetype = ft })
   self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, self.result_lines, {
     buftype = "acwrite",
@@ -901,86 +658,9 @@ local function result_count_for_render(region, result_lines)
 end
 
 local function source_for_pair(lines, path, label, filetype, metadata)
-  local source = {
-    path = path,
-    label = label,
-    lines = lines or {},
-    text = to_text(lines or {}),
-    filetype = filetype,
-  }
-  for key, value in pairs(metadata or {}) do
-    source[key] = value
-  end
+  local source = source_mod.from_lines(lines or {}, path, label, metadata)
+  source.filetype = filetype
   return source
-end
-
-local function connector_base_width(pair, config)
-  local width = math.max((((config or {}).ui or {}).connector_width or 0), 0)
-  for _, text in ipairs(((pair or {}).view or {}).connectors or {}) do
-    width = math.max(width, vim.fn.strdisplaywidth(text))
-  end
-  return math.max(1, width)
-end
-
-function Merge:build_pair_session(id_suffix, pair, left_source, right_source, buffers, windows, opts)
-  opts = opts or {}
-  local session = setmetatable({
-    id = tostring(self.id) .. "-" .. id_suffix,
-    config = self.config,
-    left = left_source,
-    right = right_source,
-    hunks = pair.hunks or {},
-    view = pair.view,
-    current_chunk = 0,
-    file_queue = nil,
-    file_queue_index = nil,
-    pending_file_boundary = nil,
-    left_number_width = self.number_width,
-    right_number_width = self.number_width,
-    right_number_padding = ((self.config or {}).ui or {}).right_number_padding or 2,
-    stage_marker_width = 0,
-    left_stage_marker_width = 0,
-    right_stage_marker_width = 0,
-    left_number_pane_width = self.number_width + 1,
-    right_number_pane_width = self.number_width + 1,
-    connector_core_width = connector_base_width(pair, self.config),
-    gutter_width = connector_base_width(pair, self.config),
-    connector_width_cache = {},
-    overview_enabled = false,
-    overview_width = 0,
-    status_enabled = false,
-    staged_chunk_states = {},
-    disposed = false,
-    ns = vim.api.nvim_create_namespace("DiffBanditMergePair" .. tostring(self.id) .. id_suffix),
-    active_ns = vim.api.nvim_create_namespace("DiffBanditMergePairActive" .. tostring(self.id) .. id_suffix),
-    path_ns = vim.api.nvim_create_namespace("DiffBanditMergePairPaths" .. tostring(self.id) .. id_suffix),
-    overview_ns = vim.api.nvim_create_namespace("DiffBanditMergePairOverview" .. tostring(self.id) .. id_suffix),
-    left_buf = buffers.left,
-    left_num_buf = buffers.left_num,
-    connector_buf = buffers.connector,
-    right_num_buf = buffers.right_num,
-    right_buf = buffers.right,
-    left_win = windows.left,
-    left_num_win = windows.left_num,
-    connector_win = windows.connector,
-    right_num_win = windows.right_num,
-    right_win = windows.right,
-    preserve_left_buffer_lines = opts.preserve_left_buffer_lines == true,
-    preserve_right_buffer_lines = opts.preserve_right_buffer_lines == true,
-    suppress_right_context_highlights = opts.suppress_right_context_highlights == true,
-    mirror_connector_sides = opts.mirror_connector_sides == true,
-  }, { __index = Session })
-
-  function session:resize_layout() end
-  function session:render_status_headers() end
-  function session:render_overviews() end
-  function session:get_scroll_padding()
-    return 0
-  end
-
-  session:invalidate_render_caches()
-  session:precompute_connector_core_width()
-  return session
 end
 
 function Merge:render_zero_range_delete_overlay(row, sides)
@@ -1121,7 +801,7 @@ function Merge:render(opts)
   self.local_result_pair = left_pair
   self.result_remote_pair = right_pair
 
-  local ft = detect_filetype(self.path)
+  local ft = source_mod.detect_filetype(self.path)
   local local_source = source_for_pair(self.local_lines, self.path, source_label(self.path, "local"), ft, {
     display_number_width = self.number_width,
     empty_reason = self.has_local and nil or "Deleted file",
@@ -1151,7 +831,7 @@ function Merge:render(opts)
     git_relpath = self.path,
   })
 
-  local local_result = self:build_pair_session("LocalResult", left_pair, local_source, result_source_left, {
+  local local_result = pair_renderer.from_pair(self, "LocalResult", left_pair, local_source, result_source_left, {
     left = self.local_buf,
     left_num = self.local_num_buf,
     connector = self.local_result_connector_buf,
@@ -1168,7 +848,7 @@ function Merge:render(opts)
     suppress_right_context_highlights = true,
   })
 
-  local result_remote = self:build_pair_session("RemoteResult", right_pair, remote_source, result_source_right, {
+  local result_remote = pair_renderer.from_pair(self, "RemoteResult", right_pair, remote_source, result_source_right, {
     left = self.remote_buf,
     left_num = self.remote_num_buf,
     connector = self.result_remote_connector_buf,
@@ -1604,8 +1284,7 @@ function Merge:open_merge_file(index, opts)
     vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
     return false
   end
-  queue.index = index
-  self.file_queue_index = index
+  queue_host.set_index(self, index)
   self.root = data.root
   self.path = data.path
   self.base_lines = data.base_lines or {}
@@ -1623,7 +1302,7 @@ function Merge:open_merge_file(index, opts)
   self.line_ending_warning = data.line_ending_warning
   self.merge_context = git.merge_context(self.root)
 
-  local ft = detect_filetype(self.path)
+  local ft = source_mod.detect_filetype(self.path)
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.local_buf })
   vim.api.nvim_buf_set_lines(self.local_buf, 0, -1, false, self.local_lines)
   vim.api.nvim_set_option_value("modified", false, { buf = self.local_buf })
@@ -1672,7 +1351,7 @@ function Merge:goto_queue_file(index, chunk_position, opts)
     vim.notify("DiffBandit: " .. tostring(err or "unable to load changed file"), vim.log.levels.INFO)
     return false
   end
-  queue.index = index
+  queue_host.set_index(self, index)
   local Session = require("diffbandit.session")
   local session, start_err = Session.start({ left = loaded.left, right = loaded.right }, self.config, {
     queue = queue,
@@ -1716,7 +1395,7 @@ end
 
 function Merge:replace_result_range(start_row, count, replacement)
   local current = logical_buffer_lines(self.result_buf)
-  local next_lines = replace_range(current, start_row, count, replacement)
+  local next_lines = text.replace_range(current, start_row, count, replacement)
   self:set_result_buffer_lines(next_lines)
   self:render()
   return true
@@ -1728,7 +1407,7 @@ function Merge:replace_result_region(region_index, replacement)
     return false
   end
   local current = logical_buffer_lines(self.result_buf)
-  local next_lines = replace_range(current, region.result_start, region.result_count, replacement)
+  local next_lines = text.replace_range(current, region.result_start, region.result_count, replacement)
   self:set_result_buffer_lines(next_lines)
   local delta = #(replacement or {}) - (region.result_count or 0)
   region.result_count = #(replacement or {})
@@ -1836,7 +1515,7 @@ end
 function Merge:apply_non_conflicting()
   local lines = logical_buffer_lines(self.result_buf)
   for _, item in ipairs(self.non_conflicting or {}) do
-    lines = replace_range(lines, item.base_start, item.base_count, item.replacement)
+    lines = text.replace_range(lines, item.base_start, item.base_count, item.replacement)
   end
   self:set_result_buffer_lines(lines)
   vim.notify("DiffBandit: applied non-conflicting changes", vim.log.levels.INFO)
@@ -1861,8 +1540,8 @@ function Merge:resolve()
     vim.notify("DiffBandit: resolved " .. tostring(self.path), vim.log.levels.INFO)
     return true
   end
-  local text = to_text(logical_buffer_lines(self.result_buf))
-  local ok, write_err = git.write_worktree(self.root, self.path, text, false)
+  local value = text.to_text(logical_buffer_lines(self.result_buf))
+  local ok, write_err = git.write_worktree(self.root, self.path, value, false)
   if not ok then
     vim.notify("DiffBandit: " .. tostring(write_err), vim.log.levels.ERROR)
     return false

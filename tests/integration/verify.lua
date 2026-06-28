@@ -1013,6 +1013,44 @@ local function nth_plain_pos(line, needle, n)
   return pos
 end
 
+local function connector_core_bounds(stripped)
+  local separators = {}
+  local from = 1
+  while true do
+    local pos = stripped:find("│", from, true)
+    if not pos then
+      break
+    end
+    separators[#separators + 1] = pos
+    from = pos + #"│"
+  end
+
+  local has_overview_pane = (separators[1] or 999) <= 3
+  if has_overview_pane then
+    return separators[3], separators[#separators - 2]
+  end
+  return separators[2], separators[#separators - 2]
+end
+
+local function connector_core_pipe_count(stripped)
+  local core_start, core_end = connector_core_bounds(stripped)
+  if not core_start or not core_end then
+    return 0
+  end
+
+  local count = 0
+  local from = core_start + #"│"
+  while true do
+    local pos = stripped:find("│", from, true)
+    if not pos or pos >= core_end then
+      break
+    end
+    count = count + 1
+    from = pos + #"│"
+  end
+  return count
+end
+
 local function verify_scroll_additions(lines, ansi_lines, phase)
   local errors = {}
   if phase == "clamped-end" then
@@ -1044,29 +1082,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
 
   local add_glyphs = { "\226\151\165", "\226\151\162" } -- ◥, ◢
   local function internal_connector_pipe_count(stripped)
-    local separators = {}
-    local from = 1
-    while true do
-      local pos = stripped:find("│", from, true)
-      if not pos then
-        break
-      end
-      separators[#separators + 1] = pos
-      from = pos + #"│"
-    end
-    local core_start = separators[2]
-    local core_end = separators[#separators - 1]
-    if not core_start or not core_end then
-      return 0
-    end
-    local count = 0
-    for index = 3, #separators - 2 do
-      local pos = separators[index]
-      if pos > core_start and pos < core_end then
-        count = count + 1
-      end
-    end
-    return count
+    return connector_core_pipe_count(stripped)
   end
   local function row_has_internal_connector_pipe(stripped)
     return internal_connector_pipe_count(stripped) > 0
@@ -1657,6 +1673,23 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
 
   local delete_glyphs = { "\226\151\164", "\226\151\163", "\226\151\165" } -- ◤, ◣, ◥
   local require_plain_fragment, forbid_plain_fragment = plain_fragment_requirements(errors, lines)
+  local function require_plain_fragments(fragments, description)
+    if find_plain_line_all(lines, fragments) then
+      return
+    end
+    table.insert(errors, description)
+  end
+  local function require_deleted_b06_target(right_number, description)
+    local _, stripped = find_plain_line_all(lines, {
+      "Deleted scroll B 06",
+      "│ 63◣│",
+      "│ " .. tostring(right_number),
+    })
+    if not stripped then
+      table.insert(errors, description)
+    end
+    return stripped
+  end
 
   if phase == "origin-offscreen" then
     if not find_plain_line(lines, { "Deleted scroll" }) then
@@ -1683,50 +1716,94 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
   end
 
   if phase == "initial" then
-    require_plain_fragment("Deleted scroll A 01                             │  4◤│", "Expected initial deletion target below the origin to use a down-route triangle")
+    require_plain_fragments({ "Deleted scroll A 01", "│  4◤│" },
+      "Expected initial deletion target below the origin to use a down-route triangle")
   elseif phase == "target-aligned" then
-    require_plain_fragment("Deleted scroll A 01                             │  4◣│", "Expected deletion split upper triangle on the projected origin row")
-    require_plain_fragment("Deleted scroll A 02                             │  5◤│", "Expected deletion split lower triangle adjacent to the projected origin row")
+    require_plain_fragments({ "Deleted scroll A 01", "│  4◣│" },
+      "Expected deletion split upper triangle on the projected origin row")
+    require_plain_fragments({ "Deleted scroll A 02", "│  5◤│" },
+      "Expected deletion split lower triangle adjacent to the projected origin row")
   elseif phase == "target-flipped" then
-    require_plain_fragment("Deleted scroll A 02                             │  5◣│", "Expected scrolled deletion upper triangle to track the projected origin row")
-    require_plain_fragment("Deleted scroll A 03                             │  6◤│", "Expected scrolled deletion lower triangle to stay adjacent to the upper triangle")
+    require_plain_fragments({ "Deleted scroll A 02", "│  5◣│" },
+      "Expected scrolled deletion upper triangle to track the projected origin row")
+    require_plain_fragments({ "Deleted scroll A 03", "│  6◤│" },
+      "Expected scrolled deletion lower triangle to stay adjacent to the upper triangle")
   elseif phase == "target-spanning" then
-    require_plain_fragment("Deleted scroll A 03                             │  6◣│", "Expected spanning deletion upper triangle to stay anchored to the projected origin")
-    require_plain_fragment("Deleted scroll A 04                             │  7◤│", "Expected spanning deletion lower triangle to stay adjacent to the upper triangle")
+    require_plain_fragments({ "Deleted scroll A 03", "│  6◣│" },
+      "Expected spanning deletion upper triangle to stay anchored to the projected origin")
+    require_plain_fragments({ "Deleted scroll A 04", "│  7◤│" },
+      "Expected spanning deletion lower triangle to stay adjacent to the upper triangle")
   elseif phase == "lower-target-below" then
-    require_plain_fragment("Deleted scroll A 49                             │ 52◣│", "Expected upper deletion split to remain visible while lower target approaches")
-    require_plain_fragment("Deleted scroll A 50                             │ 53◤│", "Expected upper deletion lower split to remain adjacent")
-    require_plain_fragment("Deleted scroll B 01                             │ 58◤│", "Expected lower deletion target below origin to use the down-route triangle")
+    require_plain_fragments({ "Deleted scroll A 49", "│ 52◣│" },
+      "Expected upper deletion split to remain visible while lower target approaches")
+    require_plain_fragments({ "Deleted scroll A 50", "│ 53◤│" },
+      "Expected upper deletion lower split to remain adjacent")
+    require_plain_fragments({ "Deleted scroll B 01", "│ 58◤│" },
+      "Expected lower deletion target below origin to use the down-route triangle")
   elseif phase == "lower-target-approach" then
-    require_plain_fragment("Deleted scroll B 01                             │ 58◣│", "Expected lower deletion upper split triangle as its block crosses the projected origin")
-    require_plain_fragment("Deleted scroll B 02                             │ 59◤│", "Expected lower deletion lower split triangle adjacent to the upper split")
+    require_plain_fragments({ "Deleted scroll B 01", "│ 58◣│" },
+      "Expected lower deletion upper split triangle as its block crosses the projected origin")
+    require_plain_fragments({ "Deleted scroll B 02", "│ 59◤│" },
+      "Expected lower deletion lower split triangle adjacent to the upper split")
   elseif phase == "same-row-upper" then
-    require_plain_fragment("Deleted scroll B 02                             │ 59◣│", "Expected same-row deletion upper split to anchor at the projected origin")
-    require_plain_fragment("Deleted scroll B 03                             │ 60◤│", "Expected same-row deletion lower split to stay adjacent")
+    require_plain_fragments({ "Deleted scroll B 02", "│ 59◣│" },
+      "Expected same-row deletion upper split to anchor at the projected origin")
+    require_plain_fragments({ "Deleted scroll B 03", "│ 60◤│" },
+      "Expected same-row deletion lower split to stay adjacent")
   elseif phase == "upper-target-exiting" then
-    require_plain_fragment("Deleted scroll B 03                             │ 60◣│", "Expected exiting deletion upper split to anchor at the projected origin")
-    require_plain_fragment("Deleted scroll B 04                             │ 61◤│", "Expected exiting deletion lower split to stay adjacent")
+    require_plain_fragments({ "Deleted scroll B 03", "│ 60◣│" },
+      "Expected exiting deletion upper split to anchor at the projected origin")
+    require_plain_fragments({ "Deleted scroll B 04", "│ 61◤│" },
+      "Expected exiting deletion lower split to stay adjacent")
   elseif phase == "lower-target-entering" then
-    require_plain_fragment("Deleted scroll B 04                             │ 61◣│", "Expected entering deletion upper split to anchor at the projected origin")
-    require_plain_fragment("Deleted scroll B 05                             │ 62◤│", "Expected entering deletion lower split to stay adjacent")
+    require_plain_fragments({ "Deleted scroll B 04", "│ 61◣│" },
+      "Expected entering deletion upper split to anchor at the projected origin")
+    require_plain_fragments({ "Deleted scroll B 05", "│ 62◤│" },
+      "Expected entering deletion lower split to stay adjacent")
   elseif phase == "pre-overlap-inner" then
-    require_plain_fragment("Deleted scroll B 05                             │ 62◣│", "Expected pre-overlap deletion upper split to anchor at the projected origin")
-    require_plain_fragment("Deleted scroll B 06                             │ 63◤│", "Expected pre-overlap deletion lower split to stay adjacent")
+    require_plain_fragments({ "Deleted scroll B 05", "│ 62◣│" },
+      "Expected pre-overlap deletion upper split to anchor at the projected origin")
+    require_plain_fragments({ "Deleted scroll B 06", "│ 63◤│" },
+      "Expected pre-overlap deletion lower split to stay adjacent")
   elseif phase == "pre-collision-inner" then
-    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 7", "Expected adjacent upward deletion route to terminate at the triangle row without an inner pipe")
-    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Adjacent upward deletion route should not draw an inner pipe through the triangle row")
+    local stripped = require_deleted_b06_target(7,
+      "Expected adjacent upward deletion route to terminate at the triangle row without an inner pipe")
+    if stripped and connector_core_pipe_count(stripped) > 0 then
+      table.insert(errors, "Adjacent upward deletion route should not draw an inner pipe through the triangle row")
+    end
   elseif phase == "target-above" then
-    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 6", "Expected deletion target above its origin to connect with an upward triangle and no inner pipe")
-    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Upward deletion target should not draw an inner pipe through the triangle row")
+    local stripped = require_deleted_b06_target(6,
+      "Expected deletion target above its origin to connect with an upward triangle and no inner pipe")
+    if stripped and connector_core_pipe_count(stripped) > 0 then
+      table.insert(errors, "Upward deletion target should not draw an inner pipe through the triangle row")
+    end
   elseif phase == "upper-target-clipped" then
-    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 5", "Expected clipped deletion target to keep the real triangle while visible")
-    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │", "Clipped deletion target should not draw an inner pipe through the visible triangle")
+    local stripped = require_deleted_b06_target(5,
+      "Expected clipped deletion target to keep the real triangle while visible")
+    if stripped and connector_core_pipe_count(stripped) > 0 then
+      table.insert(errors, "Clipped deletion target should not draw an inner pipe through the visible triangle")
+    end
   elseif phase == "overlap-stepped" then
-    require_plain_fragment("Deleted scroll B 06                             │ 63◣│            │ 4", "Expected overlap transition row to avoid an inner visible-route pipe")
-    require_plain_fragment("Scroll delete context 06                        │ 64 ││", "Expected visible deletion route to continue from the origin row")
+    local stripped = require_deleted_b06_target(4,
+      "Expected overlap transition row to avoid an inner visible-route pipe")
+    if stripped and connector_core_pipe_count(stripped) > 0 then
+      table.insert(errors, "Expected overlap transition row to avoid an inner visible-route pipe")
+    end
+    local _, context = find_plain_line_all(lines, { "Scroll delete context 06", "│ 64 │" })
+    if not context or connector_core_pipe_count(context) == 0 then
+      table.insert(errors, "Expected visible deletion route to continue from the origin row")
+    end
   elseif phase == "hidden-overlap-inner" then
-    require_plain_fragment("Deleted scroll B 06                             │ 63◣│  │", "Expected hidden upper deletion route to step outward beside the visible triangle")
-    forbid_plain_fragment("Deleted scroll B 06                             │ 63◣│ │ │", "Hidden overlap should not collide with the visible route lane on the triangle row")
+    local _, stripped = find_plain_line_all(lines, { "Deleted scroll B 06", "│ 63◣│" })
+    if not stripped then
+      table.insert(errors, "Expected hidden upper deletion route to step outward beside the visible triangle")
+    end
+    if stripped and connector_core_pipe_count(stripped) == 0 then
+      table.insert(errors, "Expected hidden upper deletion route to step outward beside the visible triangle")
+    end
+    if stripped and connector_core_pipe_count(stripped) > 1 then
+      table.insert(errors, "Hidden overlap should not collide with the visible route lane on the triangle row")
+    end
   end
 
   local _, _, glyph = find_plain_line(lines, { "Deleted scroll" }, delete_glyphs)
@@ -1783,17 +1860,30 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     if not stripped then
       return
     end
-    if #plain_bar_positions(stripped) ~= 4 then
+    if connector_core_pipe_count(stripped) ~= 0 then
       table.insert(errors, description)
     end
   end
   local function number_pane_bounds(stripped, side)
     local bars = plain_bar_positions(stripped)
+    local has_overview_pane = (bars[1] or 999) <= 3
     if side == "left" then
+      if has_overview_pane then
+        if #bars < 3 then
+          return nil, nil
+        end
+        return bars[2] + #"│", bars[3] - 1
+      end
       if #bars < 2 then
         return nil, nil
       end
       return bars[1] + #"│", bars[2] - 1
+    end
+    if has_overview_pane then
+      if #bars < 5 then
+        return nil, nil
+      end
+      return bars[#bars - 2] + #"│", bars[#bars - 1] - 1
     end
     if #bars < 4 then
       return nil, nil
@@ -1924,13 +2014,12 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
       local stripped = strip_ansi(line)
       if stripped:find(label, 1, true) then
         local text_bg = ansi_bg_for_text(line, base_label or label)
-        local sep2 = nth_plain_pos(stripped, "│", 2)
-        local sep3 = nth_plain_pos(stripped, "│", 3)
-        if not text_bg or not sep2 or not sep3 then
+        local core_start, core_end = connector_core_bounds(stripped)
+        if not text_bg or not core_start or not core_end then
           table.insert(errors, "Expected ANSI data for solid mixed connector row: " .. label)
           return
         end
-        local core_pos = sep2 + #"│" + math.floor((sep3 - sep2 - #"│") / 2)
+        local core_pos = core_start + #"│" + math.floor((core_end - core_start - #"│") / 2)
         local core_bg = ansi_bg_at_plain_byte(line, core_pos)
         if core_bg ~= text_bg then
           table.insert(errors, "Expected mixed overlap connector core to use solid change background")
@@ -1947,12 +2036,11 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     for _, line in ipairs(ansi_lines) do
       local stripped = strip_ansi(line)
       if stripped:find(label, 1, true) then
-        local sep2 = nth_plain_pos(stripped, "│", 2)
-        local sep3 = nth_plain_pos(stripped, "│", 3)
-        if not sep2 or not sep3 then
+        local core_start, core_end = connector_core_bounds(stripped)
+        if not core_start or not core_end then
           return nil, "Expected ANSI separator data for mixed connector row: " .. label
         end
-        local core_pos = sep2 + #"│" + math.floor((sep3 - sep2 - #"│") / 2)
+        local core_pos = core_start + #"│" + math.floor((core_end - core_start - #"│") / 2)
         return ansi_bg_at_plain_byte(line, core_pos), nil
       end
     end
@@ -2014,7 +2102,7 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
       "Expected initial mixed overlap row to remain a solid connector background row without route lines")
     require_number_pane_bg("Original scroll header", "left", change_number_bg,
       "Expected initial mixed overlap left line number pane to stay solid change background")
-    require_number_pane_bg("Original scroll header", "right", change_number_bg,
+    require_number_text_bg("Original scroll header", "right", change_number_bg,
       "Expected initial mixed overlap right line number pane to stay solid change background")
     require_solid_mixed_connector("Original scroll header", "scroll header")
     local _, lower_wedge_line, lower_wedge = find_plain_line_all(lines,
@@ -2078,7 +2166,7 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     if not find_plain_line(lines, { "Original scroll header", "Added mixed scroll" }) then
       table.insert(errors, "Expected right-diverged mixed overlap row to remain solid without route lines")
     end
-    require_number_pane_bg("Original scroll header", "right", change_number_bg,
+    require_number_text_bg("Original scroll header", "right", change_number_bg,
       "Expected right-diverged mixed overlap right line number pane to stay solid change background")
     require_solid_mixed_connector("Original scroll header", "scroll header")
     local _, _, lower_wedge = find_plain_line_all(lines, { "Scroll mixed context 05", "Added mixed scroll" }, wedge_glyphs)
@@ -2479,28 +2567,7 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
 
   local change_glyphs = { "\226\151\164", "\226\151\165", "\226\151\162" } -- ◤, ◥, ◢
   local function has_internal_connector_pipe(stripped)
-    local separators = {}
-    local from = 1
-    while true do
-      local pos = stripped:find("│", from, true)
-      if not pos then
-        break
-      end
-      separators[#separators + 1] = pos
-      from = pos + #"│"
-    end
-    local core_start = separators[2]
-    local core_end = separators[#separators - 1]
-    if not core_start or not core_end then
-      return false
-    end
-    for index = 3, #separators - 2 do
-      local pos = separators[index]
-      if pos > core_start and pos < core_end then
-        return true
-      end
-    end
-    return false
+    return connector_core_pipe_count(stripped) > 0
   end
   if not find_plain_line(lines, { "Old routed change", "New routed change" }) then
     table.insert(errors, "Expected diverged change capture to include changed content")
@@ -2515,32 +2582,32 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
     table.insert(errors, "Left-pane change scroll should leave right pane stationary at the top context")
   end
   if phase == "right-diverged" then
-    require_plain_fragment("Scroll change context 03                        │  3 │            │◢7",
+    require_plain_fragment("│  3 │            │◢7",
       "Expected right-diverged change route to dock the upper transition on the right number pane")
     local _, rail_line = find_plain_line(lines, { "Scroll change context 04", "│  4 │" })
     if not rail_line or not has_internal_connector_pipe(rail_line) then
       table.insert(errors, "Expected right-diverged change route to draw a connector rail between shifted regions")
     end
-    require_plain_fragment("Old routed change A                             │  5◤│",
+    require_plain_fragment("│  5◤│",
       "Expected right-diverged change route to dock the lower transition on the left number pane")
   elseif phase == "left-diverged" then
-    require_plain_fragment("Old routed change C                             │  7◣│",
+    require_plain_fragment("│  7◣│",
       "Expected left-diverged change route to dock the upper transition on the left number pane")
     local _, rail_line = find_plain_line(lines, { "Scroll change context 05", "│  8 │" })
     if not rail_line or not has_internal_connector_pipe(rail_line) then
       table.insert(errors, "Expected left-diverged change route to draw a connector rail between shifted regions")
     end
-    require_plain_fragment("Scroll change context 06                        │  9 │            │◥5",
+    require_plain_fragment("│  9 │            │◥5",
       "Expected left-diverged change route to dock the lower transition on the right number pane")
   elseif phase == "both-diverged" then
-    require_plain_fragment("Scroll change context 04                        │  4 │            │◢6",
+    require_plain_fragment("│  4 │            │◢6",
       "Expected both-diverged change route to dock the upper right transition beside the overlap")
-    require_plain_fragment("Old routed change A                             │  5 │            │ 7",
+    require_plain_fragment("│  5 │            │ 7",
       "Expected both-diverged change overlap row to remain solid without route lines")
     require_solid_change_connector("Old routed change A")
-    require_plain_fragment("Old routed change B                             │  6◤│            │ 8",
+    require_plain_fragment("│  6◤│            │ 8",
       "Expected both-diverged change route to dock the lower left transition beside the overlap")
-    require_plain_fragment("Old routed change C                             │  7 │            │ 9",
+    require_plain_fragment("│  7 │            │ 9",
       "Expected both-diverged change continuation to stay clear after the lower wedge row")
   end
 

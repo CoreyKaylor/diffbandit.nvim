@@ -4,6 +4,8 @@ local Session = require("diffbandit.session")
 local highlights = require("diffbandit.highlights")
 local git_mod = require("diffbandit.git")
 local hex = require("diffbandit.hex")
+local source_mod = require("diffbandit.source")
+local text = require("diffbandit.text")
 local CommitPanel = require("diffbandit.commit_panel")
 local Merge = require("diffbandit.merge")
 local Folder = require("diffbandit.folder")
@@ -50,13 +52,6 @@ function M.setup(opts)
   return config
 end
 
-local function detect_filetype(path)
-  if not path or path == "" then
-    return nil
-  end
-  return vim.filetype.match({ filename = path })
-end
-
 local function read_file_raw(path)
   local uv = vim.uv or vim.loop
   local stat = uv.fs_stat(path)
@@ -92,27 +87,7 @@ local function source_from_hex_file(path, label, text, config)
   }
 end
 
-local function source_from_text(text, path, label, metadata)
-  local lines = {}
-  text = text or ""
-  if text ~= "" then
-    lines = vim.split(text, "\n", { plain = true })
-    if lines[#lines] == "" then
-      table.remove(lines, #lines)
-    end
-  end
-  local source = {
-    path = path,
-    label = label or path,
-    lines = lines,
-    text = #lines > 0 and (table.concat(lines, "\n") .. "\n") or "",
-    filetype = detect_filetype(path),
-  }
-  for key, value in pairs(metadata or {}) do
-    source[key] = value
-  end
-  return source
-end
+local source_from_text = source_mod.from_text
 
 local function make_source_from_file(path, label, config)
   local raw, raw_err = read_file_raw(path)
@@ -144,13 +119,13 @@ local function make_source_from_file(path, label, config)
     label = label or path,
     lines = lines,
     text = text,
-    filetype = detect_filetype(path),
+    filetype = source_mod.detect_filetype(path),
   }
 end
 
 local function make_source_from_buffer(bufnr, label)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local text = table.concat(lines, "\n") .. "\n"
+  local value = text.to_text(lines)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local filetype = vim.api.nvim_get_option_value("filetype", { buf = bufnr })
 
@@ -158,8 +133,8 @@ local function make_source_from_buffer(bufnr, label)
     path = path ~= "" and path or nil,
     label = label or path or string.format("buffer:%d", bufnr),
     lines = lines,
-    text = text,
-    filetype = filetype ~= "" and filetype or detect_filetype(path),
+    text = value,
+    filetype = filetype ~= "" and filetype or source_mod.detect_filetype(path),
   }
 end
 

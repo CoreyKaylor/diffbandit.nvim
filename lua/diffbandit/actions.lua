@@ -1,74 +1,9 @@
 local git_mod = require("diffbandit.git")
 local diff_mod = require("diffbandit.diff")
+local source_mod = require("diffbandit.source")
+local text = require("diffbandit.text")
 
 local M = {}
-
-local function to_text(lines)
-  if #lines == 0 then
-    return ""
-  end
-  return table.concat(lines, "\n") .. "\n"
-end
-
-local function split_lines(text)
-  if not text or text == "" then
-    return {}
-  end
-  local lines = vim.split(text, "\n", { plain = true })
-  if lines[#lines] == "" then
-    table.remove(lines, #lines)
-  end
-  return lines
-end
-
-local function source_from_text(text, path, label, metadata)
-  local lines = split_lines(text or "")
-  local source = {
-    path = path,
-    label = label or path,
-    lines = lines,
-    text = to_text(lines),
-    filetype = path and vim.filetype.match({ filename = path }) or nil,
-  }
-  for key, value in pairs(metadata or {}) do
-    source[key] = value
-  end
-  return source
-end
-
-local function copy_range(lines, start, count)
-  local result = {}
-  if count <= 0 then
-    return result
-  end
-  for i = start, start + count - 1 do
-    result[#result + 1] = lines[i] or ""
-  end
-  return result
-end
-
-local function replace_range(lines, start, count, replacement)
-  local result = {}
-  local insert_at = count == 0 and (start + 1) or start
-  if insert_at < 1 then
-    insert_at = 1
-  end
-
-  for i = 1, insert_at - 1 do
-    result[#result + 1] = lines[i]
-  end
-  for _, line in ipairs(replacement or {}) do
-    result[#result + 1] = line
-  end
-  local resume_at = count == 0 and insert_at or (start + count)
-  if resume_at < 1 then
-    resume_at = 1
-  end
-  for i = resume_at, #lines do
-    result[#result + 1] = lines[i]
-  end
-  return result
-end
 
 local function current_chunk(session)
   if not session or not session.view then
@@ -296,12 +231,12 @@ local function apply_sides(session, source_side, target_side, opts)
   local range_hunk = opts.hunk or hunk
   local target_start, target_count = side_range(range_hunk, target_range_side)
   local source_start, source_count = side_range(range_hunk, source_side)
-  local replacement = copy_range(side_lines(session, source_side), source_start, source_count)
+  local replacement = text.copy_range(side_lines(session, source_side), source_start, source_count)
   local next_text
   if remove_target_for_absent_source(session, source_side, target_side, range_hunk) then
     next_text = nil
   else
-    next_text = to_text(replace_range(split_lines(current or ""), target_start, target_count, replacement))
+    next_text = text.to_text(text.replace_range(text.split_lines(current or ""), target_start, target_count, replacement))
   end
 
   local ok, write_err = write_target(ctx, target, next_text)
@@ -439,13 +374,13 @@ local function no_change_sources(ctx)
   end
   local abs = git_mod.abs_path(ctx.root, ctx.path)
   return {
-    left = source_from_text(left_text, abs, left_label, {
+    left = source_mod.from_text(left_text, abs, left_label, {
       git_side = "left",
       git_target = (mode == "staged" or mode == "all") and "head" or "index",
       git_ref = (mode == "staged" or mode == "all") and (ctx.opts.base or "HEAD") or "index",
       git_relpath = ctx.path,
     }),
-    right = source_from_text(right_text, abs, right_label, {
+    right = source_mod.from_text(right_text, abs, right_label, {
       git_side = "right",
       git_target = mode == "staged" and "index" or "worktree",
       git_ref = mode == "staged" and "index" or "working tree",
@@ -576,7 +511,7 @@ function M.staged_chunk_states(session)
 end
 
 M._private = {
-  replace_range = replace_range,
+  replace_range = text.replace_range,
 }
 
 return M

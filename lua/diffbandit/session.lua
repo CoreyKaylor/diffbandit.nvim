@@ -5,8 +5,10 @@ local paths_mod = require("diffbandit.paths")
 local actions = require("diffbandit.actions")
 local status = require("diffbandit.status")
 local panel_mod = require("diffbandit.panel")
-local git_mod = require("diffbandit.git")
+local nvim = require("diffbandit.nvim")
 local overview = require("diffbandit.overview")
+local panel_host = require("diffbandit.panel_host")
+local queue_host = require("diffbandit.queue_host")
 local ui = require("diffbandit.ui")
 
 local Session = {}
@@ -115,32 +117,8 @@ local function render_empty_source_notice(buf, namespace, source)
   })
 end
 
-local function set_win_view_topline(win, topline)
-  if not win or not vim.api.nvim_win_is_valid(win) then
-    return
-  end
-  topline = math.max(1, topline or 1)
-  local buf = vim.api.nvim_win_get_buf(win)
-  local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
-  local cursor_line = math.min(topline, line_count)
-  pcall(vim.api.nvim_win_set_cursor, win, { cursor_line, 0 })
-  vim.api.nvim_win_call(win, function()
-    local view = vim.fn.winsaveview()
-    view.topline = topline
-    pcall(vim.fn.winrestview, view)
-  end)
-end
-
-local function get_win_view_topline(win)
-  if not win or not vim.api.nvim_win_is_valid(win) then
-    return 1
-  end
-  local ok, view = pcall(vim.api.nvim_win_call, win, vim.fn.winsaveview)
-  if ok and view and view.topline then
-    return view.topline
-  end
-  return 1
-end
+local set_win_view_topline = nvim.set_win_view_topline
+local get_win_view_topline = nvim.get_win_view_topline
 
 local function shallow_copy(tbl)
   local copy = {}
@@ -150,31 +128,10 @@ local function shallow_copy(tbl)
   return copy
 end
 
-local function set_buffer_options(buf, opts)
-  for key, value in pairs(opts) do
-    if value ~= nil then
-      vim.api.nvim_buf_set_option(buf, key, value)
-    end
-  end
-end
-
-local function set_window_options(win, opts)
-  for key, value in pairs(opts) do
-    vim.api.nvim_set_option_value(key, value, { scope = "local", win = win })
-  end
-end
-
-local function set_window_width(win, width)
-  if win and vim.api.nvim_win_is_valid(win) then
-    pcall(vim.api.nvim_win_set_width, win, math.max(1, width))
-  end
-end
-
-local function set_window_height(win, height)
-  if win and vim.api.nvim_win_is_valid(win) then
-    pcall(vim.api.nvim_win_set_height, win, math.max(1, height))
-  end
-end
+local set_buffer_options = nvim.set_buffer_options
+local set_window_options = nvim.set_window_options
+local set_window_width = nvim.set_window_width
+local set_window_height = nvim.set_window_height
 
 local function build_view_for_sources(sources, config)
   local hunks, err = diff_mod.compute_hunks(sources.left.text, sources.right.text, config.diff)
@@ -1878,7 +1835,7 @@ function Session:project_paths_for_toplines(paths, left_topline, right_topline, 
           nil, nil, false, math.max(left_topline, ls - 1))
       elseif projected_right_start > le then
         add_change_link(q.viewport_change_links, "left", le, "right", left_topline + left_height, true, false,
-          nil, nil, false, math.max(left_topline, le - 1))
+          nil, nil, false, le)
       end
     elseif rs and re then
       if path.end_left_index < rs then
@@ -1886,7 +1843,7 @@ function Session:project_paths_for_toplines(paths, left_topline, right_topline, 
           nil, nil, false, math.max(left_topline, rs - 1))
       elseif path.start_left_index > re then
         add_change_link(q.viewport_change_links, "right", re, "left", left_topline + left_height, true, false,
-          nil, nil, false, math.max(left_topline, re - 1))
+          nil, nil, false, re)
       end
     end
 
@@ -2140,6 +2097,7 @@ function Session:render()
     connector_core_width = self.connector_core_width,
     viewport_topline = left_topline,
     viewport_height = left_height,
+    max_route_backtrack_steps = 500,
   })
 
   -- Compute underline data using extracted helper
@@ -2945,42 +2903,11 @@ function Session:goto_chunk(index)
 end
 
 function Session:load_queue_sources(index, step)
-  local queue = self.file_queue
-  if not queue or type(queue.load) ~= "function" then
-    return nil, nil, "no file queue configured"
-  end
-
-  local count = #(queue.entries or {})
-  local current = index
-  while current >= 1 and current <= count do
-    local loaded, err = queue.load(current)
-    if loaded and loaded.left and loaded.right then
-      return { left = loaded.left, right = loaded.right }, current, nil
-    end
-    vim.notify("DiffBandit: skipping " .. tostring(err or "unreadable git file"), vim.log.levels.WARN)
-    current = current + step
-  end
-
-  return nil, nil, "no readable changed file"
+  return queue_host.load_sources(self, index, step)
 end
 
 function Session:prefetch_queue_neighbors(index)
-  local queue = self.file_queue
-  if not queue or type(queue.load) ~= "function" then
-    return
-  end
-  self.prefetch_token = (self.prefetch_token or 0) + 1
-  local token = self.prefetch_token
-  vim.defer_fn(function()
-    if self.disposed or self.prefetch_token ~= token then
-      return
-    end
-    for _, neighbor in ipairs({ (index or self.file_queue_index or 1) - 1, (index or self.file_queue_index or 1) + 1 }) do
-      if neighbor >= 1 and neighbor <= #(queue.entries or {}) then
-        pcall(queue.load, neighbor)
-      end
-    end
-  end, 20)
+  queue_host.prefetch_neighbors(self, index)
 end
 
 function Session:goto_queue_file(index, chunk_position, opts)
@@ -2994,10 +2921,7 @@ function Session:goto_queue_file(index, chunk_position, opts)
     return false
   end
 
-  self.file_queue_index = resolved_index
-  if self.file_queue then
-    self.file_queue.index = resolved_index
-  end
+  queue_host.set_index(self, resolved_index)
   local focused_win = opts.preserve_focus and vim.api.nvim_get_current_win() or nil
   local ok, replace_err = self:replace_sources(sources, { chunk_position = chunk_position })
   if not ok then
@@ -3114,74 +3038,11 @@ function Session:refresh_git_queue(preferred_path, refresh_opts)
 end
 
 function Session:set_amend_mode(enabled)
-  if not self.file_queue or self.file_queue.kind ~= "git" or not self.file_queue.root then
-    return false, "no Git file queue configured"
-  end
-  if not self.panel then
-    return false, "no commit panel configured"
-  end
-
-  panel_mod.capture_message_lines(self)
-  local current_entry = self.file_queue.entries and self.file_queue.entries[self.file_queue_index or self.file_queue.index or 1]
-  local preferred_path = current_entry and (current_entry.path or current_entry.old_path)
-
-  if enabled then
-    local base, err = git_mod.amend_base(self.file_queue.root)
-    if not base then
-      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
-      return false, err
-    end
-    if not self.normal_queue_opts then
-      self.normal_queue_opts = panel_mod.clear_amend_opts((self.file_queue or {}).opts or {})
-    end
-    self.file_queue.opts = vim.tbl_extend("force", {}, self.normal_queue_opts, {
-      mode = "all",
-      base = base,
-      stage_base = base,
-      amend_mode = true,
-    })
-    self.file_queue.normal_opts = self.normal_queue_opts
-    self.panel.amend = true
-    if not self.panel.amend_loaded and vim.trim(table.concat(self.panel.message_lines or {}, "\n")) == "" then
-      local message = git_mod.last_commit_message(self.file_queue.root)
-      if message then
-        local loaded_lines = vim.split(message, "\n", { plain = true })
-        self.panel.pre_amend_message_lines = vim.deepcopy(self.panel.message_lines or { "" })
-        self.panel.amend_loaded_message_lines = loaded_lines
-        self.panel.message_lines = loaded_lines
-        self.panel.message_initialized = false
-      end
-      self.panel.amend_loaded = true
-    end
-  else
-    if self.panel.amend_loaded_message_lines
-        and panel_mod.lines_equal(self.panel.message_lines, self.panel.amend_loaded_message_lines) then
-      self.panel.message_lines = self.panel.pre_amend_message_lines or { "" }
-      self.panel.message_initialized = false
-    end
-    self.panel.pre_amend_message_lines = nil
-    self.panel.amend_loaded_message_lines = nil
-    self.file_queue.opts = panel_mod.clear_amend_opts(self.normal_queue_opts or (self.file_queue or {}).opts or {})
-    self.file_queue.normal_opts = nil
-    self.normal_queue_opts = nil
-    self.panel.amend = false
-  end
-
-  return self:refresh_git_queue(preferred_path)
+  return panel_host.set_amend_mode(self, enabled)
 end
 
 function Session:clear_amend_mode()
-  if self.file_queue then
-    self.file_queue.opts = panel_mod.clear_amend_opts(self.normal_queue_opts or self.file_queue.opts or {})
-    self.file_queue.normal_opts = nil
-  end
-  self.normal_queue_opts = nil
-  if self.panel then
-    self.panel.amend = false
-    self.panel.amend_loaded = false
-    self.panel.pre_amend_message_lines = nil
-    self.panel.amend_loaded_message_lines = nil
-  end
+  panel_host.clear_amend_mode(self)
 end
 
 function Session:ensure_panel_buffers()
@@ -3405,7 +3266,7 @@ end
 
 function Session:after_git_action(ok)
   if ok and self.panel and self.file_queue then
-    local entry = self.file_queue.entries and self.file_queue.entries[self.file_queue_index or self.file_queue.index or 1]
+    local entry = queue_host.current_entry(self)
     self:refresh_git_queue(entry and entry.path)
   end
 end

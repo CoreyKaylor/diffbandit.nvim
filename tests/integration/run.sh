@@ -5,7 +5,7 @@
 #              'theme-default', 'comprehensive', 'listchars',
 #              'navigation', 'git', 'git-merge', 'folder', 'git-scroll-perf',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
-#              'scroll-changes', or 'all' (default: stable non-scroll suite)
+#              'scroll-changes', or 'all'
 
 set -e
 
@@ -79,7 +79,7 @@ run_scroll_test() {
 
     start_phase_session() {
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-        tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 14
+        tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 16
         start_test_nvim "nvim -u '$SCRIPT_DIR/init.lua'"
         sleep 1
         tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
@@ -1776,6 +1776,26 @@ case "$TEST_TO_RUN" in
         run_folder_diff_test
 
         run_git_scroll_perf_test
+
+        run_scroll_test "scroll-additions" \
+            "$PROJECT_ROOT/tests/files/left_scroll_additions.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_additions.txt"
+
+        run_scroll_test "scroll-deletions" \
+            "$PROJECT_ROOT/tests/files/left_scroll_deletions.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_deletions.txt"
+
+        run_scroll_test "scroll-mixed" \
+            "$PROJECT_ROOT/tests/files/left_scroll_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_mixed.txt"
+
+        run_scroll_test "scroll-dense-mixed" \
+            "$PROJECT_ROOT/tests/files/left_dense_mixed.txt" \
+            "$PROJECT_ROOT/tests/files/right_dense_mixed.txt"
+
+        run_scroll_test "scroll-changes" \
+            "$PROJECT_ROOT/tests/files/left_scroll_changes.txt" \
+            "$PROJECT_ROOT/tests/files/right_scroll_changes.txt"
 
         ;;
     *)

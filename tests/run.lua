@@ -20,6 +20,10 @@ local merge_mod = require("diffbandit.merge")
 local diff_pair_mod = require("diffbandit.diff_pair")
 local state_mod = require("diffbandit.state")
 local folder_mod = require("diffbandit.folder")
+local folder_model_mod = require("diffbandit.folder_model")
+local merge_model_mod = require("diffbandit.merge_model")
+local source_mod = require("diffbandit.source")
+local text_mod = require("diffbandit.text")
 
 -- Helper: read file lines
 local function read_file(path)
@@ -80,6 +84,26 @@ assert_eq(config.folder.gutter_width, 7, "Folder diff gutter should default to a
 assert_eq(config.folder.compare.batch_size, 64, "Folder diff digest batching should default to 64 file pairs")
 assert_eq(config.folder.compare.max_concurrency, 2, "Folder diff should default to bounded digest concurrency")
 assert_eq(config.folder.keys.open, "<CR>", "Folder diff open key should default to enter")
+
+do
+  assert_eq(text_mod.to_text({}), "", "Shared text helper should serialize empty lines as empty text")
+  assert_eq(text_mod.to_text({ "a", "b" }), "a\nb\n", "Shared text helper should preserve trailing newline convention")
+  assert_eq(#text_mod.split_lines("a\nb\n"), 2, "Shared text helper should drop final empty split segment")
+  local replaced = text_mod.replace_range({ "a", "c" }, 1, 0, { "b" })
+  assert_eq(table.concat(replaced, ","), "a,b,c", "Shared range helper should insert after zero-count start")
+
+  local source_obj = source_mod.from_text("one\ntwo\n", "sample.lua", "sample", { role = "left" })
+  assert_eq(source_obj.text, "one\ntwo\n", "Shared source helper should normalize source text")
+  assert_eq(source_obj.role, "left", "Shared source helper should merge metadata")
+
+  assert_eq(folder_model_mod.is_difference_status("different"), true,
+    "Folder model should classify different as a difference")
+  assert_eq(folder_model_mod.is_difference_status("same"), false,
+    "Folder model should not classify same rows as differences")
+  assert_eq(merge_model_mod.line_ending_warning({ left = "a\n", right = "b\r\n" }),
+    "line endings differ across conflict stages",
+    "Merge model should report mixed conflict-stage line endings")
+end
 
 do
   local original_showtabline = vim.o.showtabline
@@ -860,6 +884,125 @@ do
 
   assert_eq(by_group[change_group].lane < by_group[delete_group].lane, true,
     "Visible change endpoint should not underline through the nearby deletion rail")
+end
+
+-- Test Suite 4m: Visible local routes stay planned before clipped continuations
+do
+  local long_delete = {}
+  local long_change = {}
+  local middle_delete = {}
+  local middle_change = {}
+  local lower_delete = {}
+  local projected_paths = {
+    {
+      kind = "delete",
+      origin_display_row = 40,
+      triangle_display_row = 61,
+      target_start_index = 61,
+      route_group = long_delete,
+      hide_triangle = true,
+      suppress_tail = true,
+    },
+    {
+      kind = "change",
+      route_group = long_change,
+      viewport_change_links = {
+        {
+          from_side = "right",
+          from_row = 51,
+          from_glyph = "◢",
+          from_visible = true,
+          to_side = "left",
+          to_row = 61,
+          to_glyph = "◤",
+          to_visible = false,
+          underline_row = 51,
+        },
+      },
+    },
+    {
+      kind = "delete",
+      origin_display_row = 8,
+      triangle_display_row = 31,
+      target_start_index = 31,
+      route_group = middle_delete,
+    },
+    {
+      kind = "change",
+      route_group = middle_change,
+      viewport_change_links = {
+        {
+          from_side = "right",
+          from_row = 9,
+          from_glyph = "◢",
+          from_visible = true,
+          to_side = "left",
+          to_row = 39,
+          to_glyph = "◤",
+          to_visible = true,
+        },
+      },
+    },
+    {
+      kind = "delete",
+      origin_display_row = 9,
+      triangle_display_row = 40,
+      target_start_index = 40,
+      route_group = lower_delete,
+    },
+  }
+
+  local plan = paths_mod.plan_routes(projected_paths, {
+    connector_core_width = 12,
+    viewport_topline = 1,
+    viewport_height = 60,
+    max_route_backtrack_steps = 500,
+  })
+  assert_eq(plan.strategy, "greedy",
+    "Visible adjacent route layout should not require backtracking during render")
+
+  local function route_for(group)
+    for _, route in ipairs(plan.routes or {}) do
+      if route.group == group then
+        return route
+      end
+    end
+    return nil
+  end
+
+  for _, group in ipairs({ middle_delete, middle_change, lower_delete }) do
+    local route = route_for(group)
+    assert_eq(route ~= nil, true, "Visible adjacent route should be retained")
+    assert_eq(route.overflow_hidden == true, false, "Visible adjacent route should not be hidden by a clipped route")
+    assert_eq(#(route.segments or {}) > 0, true, "Visible adjacent route should keep connector geometry")
+  end
+end
+
+-- Test Suite 4n: Offscreen-below change links anchor on the visible endpoint row
+do
+  local fake_session = setmetatable({ view = {}, left = { lines = {} }, right = { lines = {} } }, Session)
+  local projected = fake_session:project_paths_for_toplines({
+    {
+      kind = "change",
+      start_left_index = 117,
+      end_left_index = 117,
+      start_right_index = 51,
+      end_right_index = 51,
+      route_group = {},
+    },
+  }, 1, 1, 60, 60)
+
+  local link = projected[1].viewport_change_links[1]
+  assert_eq(link.from_row, 51, "Visible right change wedge should stay on right row 51")
+  assert_eq(link.underline_row, 51, "Offscreen-below change connector should anchor at the wedge row")
+
+  local plan = paths_mod.plan_routes(projected, {
+    connector_core_width = 12,
+    viewport_topline = 1,
+    viewport_height = 60,
+  })
+  assert_eq(plan.routes[1].source_row, 51,
+    "Offscreen-below change route should connect from the visible endpoint row")
 end
 
 -- Test Suite 5: No visual collisions between bars
