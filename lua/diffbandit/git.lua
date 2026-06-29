@@ -121,6 +121,22 @@ local function split_nul(text)
   return items
 end
 
+local function split_char(value, sep)
+  local items = {}
+  value = value or ""
+  local start = 1
+  while start <= #value do
+    local stop = value:find(sep, start, true)
+    if not stop then
+      items[#items + 1] = value:sub(start)
+      break
+    end
+    items[#items + 1] = value:sub(start, stop - 1)
+    start = stop + #sep
+  end
+  return items
+end
+
 local function normalize_path(path)
   if not path or path == "" then
     return nil
@@ -712,8 +728,11 @@ local function classify_entry(queue, entry)
     and entry.content_kind ~= "symlink"
     and entry.content_kind ~= "submodule"
     and entry.content_kind ~= "metadata"
+    and (queue.opts or {}).read_only ~= true
   if not entry.actions_enabled then
-    if entry.content_kind == "symlink" then
+    if (queue.opts or {}).read_only == true then
+      entry.actions_disabled_reason = "Git hunk actions are disabled for read-only revision views"
+    elseif entry.content_kind == "symlink" then
       entry.actions_disabled_reason = "Git hunk actions are disabled for symlink entries"
     elseif entry.content_kind == "submodule" then
       entry.actions_disabled_reason = "Git hunk actions are disabled for submodule entries"
@@ -926,6 +945,240 @@ function M.queue(opts, config)
   return queue, nil
 end
 
+function M.current_branch(root)
+  return current_branch_label(root)
+end
+
+function M.root(opts)
+  opts = opts or {}
+  local uv = vim.uv or vim.loop
+  local start = opts.root
+    or opts.path
+    or current_buffer_path()
+    or uv.cwd()
+  return M.find_root(start)
+end
+
+function M.list_branches(root)
+  local output, err = git_output(root, {
+    "for-each-ref",
+    "--format=%(HEAD)%09%(refname)%09%(refname:short)%09%(objectname:short)%09%(upstream:short)",
+    "refs/heads",
+    "refs/remotes",
+  })
+  if not output then
+    return nil, err
+  end
+
+  local branches = {}
+  for _, line in ipairs(text.split_lines(output)) do
+    local current, refname, name, oid, upstream = line:match("^([%* ])\t([^\t]*)\t([^\t]*)\t([^\t]*)\t?(.*)$")
+    if name and name ~= "" and not name:match("/HEAD$") then
+      branches[#branches + 1] = {
+        refname = refname,
+        name = name,
+        oid = oid ~= "" and oid or nil,
+        upstream = upstream ~= "" and upstream or nil,
+        current = current == "*",
+        remote = refname and refname:match("^refs/remotes/") ~= nil,
+      }
+    end
+  end
+  table.sort(branches, function(a, b)
+    if a.current ~= b.current then
+      return a.current == true
+    end
+    return (a.name or "") < (b.name or "")
+  end)
+  return branches, nil
+end
+
+local function log_format_args()
+  return {
+    "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%s%x1e",
+    "--date=short",
+  }
+end
+
+function M.log(root, opts)
+  opts = opts or {}
+  local args = { "log" }
+  vim.list_extend(args, log_format_args())
+  if opts.all then
+    args[#args + 1] = "--all"
+  end
+  if opts.max_count then
+    args[#args + 1] = "--max-count=" .. tostring(opts.max_count)
+  end
+  if opts.rev then
+    args[#args + 1] = opts.rev
+  end
+  append_pathspecs(args, opts.pathspecs or {})
+
+  local output, err = git_output(root, args)
+  if not output then
+    return nil, err
+  end
+
+  local commits = {}
+  for _, record in ipairs(split_char(output, "\30")) do
+    record = vim.trim(record)
+    if record ~= "" then
+      local fields = split_char(record, "\31")
+      local parents = fields[3] and vim.split(fields[3], " ", { plain = true, trimempty = true }) or {}
+      commits[#commits + 1] = {
+        hash = fields[1],
+        short_hash = fields[2],
+        parents = parents,
+        author = fields[4],
+        date = fields[5],
+        subject = fields[6],
+      }
+    end
+  end
+  return commits, nil
+end
+
+function M.commit_metadata(root, rev)
+  local commits, err = M.log(root, { rev = "-1", max_count = 1 })
+  if not commits then
+    return nil, err
+  end
+  if rev and rev ~= "" then
+    local args = { "log" }
+    vim.list_extend(args, log_format_args())
+    args[#args + 1] = "-1"
+    args[#args + 1] = rev
+    local output, output_err = git_output(root, args)
+    if not output then
+      return nil, output_err
+    end
+    commits = {}
+    for _, record in ipairs(split_char(output, "\30")) do
+      record = vim.trim(record)
+      if record ~= "" then
+        local fields = split_char(record, "\31")
+        local parents = fields[3] and vim.split(fields[3], " ", { plain = true, trimempty = true }) or {}
+        commits[#commits + 1] = {
+          hash = fields[1],
+          short_hash = fields[2],
+          parents = parents,
+          author = fields[4],
+          date = fields[5],
+          subject = fields[6],
+        }
+      end
+    end
+  end
+  return commits[1], nil
+end
+
+local function review_queue_opts(opts, review)
+  local next_opts = vim.tbl_extend("force", {}, opts or {})
+  next_opts.mode = "rev"
+  next_opts.read_only = true
+  next_opts.include_untracked = false
+  next_opts.review = review
+  return next_opts
+end
+
+function M.commit_queue(root, rev, opts, config)
+  if not rev or rev == "" then
+    return nil, "commit revision is required"
+  end
+  opts = opts or {}
+  local meta, meta_err = M.commit_metadata(root, rev)
+  if not meta then
+    return nil, meta_err
+  end
+  local base = meta.parents and meta.parents[1]
+  if not base or base == "" then
+    base = empty_tree
+  end
+  local queue_opts = review_queue_opts(vim.tbl_extend("force", opts, {
+    root = root,
+    base = base,
+    target = rev,
+  }), {
+    kind = "commit",
+    title = (meta.short_hash or rev) .. " " .. (meta.subject or ""),
+    commit = meta,
+    base = base,
+    target = rev,
+  })
+  return M.queue(queue_opts, config)
+end
+
+function M.merge_base(root, base, target)
+  local output, err = git_output(root, { "merge-base", base, target })
+  if not output then
+    return nil, err
+  end
+  output = vim.trim(output)
+  return output ~= "" and output or nil, nil
+end
+
+function M.compare_queue(root, base, target, opts, config)
+  opts = opts or {}
+  base = base and base ~= "" and base or "HEAD"
+  target = target and target ~= "" and target or "HEAD"
+  local compare_base = base
+  if opts.direct ~= true then
+    local merge_base, err = M.merge_base(root, base, target)
+    if not merge_base then
+      return nil, err
+    end
+    compare_base = merge_base
+  end
+  local queue_opts = review_queue_opts(vim.tbl_extend("force", opts, {
+    root = root,
+    base = compare_base,
+    target = target,
+  }), {
+    kind = "compare",
+    title = string.format("%s..%s", base, target),
+    base = compare_base,
+    requested_base = base,
+    target = target,
+    direct = opts.direct == true,
+  })
+  return M.queue(queue_opts, config)
+end
+
+function M.is_worktree_dirty(root)
+  local output, err = git_output(root, { "status", "--porcelain=v1", "-z" })
+  if not output then
+    return false, err
+  end
+  return output ~= "", nil
+end
+
+local has_in_progress_operation
+
+function M.checkout_branch(root, branch, opts)
+  opts = opts or {}
+  if not branch or branch == "" then
+    return false, "branch is required"
+  end
+  if has_in_progress_operation(root) then
+    return false, "cannot switch branches while a Git operation is in progress"
+  end
+  local dirty, dirty_err = M.is_worktree_dirty(root)
+  if dirty_err then
+    return false, dirty_err
+  end
+  if dirty and opts.force ~= true then
+    return false, "worktree has uncommitted changes"
+  end
+  local args = { "switch" }
+  if opts.create == true then
+    args[#args + 1] = "-c"
+  end
+  args[#args + 1] = branch
+  local _, err = git_output(root, args)
+  return err == nil, err
+end
+
 function M.sources_for_entry(queue, index)
   local entry = queue.entries[index]
   if not entry then
@@ -1021,6 +1274,15 @@ local function read_git_path(root, name)
     return nil
   end
   return lines[1]
+end
+
+function has_in_progress_operation(root)
+  return read_git_path(root, "MERGE_HEAD") ~= nil
+    or read_git_path(root, "CHERRY_PICK_HEAD") ~= nil
+    or read_git_path(root, "REVERT_HEAD") ~= nil
+    or read_git_path(root, "REBASE_HEAD") ~= nil
+    or read_git_path(root, "rebase-merge/head-name") ~= nil
+    or read_git_path(root, "rebase-apply/head-name") ~= nil
 end
 
 local function short_commit(root, rev)
@@ -1607,6 +1869,7 @@ end
 
 M._private = {
   parse_name_status = parse_name_status,
+  split_char = split_char,
 }
 
 return M

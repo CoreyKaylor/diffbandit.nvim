@@ -2101,6 +2101,77 @@ if vim.fn.executable("git") == 1 then
 
   do
     local repo = make_git_repo()
+    write_repo_file(repo, "history.txt", { "base" })
+    commit_baseline(repo)
+    write_repo_file(repo, "history.txt", { "base", "second" })
+    git_test_command({ "commit", "-am", "second commit" }, repo)
+    local rev = vim.trim(git_test_command({ "rev-parse", "HEAD" }, repo))
+
+    local commits, log_err = git_mod.log(repo, { max_count = 2 })
+    assert_eq(log_err, nil, "Git log helper should not error")
+    assert_eq(#commits, 2, "Git log helper should return requested commits")
+    assert_eq(commits[1].subject, "second commit", "Git log helper should parse commit subject")
+
+    local queue, queue_err = git_mod.commit_queue(repo, rev, {}, config.git)
+    assert_eq(queue_err, nil, "Commit queue should load for a normal commit")
+    assert_eq(queue.opts.read_only, true, "Commit queue should be marked read-only")
+    assert_eq(queue.opts.review.kind, "commit", "Commit queue should carry review metadata")
+    assert_eq(#queue.entries, 1, "Commit queue should include changed files")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.text, "base\n", "Commit queue left side should read the parent")
+    assert_eq(loaded.right.text, "base\nsecond\n", "Commit queue right side should read the commit")
+    assert_eq(loaded.entry.actions_enabled, false, "Commit queue entries should disable hunk actions")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "root.txt", { "root" })
+    git_test_command({ "add", "root.txt" }, repo)
+    git_test_command({ "commit", "-m", "root commit" }, repo)
+    local rev = vim.trim(git_test_command({ "rev-parse", "HEAD" }, repo))
+
+    local queue, queue_err = git_mod.commit_queue(repo, rev, {}, config.git)
+    assert_eq(queue_err, nil, "Root commit queue should load")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.left.text, "", "Root commit queue should compare against the empty tree")
+    assert_eq(loaded.right.text, "root\n", "Root commit queue should read root commit content")
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "branch.txt", { "base" })
+    commit_baseline(repo)
+    local main_branch = vim.trim(git_test_command({ "branch", "--show-current" }, repo))
+    git_test_command({ "checkout", "-b", "feature" }, repo)
+    write_repo_file(repo, "branch.txt", { "base", "feature" })
+    git_test_command({ "commit", "-am", "feature commit" }, repo)
+    git_test_command({ "checkout", main_branch }, repo)
+
+    local branches, branch_err = git_mod.list_branches(repo)
+    assert_eq(branch_err, nil, "Branch listing should not error")
+    local saw_feature = false
+    for _, branch in ipairs(branches) do
+      if branch.name == "feature" then
+        saw_feature = true
+      end
+    end
+    assert_eq(saw_feature, true, "Branch listing should include local branches")
+
+    local queue, queue_err = git_mod.compare_queue(repo, main_branch, "feature", {}, config.git)
+    assert_eq(queue_err, nil, "Branch compare queue should load")
+    assert_eq(queue.opts.read_only, true, "Branch compare queue should be read-only")
+    assert_eq(queue.opts.review.kind, "compare", "Branch compare queue should carry review metadata")
+    local loaded = select(1, queue.load(1))
+    assert_eq(loaded.right.text, "base\nfeature\n", "Branch compare should read target branch content")
+
+    write_repo_file(repo, "dirty.txt", { "dirty" })
+    local ok, checkout_err = git_mod.checkout_branch(repo, "feature")
+    assert_eq(ok, false, "Checkout helper should refuse dirty worktrees by default")
+    assert_eq(checkout_err, "worktree has uncommitted changes", "Checkout helper should report dirty worktree")
+  end
+
+  do
+    local repo = make_git_repo()
     write_repo_file(repo, "panel.txt", { "one", "two", "three" })
     commit_baseline(repo)
     write_repo_file(repo, "panel.txt", { "one", "TWO", "three" })
@@ -3772,6 +3843,48 @@ do
   assert_eq(#fake.transitions, 1,
     "First previous boundary press should not immediately transition")
   vim.notify = original_notify
+end
+
+do
+  local fake = {
+    file_queue = { entries = { { path = "one" }, { path = "two" }, { path = "three" } }, index = 2 },
+    file_queue_index = 2,
+    transitions = {},
+  }
+  function fake:goto_queue_file(index, chunk_position, opts)
+    self.transitions[#self.transitions + 1] = {
+      index = index,
+      chunk_position = chunk_position,
+      preserve_focus = opts and opts.preserve_focus,
+    }
+    self.file_queue_index = index
+    return true
+  end
+
+  panel_mod.navigate_file(fake, "next")
+  assert_eq(fake.transitions[1].index, 3,
+    "Panel ]f navigation should move to the next queue file")
+  assert_eq(fake.transitions[1].chunk_position, "top",
+    "Panel ]f navigation should open the next file at the top")
+  assert_eq(fake.transitions[1].preserve_focus, true,
+    "Panel ]f navigation should preserve panel focus")
+
+  panel_mod.navigate_file(fake, "prev")
+  assert_eq(fake.transitions[2].index, 2,
+    "Panel [f navigation should move to the previous queue file")
+end
+
+do
+  local fake = {
+    panel = { mode = "review" },
+    closed = false,
+  }
+  function fake:close()
+    self.closed = true
+  end
+  panel_mod.close(fake)
+  assert_eq(fake.closed, true,
+    "Closing a review panel should close the owning diff session")
 end
 
 vim.api.nvim_out_write("OK\n")

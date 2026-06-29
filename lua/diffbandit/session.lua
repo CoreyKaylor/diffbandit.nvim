@@ -232,6 +232,8 @@ function Session.start(sources, config, opts)
   self.staged_chunk_states = actions.staged_chunk_states(self)
   self.status_enabled = status.enabled(self.config)
   self.panel_enabled = opts.panel == true
+  self.panel_mode = opts.panel_mode or "commit"
+  self.panel_details = opts.panel_details
   self.panel_initial_selection = opts.panel_initial_selection
   self.panel_message_lines = opts.panel_message_lines
   self.panel_amend = opts.panel_amend == true
@@ -351,6 +353,8 @@ function Session:open_layout()
       commit_buf = panel_commit_buf,
       message_lines = self.panel_message_lines or { "" },
       amend = self.panel_amend == true,
+      mode = self.panel_mode,
+      details = self.panel_details,
       visible = false,
     }
   end
@@ -3069,6 +3073,8 @@ function Session:ensure_panel_buffers()
   self.panel.commit_buf = commit_buf
   self.panel.message_lines = self.panel.message_lines or { "" }
   self.panel.amend = self.panel.amend or false
+  self.panel.mode = self.panel.mode or self.panel_mode or "commit"
+  self.panel.details = self.panel.details or self.panel_details
 end
 
 function Session:show_commit_panel(opts)

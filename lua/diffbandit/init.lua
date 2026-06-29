@@ -9,6 +9,7 @@ local text = require("diffbandit.text")
 local CommitPanel = require("diffbandit.commit_panel")
 local Merge = require("diffbandit.merge")
 local Folder = require("diffbandit.folder")
+local git_workflows = require("diffbandit.git_workflows")
 
 local M = {}
 
@@ -227,6 +228,178 @@ function M.git(opts)
   return start_session(loaded.left, loaded.right, { queue = queue, chunk_position = "top" })
 end
 
+local function git_config_for(config)
+  return vim.tbl_extend("force", {}, config.git or {}, {
+    hex = (config.ui or {}).hex or {},
+  })
+end
+
+local function review_panel_details(queue)
+  local review = ((queue or {}).opts or {}).review or {}
+  if review.kind == "commit" then
+    local commit = review.commit or {}
+    return {
+      title = (commit.short_hash or review.target or "Commit") .. " " .. (commit.subject or ""),
+      subtitle = "Commit changes",
+      base = review.base,
+      target = review.target,
+      author = commit.author,
+      date = commit.date,
+      help = "<CR> focus diff  ]f/[f files  ]c/[c hunks  q close",
+    }
+  elseif review.kind == "compare" then
+    return {
+      title = "Compare " .. tostring(review.requested_base or review.base) .. " with " .. tostring(review.target),
+      subtitle = review.direct and "Direct branch comparison" or "Merge-base branch comparison",
+      base = review.base,
+      target = review.target,
+      help = "<CR> focus diff  ]f/[f files  ]c/[c hunks  q close",
+    }
+  end
+  return {
+    title = "Git review",
+    help = "<CR> focus diff  ]f/[f files  ]c/[c hunks  q close",
+  }
+end
+
+local function start_review_queue(queue)
+  local loaded, load_err = load_queue_entry(queue, queue.index or 1, 1)
+  if not loaded then
+    return nil, load_err
+  end
+  return start_session(loaded.left, loaded.right, {
+    queue = queue,
+    chunk_position = "top",
+    panel = true,
+    panel_mode = "review",
+    panel_initial_selection = queue.index or 1,
+    panel_details = review_panel_details(queue),
+  })
+end
+
+function M.git_commit(rev, opts)
+  opts = opts or {}
+  local config = state.get_config()
+  ensure_highlights(config)
+  local root, root_err = git_mod.root(opts)
+  if not root then
+    return nil, root_err
+  end
+  local queue, err = git_mod.commit_queue(root, rev, opts, git_config_for(config))
+  if not queue then
+    return nil, err
+  end
+  return start_review_queue(queue)
+end
+
+function M.git_compare(base, target, opts)
+  opts = opts or {}
+  local config = state.get_config()
+  ensure_highlights(config)
+  local root, root_err = git_mod.root(opts)
+  if not root then
+    return nil, root_err
+  end
+  local queue, err = git_mod.compare_queue(root, base, target, opts, git_config_for(config))
+  if not queue then
+    return nil, err
+  end
+  return start_review_queue(queue)
+end
+
+function M.git_compare_branches(opts)
+  opts = opts or {}
+  local root, root_err = git_mod.root(opts)
+  if not root then
+    return nil, root_err
+  end
+  git_workflows.select_branch(root, "DiffBandit compare base", function(base)
+    git_workflows.select_branch(root, "DiffBandit compare target", function(target)
+      local session, err = M.git_compare(base, target, opts)
+      if not session and err then
+        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+      end
+    end)
+  end)
+  return true, nil
+end
+
+function M.git_log(opts)
+  opts = opts or {}
+  local config = state.get_config()
+  ensure_highlights(config)
+  return git_workflows.open_log(config, opts, {
+    open_commit = function(rev, open_opts)
+      local session, err = M.git_commit(rev, vim.tbl_extend("force", {}, opts, open_opts or {}))
+      if not session and err then
+        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
+function M.git_checkout(branch, opts)
+  opts = opts or {}
+  local root, root_err = git_mod.root(opts)
+  if not root then
+    return nil, root_err
+  end
+  local function checkout(selected)
+    local ok, err = git_mod.checkout_branch(root, selected, opts)
+    if ok then
+      vim.notify("DiffBandit: checked out " .. tostring(selected), vim.log.levels.INFO)
+    else
+      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+    end
+    return ok, err
+  end
+  if branch and branch ~= "" then
+    return checkout(branch)
+  end
+  git_workflows.select_branch(root, "DiffBandit checkout branch", function(selected)
+    checkout(selected)
+  end, { local_only = true })
+  return true, nil
+end
+
+function M.git_menu(opts)
+  opts = opts or {}
+  local root, root_err = git_mod.root(opts)
+  if not root then
+    return nil, root_err
+  end
+  git_workflows.open_menu(root, {
+    changes = function(action_opts)
+      local panel, err = M.commit_panel(action_opts)
+      if not panel and err then
+        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+      end
+    end,
+    compare = function(action_opts)
+      M.git_compare_branches(action_opts)
+    end,
+    log = function(action_opts)
+      local browser, err = M.git_log(action_opts)
+      if not browser and err then
+        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+      end
+    end,
+    file_log = function(action_opts)
+      local path = vim.api.nvim_buf_get_name(0)
+      local rel = git_mod.relpath(root, path)
+      action_opts.pathspecs = rel and rel ~= "" and { rel } or {}
+      local browser, err = M.git_log(action_opts)
+      if not browser and err then
+        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+      end
+    end,
+    checkout = function(action_opts)
+      M.git_checkout(nil, action_opts)
+    end,
+  })
+  return true, nil
+end
+
 local function start_merge_for_entry(queue, entry, opts)
   opts = opts or {}
   if not queue or not entry then
@@ -314,9 +487,7 @@ function M.commit_panel(opts)
 
   local config = state.get_config()
   ensure_highlights(config)
-  local git_config = vim.tbl_extend("force", {}, config.git or {}, {
-    hex = (config.ui or {}).hex or {},
-  })
+  local git_config = git_config_for(config)
   local queue, err = git_mod.queue(opts or {}, git_config)
   if not queue then
     return nil, err

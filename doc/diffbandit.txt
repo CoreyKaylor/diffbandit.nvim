@@ -91,6 +91,29 @@ COMMANDS                                            *diffbandit-commands*
         Toggle the Git commit panel. When used outside an active Git diff
         session, it opens as a standalone side panel.
 
+                                                *:DiffBanditGitMenu*
+:DiffBanditGitMenu
+        Open a Git workflow action menu.
+
+                                                 *:DiffBanditGitLog*
+:DiffBanditGitLog [--all] [--max-count N] [--] [pathspec...]
+        Open a read-only Git log browser. Press <CR> on a commit to review its
+        changed files in a DiffBandit queue.
+
+                                              *:DiffBanditGitCommit*
+:DiffBanditGitCommit {rev}
+        Open a read-only review of the files changed by {rev}.
+
+                                             *:DiffBanditGitCompare*
+:DiffBanditGitCompare [base] [target] [--direct]
+        Open a read-only comparison between two refs. Without refs, branch
+        pickers are shown.
+
+                                            *:DiffBanditGitCheckout*
+:DiffBanditGitCheckout [branch]
+        Switch to [branch], or prompt for one. The command refuses dirty
+        worktrees and in-progress Git operations by default.
+
                                                    *:DiffBanditMerge*
 :DiffBanditMerge [path]
         Open a three-pane resolver for an unmerged Git conflict. If [path] is
@@ -222,6 +245,21 @@ Examples:
   :DiffBanditGit -- -- lua/diffbandit
   :DiffBanditGitCurrent
 <
+
+Git workflow helpers:
+>
+  :DiffBanditGitMenu
+  :DiffBanditGitLog --all --max-count 50
+  :DiffBanditGitCommit HEAD
+  :DiffBanditGitCompare main feature
+  :DiffBanditGitCompare main feature --direct
+  :DiffBanditGitCheckout feature
+<
+
+Commit and branch review views are read-only Git queues. They reuse normal
+file and hunk navigation, but staging, discard, apply, and commit actions are
+disabled. Branch comparison defaults to merge-base(base, target)..target; use
+--direct for an exact ref-to-ref comparison.
 
 Binary files render as read-only hex diffs by default. Disable that behavior
 with:
@@ -459,6 +497,12 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.folder_diff("left-dir", "right-dir")
   diffbandit.git({ mode = "all" })
   diffbandit.git_file(nil, { mode = "all" })
+  diffbandit.git_menu({})
+  diffbandit.git_log({ all = true, max_count = 50 })
+  diffbandit.git_commit("HEAD")
+  diffbandit.git_compare("main", "feature")
+  diffbandit.git_compare_branches({})
+  diffbandit.git_checkout("feature")
   diffbandit.merge("path/to/conflicted-file")
   diffbandit.commit_panel({})
 

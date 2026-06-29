@@ -20,6 +20,8 @@ documents without distorting either one.
 - Connector routes for additions, deletions, changes, mixed hunks, and
   scroll-clipped regions.
 - Git queue navigation for changed files with `]f` and `[f`.
+- Read-only Git workflow review for branch comparisons, commit logs, commit
+  changes, and guarded branch checkout.
 - Hunk staging, unstaging, discard/apply actions, and undo.
 - Optional Git commit panel with file staging, amend mode, commit message entry,
   and live diff preview.
@@ -92,6 +94,16 @@ Toggle the Git commit panel:
 
 ```vim
 :DiffBanditCommitPanel
+```
+
+Open Git workflow helpers:
+
+```vim
+:DiffBanditGitMenu
+:DiffBanditGitLog --all --max-count 50
+:DiffBanditGitCommit HEAD
+:DiffBanditGitCompare main feature
+:DiffBanditGitCheckout feature
 ```
 
 Resolve a Git conflict:
@@ -167,6 +179,25 @@ Resolve a Git conflict:
 ```
 
 By default, Git diffs use `all` mode and include untracked files.
+
+## Git Workflow Helpers
+
+DiffBandit also exposes common review workflows:
+
+```vim
+:DiffBanditGitMenu                 " choose common Git actions
+:DiffBanditGitLog                  " browse recent commits
+:DiffBanditGitLog --all -- -- lua  " browse history scoped to a pathspec
+:DiffBanditGitCommit HEAD          " review files changed by one commit
+:DiffBanditGitCompare main feature " compare branches or refs
+:DiffBanditGitCompare main feature --direct
+:DiffBanditGitCheckout feature
+```
+
+Commit and branch review views are read-only Git queues. They reuse normal file
+and hunk navigation (`]f`/`[f`, `]c`/`[c`) but disable staging, discard, apply,
+and commit actions. Branch comparison defaults to a merge-base comparison; use
+`--direct` for an exact ref-to-ref comparison.
 
 ## Default Keys
 
@@ -456,6 +487,12 @@ diffbandit.buffers(left_bufnr, right_bufnr)
 diffbandit.folder_diff("left-dir", "right-dir")
 diffbandit.git({ mode = "all" })
 diffbandit.git_file(nil, { mode = "all" })
+diffbandit.git_menu({})
+diffbandit.git_log({ all = true, max_count = 50 })
+diffbandit.git_commit("HEAD")
+diffbandit.git_compare("main", "feature")
+diffbandit.git_compare_branches({})
+diffbandit.git_checkout("feature")
 diffbandit.merge("path/to/conflicted-file")
 diffbandit.commit_panel({})
 ```

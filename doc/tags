@@ -6,7 +6,12 @@
 :DiffBanditDiscardHunk	diffbandit.txt	/*:DiffBanditDiscardHunk*
 :DiffBanditFolderDiff	diffbandit.txt	/*:DiffBanditFolderDiff*
 :DiffBanditGit	diffbandit.txt	/*:DiffBanditGit*
+:DiffBanditGitCheckout	diffbandit.txt	/*:DiffBanditGitCheckout*
+:DiffBanditGitCommit	diffbandit.txt	/*:DiffBanditGitCommit*
+:DiffBanditGitCompare	diffbandit.txt	/*:DiffBanditGitCompare*
 :DiffBanditGitCurrent	diffbandit.txt	/*:DiffBanditGitCurrent*
+:DiffBanditGitLog	diffbandit.txt	/*:DiffBanditGitLog*
+:DiffBanditGitMenu	diffbandit.txt	/*:DiffBanditGitMenu*
 :DiffBanditMerge	diffbandit.txt	/*:DiffBanditMerge*
 :DiffBanditStageHunk	diffbandit.txt	/*:DiffBanditStageHunk*
 :DiffBanditToggleStageHunk	diffbandit.txt	/*:DiffBanditToggleStageHunk*

@@ -46,6 +46,42 @@ local function parse_git_args(args, defaults)
   return opts
 end
 
+local function parse_log_args(args)
+  local opts = { pathspecs = {} }
+  local i = 1
+  while i <= #args do
+    local arg = args[i]
+    if arg == "--all" then
+      opts.all = true
+    elseif arg == "--max-count" then
+      opts.max_count = tonumber(args[i + 1])
+      i = i + 1
+    elseif arg == "--" then
+      for j = i + 1, #args do
+        opts.pathspecs[#opts.pathspecs + 1] = args[j]
+      end
+      break
+    else
+      opts.pathspecs[#opts.pathspecs + 1] = arg
+    end
+    i = i + 1
+  end
+  return opts
+end
+
+local function parse_compare_args(args)
+  local opts = {}
+  local refs = {}
+  for _, arg in ipairs(args) do
+    if arg == "--direct" then
+      opts.direct = true
+    else
+      refs[#refs + 1] = arg
+    end
+  end
+  return refs[1], refs[2], opts
+end
+
 vim.api.nvim_create_user_command("DiffBandit", function(opts)
   local args = opts.fargs
   if #args < 2 then
@@ -141,6 +177,73 @@ end, {
   nargs = "*",
   complete = "file",
   desc = "Toggle the DiffBandit Git commit panel",
+})
+
+vim.api.nvim_create_user_command("DiffBanditGitMenu", function(opts)
+  local git_opts = parse_git_args(opts.fargs, {})
+  local ok, err = diffbandit.git_menu(git_opts)
+  if not ok and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "*",
+  complete = "file",
+  desc = "Open the DiffBandit Git workflow menu",
+})
+
+vim.api.nvim_create_user_command("DiffBanditGitLog", function(opts)
+  local log_opts = parse_log_args(opts.fargs)
+  local browser, err = diffbandit.git_log(log_opts)
+  if not browser and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "*",
+  complete = "file",
+  desc = "Open the DiffBandit Git log browser",
+})
+
+vim.api.nvim_create_user_command("DiffBanditGitCommit", function(opts)
+  local rev = opts.fargs[1]
+  if not rev or rev == "" then
+    vim.notify("DiffBanditGitCommit: provide a revision", vim.log.levels.ERROR)
+    return
+  end
+  local session, err = diffbandit.git_commit(rev)
+  if not session and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = 1,
+  desc = "Open a read-only DiffBandit review for a commit",
+})
+
+vim.api.nvim_create_user_command("DiffBanditGitCompare", function(opts)
+  local base, target, compare_opts = parse_compare_args(opts.fargs)
+  if not base or not target then
+    local ok, err = diffbandit.git_compare_branches(compare_opts)
+    if not ok and err then
+      vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+    end
+    return
+  end
+  local session, err = diffbandit.git_compare(base, target, compare_opts)
+  if not session and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "*",
+  desc = "Open a read-only DiffBandit comparison between two refs",
+})
+
+vim.api.nvim_create_user_command("DiffBanditGitCheckout", function(opts)
+  local ok, err = diffbandit.git_checkout(opts.fargs[1])
+  if not ok and err then
+    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+  end
+end, {
+  nargs = "?",
+  desc = "Checkout a Git branch with DiffBandit safeguards",
 })
 
 vim.api.nvim_create_user_command("DiffBanditMerge", function(opts)
