@@ -1,5 +1,6 @@
 local hex = require("diffbandit.hex")
 local process = require("diffbandit.process")
+local document = require("diffbandit.document")
 local source_mod = require("diffbandit.source")
 local text = require("diffbandit.text")
 
@@ -842,6 +843,8 @@ local function source_from_kind(queue, entry, side)
     end, { git_side = side, git_target = "rev", git_ref = opts.target, git_relpath = path, git_entry_kind = entry.kind })
   end
 
+  local worktree_path = abs_path(root, path)
+  local worktree_bufnr = opts.use_buffer ~= false and find_loaded_buffer(worktree_path) or nil
   return git_source(queue, path, string.format("%s (working tree)", label_path), function()
     if opts.use_buffer ~= false and has_modified_loaded_buffer(root, path) then
       return read_worktree(root, path, opts.use_buffer)
@@ -851,7 +854,20 @@ local function source_from_kind(queue, entry, side)
       return raw, nil, "working tree"
     end
     return nil, raw_err
-  end, { git_side = side, git_target = "worktree", git_ref = "working tree", git_relpath = path, git_entry_kind = entry.kind })
+  end, {
+    git_side = side,
+    git_target = "worktree",
+    git_ref = "working tree",
+    git_relpath = path,
+    git_entry_kind = entry.kind,
+    editable = {
+      target = "git-worktree",
+      path = document.normalize_path(worktree_path) or worktree_path,
+      bufnr = worktree_bufnr,
+      git_root = root,
+      git_relpath = path,
+    },
+  })
 end
 
 local function normalize_opts(opts, config)
@@ -1202,6 +1218,8 @@ function M.sources_for_entry(queue, index)
       or "binary hex view is read-only"
     left.git_readonly_reason = entry.actions_disabled_reason
     right.git_readonly_reason = entry.actions_disabled_reason
+    left.editable = nil
+    right.editable = nil
   end
 
   return {
@@ -1845,6 +1863,21 @@ function M.write_worktree(root, path, value, use_buffer)
       if not ok then
         return false, tostring(err)
       end
+      if value == nil then
+        if vim.fn.filereadable(full_path) == 1 then
+          local remove_ok, remove_err = os.remove(full_path)
+          if not remove_ok then
+            return false, remove_err
+          end
+        end
+      else
+        vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
+        local write_ok, write_err = pcall(vim.fn.writefile, lines, full_path)
+        if not write_ok then
+          return false, tostring(write_err)
+        end
+      end
+      pcall(vim.api.nvim_set_option_value, "modified", false, { buf = bufnr })
       return true, nil
     end
   end

@@ -224,7 +224,7 @@ local function apply_diff_variants(config)
   -- Context highlight - no sp set to avoid conflicts with separator underlines
   apply_group("DiffBanditContext", {
     bg = normal_bg,
-    fg = normal_fg,
+    fg = "NONE",
   })
 
   local soft_split_fg = blend_color(normal_base.bg or "#000000", get_foreground_color("LineNr", "#808080"), ui.split_blend or 0.3)

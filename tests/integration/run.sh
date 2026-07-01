@@ -3,7 +3,7 @@
 # Usage: ./run.sh [test_name]
 #   test_name: 'extreme', 'pure', 'deletions', 'mixed', 'dense-mixed',
 #              'theme-default', 'comprehensive', 'listchars',
-#              'navigation', 'git', 'git-merge', 'folder', 'git-scroll-perf',
+#              'navigation', 'editable', 'git', 'git-merge', 'folder', 'git-scroll-perf',
 #              'scroll-additions', 'scroll-deletions', 'scroll-mixed', 'scroll-dense-mixed',
 #              'scroll-changes', or 'all'
 
@@ -63,6 +63,64 @@ run_test() {
 
     # Verify the capture
     lua "$SCRIPT_DIR/verify.lua" "$plain_capture" "$test_name" "$ansi_capture"
+
+    echo "  PASSED: $test_name"
+    echo "  Captures: $case_dir"
+}
+
+run_editable_diff_test() {
+    local test_name="editable"
+    local case_dir="$CAPTURE_ROOT/$test_name"
+    local left_file="$case_dir/left.lua"
+    local right_file="$case_dir/right.lua"
+    local left_state="$case_dir/left.state"
+    local typed_state="$case_dir/typed.state"
+    local undo_state="$case_dir/undo.state"
+
+    echo "Running integration test: $test_name"
+    rm -rf "$case_dir"
+    mkdir -p "$case_dir"
+    cat > "$left_file" <<'EOF'
+local value = "left"
+return value
+EOF
+    cat > "$right_file" <<'EOF'
+
+return true
+EOF
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 24
+    start_test_nvim "nvim -n -u '$SCRIPT_DIR/init.lua'"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBandit $left_file $right_file" C-m
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $left_state left" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBFocus right" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" g g 0
+    sleep 0.1
+    tmux send-keys -t "$TMUX_SESSION" i "value" Escape
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $typed_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" u
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $undo_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    assert_git_state_contains "$left_state" "role=left" "editable diff should inspect the left source buffer"
+    assert_git_state_contains "$left_state" "filetype=lua" "editable diff left source buffer should keep Lua filetype"
+    assert_git_state_contains "$left_state" "modifiable=false" "editable diff left source buffer should remain read-only"
+    assert_git_state_line_equals "$left_state" "lsp_clients=" "editable diff left source buffer should not attach LSP"
+    assert_git_state_line_equals "$left_state" "diagnostics=0" "editable diff left source buffer should not show diagnostics"
+    assert_git_state_contains "$typed_state" "role=right" "editable diff should inspect the right buffer"
+    assert_git_state_contains "$typed_state" "buftype=" "editable diff right buffer should be a normal buffer"
+    assert_git_state_contains "$typed_state" "filetype=lua" "editable diff right buffer should keep Lua filetype"
+    assert_git_state_contains "$typed_state" "line1=value" "editable diff insert should preserve typed character order"
+    assert_git_state_contains "$undo_state" "line1=" "editable diff u should use native buffer undo"
 
     echo "  PASSED: $test_name"
     echo "  Captures: $case_dir"
@@ -654,6 +712,17 @@ assert_git_state_contains() {
     fi
 }
 
+assert_git_state_line_equals() {
+    local file="$1"
+    local expected="$2"
+    local label="$3"
+    if ! grep -Fxq "$expected" "$file"; then
+        echo "Git navigation state failed ($label): expected line '$expected'"
+        cat "$file"
+        exit 1
+    fi
+}
+
 run_git_queue_navigation_test() {
     local repo="$1"
     local case_dir="$CAPTURE_ROOT/git"
@@ -939,6 +1008,24 @@ assert_git_diff_clean() {
     fi
 }
 
+assert_git_index_equals() {
+    local repo="$1"
+    local file="$2"
+    local expected="$3"
+    local label="$4"
+    local actual
+
+    actual="$(git -C "$repo" show ":$file" 2>/dev/null || true)"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "Git action state failed ($label): index content mismatch"
+        echo "Expected:"
+        printf '%s\n' "$expected"
+        echo "Actual:"
+        printf '%s\n' "$actual"
+        exit 1
+    fi
+}
+
 run_git_actions_test() {
     local case_dir="$CAPTURE_ROOT/git"
     local repo="$case_dir/actions-repo"
@@ -1022,6 +1109,66 @@ EOF
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 }
 
+run_git_editable_undo_stack_test() {
+    local case_dir="$CAPTURE_ROOT/git"
+    local repo="$case_dir/editable-undo-stack-repo"
+    local typed_state="$case_dir/editable-undo-stack-typed.state"
+    local unstaged_state="$case_dir/editable-undo-stack-unstaged.state"
+    local undone_state="$case_dir/editable-undo-stack-undone.state"
+
+    echo "  phase: git-editable-undo-stack"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/editable.lua" <<'EOF'
+local value = "base"
+return value
+EOF
+    git -C "$repo" add editable.lua
+    git -C "$repo" commit -m baseline >/dev/null
+    cat > "$repo/editable.lua" <<'EOF'
+local value = "changed"
+return value
+EOF
+
+    start_git_session "$repo" 18
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditGit -- editable.lua" C-m
+    sleep 2
+    tmux send-keys -t "$TMUX_SESSION" ":DBFocus right" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" g g 0
+    sleep 0.1
+    tmux send-keys -t "$TMUX_SESSION" i "typed " Escape
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $typed_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" "]" "c"
+    sleep 0.3
+    tmux send-keys -t "$TMUX_SESSION" Space
+    sleep 1
+    assert_git_index_equals "$repo" "editable.lua" $'typed local value = "changed"\nreturn value' \
+        "space should stage the edited live right buffer"
+
+    tmux send-keys -t "$TMUX_SESSION" u
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $unstaged_state" C-m
+    sleep 0.2
+    assert_git_index_equals "$repo" "editable.lua" $'local value = "base"\nreturn value' \
+        "first u should undo the newer stage action"
+    assert_git_state_contains "$unstaged_state" 'line1=typed local value = "changed"' \
+        "first u should preserve the newer editable buffer text"
+
+    tmux send-keys -t "$TMUX_SESSION" u
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $undone_state" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    assert_git_state_contains "$undone_state" 'line1=local value = "changed"' \
+        "second u should undo the older native buffer edit"
+}
+
 run_git_staged_added_toggle_test() {
     local case_dir="$CAPTURE_ROOT/git"
     local repo="$case_dir/staged-added-toggle-repo"
@@ -1052,6 +1199,90 @@ EOF
     sleep 1
     assert_git_diff_clean "$repo" "cached" "already_staged_added.txt" "space should unstage an already staged added file"
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+}
+
+run_git_merge_lsp_test() {
+    local case_dir="$CAPTURE_ROOT/git-merge"
+    local repo="$case_dir/lua-lsp-repo"
+    local lsp_state="$case_dir/lua-lsp.state"
+    local local_state="$case_dir/lua-lsp-local.state"
+    local remote_state="$case_dir/lua-lsp-remote.state"
+
+    if ! command -v lua-language-server >/dev/null 2>&1; then
+        echo "  phase: git-merge-lua-lsp (skipped: lua-language-server not found)"
+        return
+    fi
+
+    echo "  phase: git-merge-lua-lsp"
+    rm -rf "$repo"
+    mkdir -p "$repo"
+    git -C "$repo" init >/dev/null
+    git -C "$repo" config user.email "diffbandit@example.test"
+    git -C "$repo" config user.name "DiffBandit Test"
+    cat > "$repo/conflict.lua" <<'EOF'
+local function compute(value)
+  return missing_global(value)
+end
+
+return compute(1)
+EOF
+    git -C "$repo" add conflict.lua
+    git -C "$repo" commit -m baseline >/dev/null
+    local main_branch
+    main_branch="$(git -C "$repo" branch --show-current)"
+    git -C "$repo" checkout -b incoming >/dev/null
+    cat > "$repo/conflict.lua" <<'EOF'
+local function compute(value)
+  return missing_global(value)
+end
+
+return compute("incoming")
+EOF
+    git -C "$repo" commit -am incoming >/dev/null
+    git -C "$repo" checkout "$main_branch" >/dev/null
+    cat > "$repo/conflict.lua" <<'EOF'
+local function compute(value)
+  return missing_global(value)
+end
+
+return compute(2)
+EOF
+    git -C "$repo" commit -am local >/dev/null
+    if git -C "$repo" merge incoming >/dev/null 2>&1; then
+        echo "Git merge LSP test failed: fixture merge did not conflict"
+        exit 1
+    fi
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$TMUX_SESSION" -x 120 -y 32 -c "$repo"
+    start_test_nvim "nvim -n -u '$SCRIPT_DIR/init.lua'"
+    sleep 1
+    tmux send-keys -t "$TMUX_SESSION" ":DBEnableLuaLsp" C-m
+    sleep 0.5
+    tmux send-keys -t "$TMUX_SESSION" ":DiffBanditMerge conflict.lua" C-m
+    sleep 4
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $lsp_state" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $local_state local" C-m
+    sleep 0.2
+    tmux send-keys -t "$TMUX_SESSION" ":DBWriteEditableState $remote_state remote" C-m
+    sleep 0.2
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    assert_git_state_contains "$lsp_state" "role=result" "Lua merge LSP should inspect the center result buffer"
+    assert_git_state_contains "$lsp_state" "buftype=" "Lua merge result should be a normal buffer"
+    assert_git_state_contains "$lsp_state" "filetype=lua" "Lua merge result should keep Lua filetype"
+    assert_git_state_contains "$lsp_state" "lsp_clients=lua_ls" "Lua merge result should have lua_ls attached"
+    assert_git_state_contains "$local_state" "role=local" "Lua merge LSP should inspect the local source buffer"
+    assert_git_state_contains "$local_state" "filetype=lua" "Lua merge local source buffer should keep Lua filetype"
+    assert_git_state_contains "$local_state" "modifiable=false" "Lua merge local source buffer should remain read-only"
+    assert_git_state_line_equals "$local_state" "lsp_clients=" "Lua merge local source buffer should not attach LSP"
+    assert_git_state_line_equals "$local_state" "diagnostics=0" "Lua merge local source buffer should not show diagnostics"
+    assert_git_state_contains "$remote_state" "role=remote" "Lua merge LSP should inspect the remote source buffer"
+    assert_git_state_contains "$remote_state" "filetype=lua" "Lua merge remote source buffer should keep Lua filetype"
+    assert_git_state_contains "$remote_state" "modifiable=false" "Lua merge remote source buffer should remain read-only"
+    assert_git_state_line_equals "$remote_state" "lsp_clients=" "Lua merge remote source buffer should not attach LSP"
+    assert_git_state_line_equals "$remote_state" "diagnostics=0" "Lua merge remote source buffer should not show diagnostics"
 }
 
 run_git_staged_added_hunk_toggle_test() {
@@ -1373,6 +1604,7 @@ run_git_test() {
     run_git_submodule_test
     run_git_queue_navigation_test "$repo"
     run_git_actions_test
+    run_git_editable_undo_stack_test
     run_git_staged_added_toggle_test
     run_git_staged_added_hunk_toggle_test
     run_git_mixed_staged_added_hunk_toggle_test
@@ -1483,6 +1715,8 @@ run_git_merge_test() {
         cat "$repo/conflict.txt"
         exit 1
     fi
+
+    run_git_merge_lsp_test
 
     local full_repo="$case_dir/full-repo"
     local full_panel_state="$case_dir/full_after_commit.state"
@@ -1699,6 +1933,9 @@ case "$TEST_TO_RUN" in
     navigation)
         run_navigation_test
         ;;
+    editable)
+        run_editable_diff_test
+        ;;
     git)
         run_git_test
         ;;
@@ -1769,6 +2006,8 @@ case "$TEST_TO_RUN" in
 
         run_navigation_test
 
+        run_editable_diff_test
+
         run_git_test
 
         run_git_merge_test
@@ -1800,7 +2039,7 @@ case "$TEST_TO_RUN" in
         ;;
     *)
         echo "Unknown test: $TEST_TO_RUN"
-        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|listchars|navigation|git|git-merge|folder|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
+        echo "Usage: $0 [extreme|pure|deletions|mixed|dense-mixed|theme-default|comprehensive|listchars|navigation|editable|git|git-merge|folder|git-scroll-perf|scroll-additions|scroll-deletions|scroll-mixed|scroll-dense-mixed|scroll-changes|all]"
         exit 1
         ;;
 esac

@@ -71,6 +71,107 @@ function _G.DiffBanditTestFocus(side)
   end
 end
 
+function _G.DiffBanditTestEnableLuaLsp()
+  if vim.fn.executable("lua-language-server") ~= 1 then
+    return false
+  end
+  if not (vim.lsp and vim.lsp.config and type(vim.lsp.enable) == "function") then
+    return false
+  end
+  local ok = pcall(vim.lsp.config, "lua_ls", {
+    cmd = { "lua-language-server" },
+    filetypes = { "lua" },
+    root_markers = { ".luarc.json", ".git" },
+    settings = {
+      Lua = {
+        workspace = { checkThirdParty = false },
+      },
+    },
+  })
+  if not ok then
+    return false
+  end
+  vim.lsp.enable("lua_ls")
+  return true
+end
+
+local function test_target_buffer(session, requested)
+  if not session then
+    return nil, "missing"
+  end
+
+  local candidates = {}
+  if session.result_buf and vim.api.nvim_buf_is_valid(session.result_buf) then
+    candidates.result = { session.result_buf, "result", session.result_win }
+    if session.local_buf and vim.api.nvim_buf_is_valid(session.local_buf) then
+      candidates.local_side = { session.local_buf, "local", session.local_win }
+    end
+    if session.remote_buf and vim.api.nvim_buf_is_valid(session.remote_buf) then
+      candidates.remote = { session.remote_buf, "remote", session.remote_win }
+    end
+  elseif session.right_buf and vim.api.nvim_buf_is_valid(session.right_buf) then
+    candidates.right = { session.right_buf, "right", session.right_win }
+    if session.left_buf and vim.api.nvim_buf_is_valid(session.left_buf) then
+      candidates.left = { session.left_buf, "left", session.left_win }
+    end
+  end
+
+  if requested and requested ~= "" then
+    local key = requested == "local" and "local_side" or requested
+    local candidate = candidates[key]
+    if candidate then
+      return candidate[1], candidate[2], candidate[3]
+    end
+    return nil, "missing_" .. requested
+  end
+
+  if candidates.result then
+    return candidates.result[1], candidates.result[2], candidates.result[3]
+  end
+  if candidates.right then
+    return candidates.right[1], candidates.right[2], candidates.right[3]
+  end
+  return nil, "missing"
+end
+
+function _G.DiffBanditTestWriteEditableState(path, requested)
+  local session = _G.DiffBanditTestSession()
+  if not session then
+    vim.fn.writefile({ "missing_session" }, path)
+    return
+  end
+  local bufnr, role, target_win = test_target_buffer(session, requested)
+  if not bufnr then
+    vim.fn.writefile({ "missing_target", "role=" .. tostring(role) }, path)
+    return
+  end
+  local clients = {}
+  if vim.lsp and type(vim.lsp.get_clients) == "function" then
+    for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do
+      clients[#clients + 1] = client.name
+    end
+  end
+  table.sort(clients)
+  local ok_tree, tree = pcall(vim.api.nvim_buf_call, bufnr, vim.fn.undotree)
+  local cursor = { 1, 0 }
+  if target_win and vim.api.nvim_win_is_valid(target_win) then
+    cursor = vim.api.nvim_win_get_cursor(target_win)
+  end
+  vim.fn.writefile({
+    "role=" .. role,
+    "line1=" .. tostring((vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or "")),
+    "buftype=" .. vim.api.nvim_get_option_value("buftype", { buf = bufnr }),
+    "filetype=" .. vim.api.nvim_get_option_value("filetype", { buf = bufnr }),
+    "buflisted=" .. tostring(vim.api.nvim_get_option_value("buflisted", { buf = bufnr })),
+    "modifiable=" .. tostring(vim.api.nvim_get_option_value("modifiable", { buf = bufnr })),
+    "modified=" .. tostring(vim.api.nvim_get_option_value("modified", { buf = bufnr })),
+    "cursor_col=" .. tostring(cursor[2] or 0),
+    "undo_seq=" .. tostring(ok_tree and tree and tree.seq_cur or ""),
+    "lsp_clients=" .. table.concat(clients, ","),
+    "diagnostics=" .. tostring(#vim.diagnostic.get(bufnr)),
+  }, path)
+end
+
 local function topline_for(win)
   if not win or not vim.api.nvim_win_is_valid(win) then
     return -1
@@ -361,6 +462,15 @@ vim.api.nvim_create_user_command("DBFocus", function(opts)
   _G.DiffBanditTestFocus(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = "*" })
+
+vim.api.nvim_create_user_command("DBEnableLuaLsp", function()
+  _G.DiffBanditTestEnableLuaLsp()
+end, { nargs = 0 })
+
+vim.api.nvim_create_user_command("DBWriteEditableState", function(opts)
+  _G.DiffBanditTestWriteEditableState(opts.fargs[1], opts.fargs[2])
+  vim.cmd("redraw!")
+end, { nargs = "+", complete = "file" })
 
 vim.api.nvim_create_user_command("DBWriteState", function(opts)
   _G.DiffBanditTestWriteState(opts.fargs[1])

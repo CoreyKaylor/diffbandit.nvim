@@ -6,6 +6,7 @@ local git_mod = require("diffbandit.git")
 local hex = require("diffbandit.hex")
 local source_mod = require("diffbandit.source")
 local text = require("diffbandit.text")
+local document = require("diffbandit.document")
 local CommitPanel = require("diffbandit.commit_panel")
 local Merge = require("diffbandit.merge")
 local Folder = require("diffbandit.folder")
@@ -194,7 +195,11 @@ function M.files(left_path, right_path, opts)
     return nil, left_err
   end
 
-  local right_source, right_err = make_source_from_file(right_path, opts.right_label, config)
+  local right_source, right_err = document.source_from_file_or_buffer(right_path, opts.right_label, {
+    editable = { target = "file" },
+  }, function()
+    return make_source_from_file(right_path, opts.right_label, config)
+  end)
   if not right_source then
     return nil, right_err
   end
@@ -206,6 +211,11 @@ function M.buffers(bufnr_a, bufnr_b, opts)
   opts = opts or {}
   local left_source = make_source_from_buffer(bufnr_a, opts.left_label)
   local right_source = make_source_from_buffer(bufnr_b, opts.right_label)
+  right_source.editable = {
+    target = "buffer",
+    bufnr = bufnr_b,
+    path = right_source.path,
+  }
   return start_session(left_source, right_source, opts)
 end
 

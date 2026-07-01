@@ -117,6 +117,17 @@ local function current_chunk_index(session)
   return chunk_index
 end
 
+local function buffer_undo_seq(bufnr)
+  if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    return nil
+  end
+  local ok, tree = pcall(vim.api.nvim_buf_call, bufnr, vim.fn.undotree)
+  if not (ok and type(tree) == "table") then
+    return nil
+  end
+  return tonumber(tree.seq_cur or 0) or 0
+end
+
 local function range_end(start, count)
   if count <= 0 then
     return start
@@ -253,6 +264,7 @@ local function apply_sides(session, source_side, target_side, opts)
     before = current,
     after = next_text,
     action = opts.action or (source_side .. "_to_" .. target_side),
+    right_undo_seq = buffer_undo_seq(session.right_buf),
   }
 
   M.refresh(session, chunk_index)
@@ -418,6 +430,9 @@ function M.refresh(session, preferred_chunk)
   end
   if not sources then
     sources = no_change_sources(ctx)
+    if session.right and session.right.editable and sources.right and sources.right.git_target == "worktree" then
+      sources.right.editable = vim.tbl_extend("force", {}, session.right.editable)
+    end
     vim.notify("DiffBandit: no remaining changes in " .. ctx.path, vim.log.levels.INFO)
   end
 
@@ -462,6 +477,9 @@ function M.undo(session)
     return false, write_err
   end
   stack[#stack] = nil
+  if stack[#stack] then
+    stack[#stack].right_undo_seq = buffer_undo_seq(session.right_buf)
+  end
   M.refresh(session)
   return true, nil
 end

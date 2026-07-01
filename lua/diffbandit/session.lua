@@ -6,6 +6,7 @@ local actions = require("diffbandit.actions")
 local status = require("diffbandit.status")
 local panel_mod = require("diffbandit.panel")
 local nvim = require("diffbandit.nvim")
+local document = require("diffbandit.document")
 local overview = require("diffbandit.overview")
 local panel_host = require("diffbandit.panel_host")
 local queue_host = require("diffbandit.queue_host")
@@ -239,6 +240,8 @@ function Session.start(sources, config, opts)
   self.panel_amend = opts.panel_amend == true
   self.normal_queue_opts = opts.panel_normal_queue_opts or (self.file_queue and self.file_queue.normal_opts)
   self.return_to = opts.return_to
+  self.preserve_right_buffer_lines = self.right.editable ~= nil
+  self.suppress_right_context_highlights = self.right.editable ~= nil
 
   self:open_layout()
   if self.panel_enabled then
@@ -327,7 +330,19 @@ function Session:open_layout()
   local connector_buf = vim.api.nvim_create_buf(false, true)
   local right_num_buf = vim.api.nvim_create_buf(false, true)
   local right_overview_buf = self.overview_enabled and vim.api.nvim_create_buf(false, true) or nil
-  local right_buf = vim.api.nvim_create_buf(false, true)
+  local right_buf
+  if self.right.editable then
+    local acquired, acquire_err = document.acquire_buffer(self.right.editable)
+    if acquired then
+      right_buf = acquired
+      document.refresh_source_from_editable(self.right)
+    else
+      vim.notify("DiffBandit: " .. tostring(acquire_err), vim.log.levels.WARN)
+      self.right.editable = nil
+      self.preserve_right_buffer_lines = false
+    end
+  end
+  right_buf = right_buf or vim.api.nvim_create_buf(false, true)
   local left_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
   local center_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
   local right_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
@@ -377,12 +392,19 @@ function Session:open_layout()
     end
   end
 
-  set_buffer_options(right_buf, {
-    buftype = "nofile",
-    swapfile = false,
-    modifiable = true,
-    filetype = self.right.filetype,
-  })
+  if self.right.editable then
+    set_buffer_options(right_buf, {
+      modifiable = true,
+      filetype = self.right.filetype,
+    })
+  else
+    set_buffer_options(right_buf, {
+      buftype = "nofile",
+      swapfile = false,
+      modifiable = true,
+      filetype = self.right.filetype,
+    })
+  end
 
   set_buffer_options(left_num_buf, {
     buftype = "nofile",
@@ -663,7 +685,7 @@ function Session:open_layout()
     relativenumber = false,
     cursorline = true,
     wrap = false,
-    signcolumn = "no",
+    signcolumn = self.right.editable and "auto" or "no",
     winhl = right_source_winhl,
   })
 
@@ -721,7 +743,11 @@ function Session:open_layout()
   set_buffer_options(left_num_buf, { bufhidden = "wipe" })
   set_buffer_options(connector_buf, { bufhidden = "wipe" })
   set_buffer_options(right_num_buf, { bufhidden = "wipe" })
-  set_buffer_options(right_buf, { bufhidden = "wipe" })
+  if self.right.editable then
+    set_buffer_options(right_buf, { bufhidden = "hide" })
+  else
+    set_buffer_options(right_buf, { bufhidden = "wipe" })
+  end
   for _, buf in ipairs({ left_header_buf, center_header_buf, right_header_buf }) do
     if buf then
       set_buffer_options(buf, { bufhidden = "wipe" })
@@ -741,6 +767,12 @@ function Session:open_layout()
   local initial_win = initial_focus == "left" and self.left_win or self.right_win
   if self.panel_enabled and (((self.config.git or {}).panel or {}).focus_on_open or "panel") == "panel" then
     initial_win = self.panel.nav_win
+  end
+  document.ensure_syntax_features(self.left_buf, self.left.filetype)
+  if self.right.editable then
+    document.ensure_language_features(self.right_buf, self.right.filetype)
+  else
+    document.ensure_syntax_features(self.right_buf, self.right.filetype)
   end
   vim.api.nvim_set_current_win(initial_win)
   self.last_source_win = (self.panel and initial_win == self.panel.nav_win) and self.right_win or initial_win
@@ -922,6 +954,9 @@ function Session:setup_autocmds()
     group = augroup,
     buffer = self.right_buf,
     callback = function()
+      if self.replacing_sources then
+        return
+      end
       self:dispose()
     end,
   })
@@ -977,6 +1012,9 @@ function Session:setup_autocmds()
         self.last_source_win = self.left_win
         self.last_source_side = "left"
       elseif win == self.right_win then
+        if self.right and self.right.editable then
+          document.ensure_language_features(self.right_buf, self.right.filetype)
+        end
         self.last_source_win = self.right_win
         self.last_source_side = "right"
       elseif win == self.left_num_win
@@ -1054,12 +1092,65 @@ function Session:setup_autocmds()
       self:render_overviews()
     end,
   })
+
+  if self.right and self.right.editable then
+    vim.api.nvim_create_autocmd("BufEnter", {
+      group = augroup,
+      buffer = self.right_buf,
+      callback = function()
+        if self.disposed then
+          return
+        end
+        document.ensure_language_features(self.right_buf, self.right.filetype)
+      end,
+    })
+    vim.api.nvim_create_autocmd("TextChanged", {
+      group = augroup,
+      buffer = self.right_buf,
+      callback = function()
+        if self.disposed then
+          return
+        end
+        self:request_editable_right_refresh()
+      end,
+    })
+    vim.api.nvim_create_autocmd("TextChangedI", {
+      group = augroup,
+      buffer = self.right_buf,
+      callback = function()
+        if self.disposed then
+          return
+        end
+        document.refresh_source_from_editable(self.right)
+      end,
+    })
+    vim.api.nvim_create_autocmd("InsertLeave", {
+      group = augroup,
+      buffer = self.right_buf,
+      callback = function()
+        if self.disposed then
+          return
+        end
+        self:request_editable_right_refresh()
+      end,
+    })
+    vim.api.nvim_create_autocmd("BufWritePost", {
+      group = augroup,
+      buffer = self.right_buf,
+      callback = function()
+        if self.disposed then
+          return
+        end
+        self:request_editable_right_refresh()
+      end,
+    })
+  end
 end
 
 function Session:setup_keymaps()
   local opts = { nowait = true, noremap = true, silent = true }
   local function map(buf, lhs, rhs)
-    vim.keymap.set("n", lhs, rhs, vim.tbl_extend("force", opts, { buffer = buf }))
+    self:set_buffer_keymap("n", buf, lhs, rhs, opts)
   end
   local function action_map(buf, lhs, command, fallback)
     if vim.fn.exists(":" .. command) == 2 then
@@ -1120,9 +1211,15 @@ function Session:setup_keymaps()
       end)
     end
     if action_keys.undo then
-      action_map(buf, action_keys.undo, "DiffBanditUndo", function()
-        self:undo_action()
-      end)
+      if buf == self.right_buf and self.right and self.right.editable then
+        map(buf, action_keys.undo, function()
+          self:undo_edit_or_action()
+        end)
+      else
+        action_map(buf, action_keys.undo, "DiffBanditUndo", function()
+          self:undo_action()
+        end)
+      end
     end
   end
 
@@ -1149,6 +1246,67 @@ function Session:setup_keymaps()
       vim.api.nvim_set_current_win(self.left_win)
     end
   end)
+end
+
+local function keymap_backup_key(mode, buf, lhs)
+  return table.concat({ tostring(mode), tostring(buf), tostring(lhs) }, "\31")
+end
+
+local function existing_buffer_keymap(mode, buf, lhs)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return nil
+  end
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
+    if map.lhs == lhs then
+      return map
+    end
+  end
+  return nil
+end
+
+function Session:set_buffer_keymap(mode, buf, lhs, rhs, opts)
+  if not (buf and vim.api.nvim_buf_is_valid(buf) and lhs and lhs ~= "") then
+    return
+  end
+  self.keymap_backups = self.keymap_backups or {}
+  local key = keymap_backup_key(mode, buf, lhs)
+  if self.keymap_backups[key] == nil then
+    self.keymap_backups[key] = {
+      mode = mode,
+      buf = buf,
+      lhs = lhs,
+      previous = existing_buffer_keymap(mode, buf, lhs) or false,
+    }
+  end
+  vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", opts or {}, { buffer = buf }))
+end
+
+function Session:clear_keymaps()
+  if not self.keymap_backups then
+    return
+  end
+  for _, backup in pairs(self.keymap_backups) do
+    local buf = backup.buf
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+      pcall(vim.keymap.del, backup.mode, backup.lhs, { buffer = buf })
+      local previous = backup.previous
+      if previous and previous ~= false then
+        local rhs = previous.callback or previous.rhs
+        if rhs and rhs ~= "" then
+          pcall(vim.keymap.set, backup.mode, backup.lhs, rhs, {
+            buffer = buf,
+            noremap = previous.noremap == 1,
+            silent = previous.silent == 1,
+            expr = previous.expr == 1,
+            nowait = previous.nowait == 1,
+            script = previous.script == 1,
+            desc = previous.desc,
+          })
+        end
+      end
+    end
+  end
+  self.keymap_backups = nil
 end
 
 local function sync_source_to_gutter(self, source_win, number_win)
@@ -1206,6 +1364,32 @@ function Session:request_viewport_rerender()
   end, delay)
 end
 
+function Session:request_editable_right_refresh()
+  if self.disposed or not (self.right and self.right.editable) then
+    return
+  end
+  if self.editable_right_refresh_scheduled then
+    return
+  end
+  self.editable_right_refresh_scheduled = true
+  local delay = tonumber(((self.config or {}).ui or {}).scroll_debounce_ms) or 16
+  vim.defer_fn(function()
+    self.editable_right_refresh_scheduled = false
+    if self.disposed or not (self.right and self.right.editable) then
+      return
+    end
+    document.refresh_source_from_editable(self.right)
+    self:replace_sources({
+      left = self.left,
+      right = self.right,
+    }, {
+      preserve_view = true,
+      chunk_position = "preserve",
+      preferred_chunk = self.current_chunk,
+    })
+  end, math.max(0, delay))
+end
+
 function Session:set_viewport_toplines(left_topline, right_topline)
   set_win_view_topline(self.left_win, left_topline)
   set_win_view_topline(self.left_num_win, left_topline)
@@ -1221,13 +1405,24 @@ function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topl
   set_win_view_topline(self.right_win, right_topline)
   set_win_view_topline(self.right_num_win, right_topline)
   set_win_view_topline(self.connector_win, left_topline or 1)
-  if left_cursor then
-    pcall(vim.api.nvim_win_set_cursor, self.left_win, { left_cursor, 0 })
-    pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { left_cursor, 0 })
+  local function cursor_pair(cursor)
+    if type(cursor) == "table" then
+      return { math.max(1, cursor[1] or 1), math.max(0, cursor[2] or 0) }
+    end
+    if cursor then
+      return { math.max(1, cursor), 0 }
+    end
+    return nil
   end
-  if right_cursor then
-    pcall(vim.api.nvim_win_set_cursor, self.right_win, { right_cursor, 0 })
-    pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_cursor, 0 })
+  local left_pair = cursor_pair(left_cursor)
+  local right_pair = cursor_pair(right_cursor)
+  if left_pair then
+    pcall(vim.api.nvim_win_set_cursor, self.left_win, left_pair)
+    pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { left_pair[1], 0 })
+  end
+  if right_pair then
+    pcall(vim.api.nvim_win_set_cursor, self.right_win, right_pair)
+    pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_pair[1], 0 })
   end
   self:rerender_for_viewport()
 end
@@ -1429,6 +1624,8 @@ function Session:dispose()
     return
   end
   self.disposed = true
+  self:clear_keymaps()
+  document.cleanup_created_buffer(self.right and self.right.editable)
   state.unregister(self.tabpage)
   if self.autocmd_group then
     pcall(vim.api.nvim_del_augroup_by_id, self.autocmd_group)
@@ -1513,16 +1710,26 @@ end
 
 function Session:replace_sources(sources, opts)
   opts = opts or {}
+  self:clear_keymaps()
+  if sources and sources.right and sources.right.editable then
+    local acquired, acquire_err = document.acquire_buffer(sources.right.editable)
+    if acquired then
+      document.refresh_source_from_editable(sources.right)
+    else
+      vim.notify("DiffBandit: " .. tostring(acquire_err), vim.log.levels.WARN)
+      sources.right.editable = nil
+    end
+  end
   local preserve_view = opts.preserve_view == true
   local preserved_left_topline = preserve_view and get_win_view_topline(self.left_win) or nil
   local preserved_right_topline = preserve_view and get_win_view_topline(self.right_win) or nil
-  local preserved_left_cursor = 1
-  local preserved_right_cursor = 1
+  local preserved_left_cursor = { 1, 0 }
+  local preserved_right_cursor = { 1, 0 }
   if preserve_view then
     local ok_left, left_cursor = pcall(vim.api.nvim_win_get_cursor, self.left_win)
     local ok_right, right_cursor = pcall(vim.api.nvim_win_get_cursor, self.right_win)
-    preserved_left_cursor = ok_left and left_cursor[1] or preserved_left_topline or 1
-    preserved_right_cursor = ok_right and right_cursor[1] or preserved_right_topline or 1
+    preserved_left_cursor = ok_left and left_cursor or { preserved_left_topline or 1, 0 }
+    preserved_right_cursor = ok_right and right_cursor or { preserved_right_topline or 1, 0 }
   end
 
   local hunks, view = build_view_for_sources(sources, self.config)
@@ -1530,8 +1737,36 @@ function Session:replace_sources(sources, opts)
     return nil, view
   end
 
+  local old_right_editable = self.right and self.right.editable
+  local old_right_buf = self.right_buf
+  local previous_replacing_sources = self.replacing_sources
+  self.replacing_sources = true
   self.left = sources.left
   self.right = sources.right
+  self.preserve_right_buffer_lines = self.right.editable ~= nil
+  self.suppress_right_context_highlights = self.right.editable ~= nil
+  if self.right.editable and self.right.editable.bufnr and self.right.editable.bufnr ~= self.right_buf then
+    self.right_buf = self.right.editable.bufnr
+    if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
+      vim.api.nvim_win_set_buf(self.right_win, self.right_buf)
+    end
+  elseif not self.right.editable and old_right_editable then
+    self.right_buf = vim.api.nvim_create_buf(false, true)
+    set_buffer_options(self.right_buf, {
+      buftype = "nofile",
+      swapfile = false,
+      modifiable = true,
+      filetype = self.right.filetype,
+    })
+    if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
+      vim.api.nvim_win_set_buf(self.right_win, self.right_buf)
+    end
+    set_buffer_options(self.right_buf, { bufhidden = "wipe" })
+  end
+  if old_right_buf ~= self.right_buf then
+    document.cleanup_created_buffer(old_right_editable)
+  end
+  self.replacing_sources = previous_replacing_sources
   self.hunks = hunks
   self.view = view
   self:invalidate_render_caches()
@@ -1549,20 +1784,35 @@ function Session:replace_sources(sources, opts)
   self.staged_chunk_states = actions.staged_chunk_states(self)
 
   set_buffer_options(self.left_buf, { filetype = self.left.filetype })
-  set_buffer_options(self.right_buf, { filetype = self.right.filetype })
+  set_buffer_options(self.right_buf, { filetype = self.right.filetype, modifiable = true })
+  document.ensure_syntax_features(self.left_buf, self.left.filetype)
+  if self.right.editable then
+    document.ensure_language_features(self.right_buf, self.right.filetype)
+  else
+    document.ensure_syntax_features(self.right_buf, self.right.filetype)
+  end
   self:update_title()
   self:resize_layout()
   self:precompute_connector_core_width()
   self:render()
+  if self.id then
+    self:setup_autocmds()
+  end
   self:setup_keymaps()
 
   if preserve_view then
-    local left_cursor = math.max(1, math.min(preserved_left_cursor, math.max(1, #self.left.lines)))
-    local right_cursor = math.max(1, math.min(preserved_right_cursor, math.max(1, #self.right.lines)))
-    pcall(vim.api.nvim_win_set_cursor, self.left_win, { left_cursor, 0 })
-    pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { left_cursor, 0 })
-    pcall(vim.api.nvim_win_set_cursor, self.right_win, { right_cursor, 0 })
-    pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_cursor, 0 })
+    local left_cursor = {
+      math.max(1, math.min(preserved_left_cursor[1] or 1, math.max(1, #self.left.lines))),
+      math.max(0, preserved_left_cursor[2] or 0),
+    }
+    local right_cursor = {
+      math.max(1, math.min(preserved_right_cursor[1] or 1, math.max(1, #self.right.lines))),
+      math.max(0, preserved_right_cursor[2] or 0),
+    }
+    pcall(vim.api.nvim_win_set_cursor, self.left_win, left_cursor)
+    pcall(vim.api.nvim_win_set_cursor, self.left_num_win, { left_cursor[1], 0 })
+    pcall(vim.api.nvim_win_set_cursor, self.right_win, right_cursor)
+    pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_cursor[1], 0 })
     self:set_viewport_toplines_preserve_cursors(
       preserved_left_topline or 1,
       preserved_right_topline or 1,
@@ -1583,7 +1833,7 @@ function Session:replace_sources(sources, opts)
     self:render_status_headers()
   elseif opts.chunk_position == "preserve" then
     if #self.view.chunks > 0 then
-      self.current_chunk = math.min(opts.preferred_chunk or self.current_chunk or 1, #self.view.chunks)
+      self.current_chunk = math.max(1, math.min(opts.preferred_chunk or self.current_chunk or 1, #self.view.chunks))
       self:highlight_active_chunk(self.view.chunks[self.current_chunk], { position_cursor = false })
     else
       self:clear_active_chunk()
@@ -2093,6 +2343,7 @@ function Session:render()
   local left_topline = get_win_view_topline(self.left_win)
   local right_topline = get_win_view_topline(self.right_win)
   local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
+  local right_text_hl_mode = self.right.editable and "combine" or "replace"
 
   -- Compute connector routing lanes using extracted paths module
   local paths = self:base_paths()
@@ -2298,7 +2549,7 @@ function Session:render()
 
   set_buffer_options(self.left_buf, { modifiable = false })
   set_buffer_options(self.left_num_buf, { modifiable = false })
-  set_buffer_options(self.right_buf, { modifiable = true })
+  set_buffer_options(self.right_buf, { modifiable = self.right.editable ~= nil })
   set_buffer_options(self.right_num_buf, { modifiable = false })
   set_buffer_options(self.connector_buf, { modifiable = false })
 
@@ -2519,7 +2770,7 @@ function Session:render()
             end_row = row_l,
             end_col = e,
             hl_group = "DiffBanditChangeEmphasis",
-            hl_mode = "replace",
+            hl_mode = "combine",
             priority = 8000,
           })
         end
@@ -2559,7 +2810,7 @@ function Session:render()
                   end_row = row_r,
                   end_col = e,
                   hl_group = emph_hl,
-                  hl_mode = "replace",
+                  hl_mode = right_text_hl_mode,
                   priority = 8000,
                 })
               end
@@ -2596,7 +2847,7 @@ function Session:render()
           end_row = row_r,
           end_col = line_len,
           hl_group = "DiffBanditAdd",
-          hl_mode = "replace",
+          hl_mode = right_text_hl_mode,
           priority = 7000,
         })
         pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, line_len, {
@@ -2624,7 +2875,7 @@ function Session:render()
           end_col = -1,
           hl_group = "DiffBanditAdd",
           hl_eol = true,
-          hl_mode = "replace",
+          hl_mode = right_text_hl_mode,
           priority = 7000,
         })
       end
@@ -2679,7 +2930,7 @@ function Session:render()
         pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, 0, {
           end_col = text_len,
           hl_group = "DiffBanditDeleteRightSeparator",  -- underline=true, sp=delete_bg
-          hl_mode = "replace",  -- Use replace to ensure correct sp color
+          hl_mode = right_text_hl_mode,
           priority = 150,  -- Higher priority to override any existing highlights
         })
       end
@@ -3303,6 +3554,58 @@ end
 
 function Session:undo_action()
   self:after_git_action(notify_action_result(actions.undo(self)))
+end
+
+local function buffer_has_undo(bufnr)
+  if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    return false
+  end
+  local ok, tree = pcall(vim.api.nvim_buf_call, bufnr, vim.fn.undotree)
+  return ok and type(tree) == "table" and tonumber(tree.seq_cur or 0) > 0
+end
+
+local function buffer_undo_seq(bufnr)
+  if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    return nil
+  end
+  local ok, tree = pcall(vim.api.nvim_buf_call, bufnr, vim.fn.undotree)
+  if not (ok and type(tree) == "table") then
+    return nil
+  end
+  return tonumber(tree.seq_cur or 0) or 0
+end
+
+local function current_action_undo_entry(session)
+  local queue = session and session.file_queue
+  if not (queue and queue.kind == "git") then
+    return nil
+  end
+  local entry = queue.entries and queue.entries[session.file_queue_index or queue.index or 1]
+  local stack = entry and session.action_undo and session.action_undo[entry.path]
+  return stack and stack[#stack] or nil
+end
+
+function Session:undo_edit_or_action()
+  if self.right and self.right.editable and vim.api.nvim_get_current_buf() == self.right_buf then
+    local undo_seq = buffer_undo_seq(self.right_buf)
+    local action_entry = current_action_undo_entry(self)
+    if action_entry and undo_seq ~= nil and action_entry.right_undo_seq == undo_seq then
+      self:undo_action()
+      return
+    end
+    if buffer_has_undo(self.right_buf) then
+      local before_tick = vim.api.nvim_buf_get_changedtick(self.right_buf)
+      local ok = pcall(vim.cmd, "silent undo")
+      if ok and vim.api.nvim_buf_get_changedtick(self.right_buf) ~= before_tick then
+        self:request_editable_right_refresh()
+        return
+      end
+    elseif not self.file_queue then
+      pcall(vim.cmd, "undo")
+      return
+    end
+  end
+  self:undo_action()
 end
 
 return Session

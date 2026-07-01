@@ -67,6 +67,15 @@ local function assert_ne(a, b, msg)
   end
 end
 
+local function buffer_keymap_callback(bufnr, mode, lhs)
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(bufnr, mode)) do
+    if map.lhs == lhs then
+      return map.callback
+    end
+  end
+  return nil
+end
+
 assert_eq(config.git.panel.keys.toggle_amend, "<Space>",
   "Commit panel amend toggle should use the commit-pane normal-mode space key")
 assert_eq(config.git.panel.keys.focus_panel, "C",
@@ -103,6 +112,269 @@ do
   assert_eq(merge_model_mod.line_ending_warning({ left = "a\n", right = "b\r\n" }),
     "line endings differ across conflict stages",
     "Merge model should report mixed conflict-stage line endings")
+end
+
+do
+  local right_path = vim.fn.tempname() .. ".txt"
+  vim.fn.writefile({ "right original" }, right_path)
+  local right_buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_option_value("swapfile", false, { buf = right_buf })
+  vim.api.nvim_buf_set_name(right_buf, right_path)
+  vim.api.nvim_buf_set_lines(right_buf, 0, -1, false, { "right original" })
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = right_buf })
+
+  local session = assert((Session.start({
+    left = source_mod.from_lines({ "left original" }, nil, "left"),
+    right = source_mod.from_lines({ "right original" }, right_path, "right", {
+      editable = { target = "buffer", bufnr = right_buf, path = right_path },
+    }),
+  }, config, {})))
+  assert_eq(session.right_buf, right_buf,
+    "Editable right-side buffer source should reuse the original buffer")
+  assert_eq(vim.api.nvim_get_option_value("buftype", { buf = session.right_buf }), "",
+    "Editable right-side buffer should remain a normal buffer")
+  assert_eq(vim.api.nvim_get_option_value("signcolumn", { scope = "local", win = session.right_win }), "auto",
+    "Editable right-side window should allow diagnostic signs")
+  vim.api.nvim_buf_set_lines(session.right_buf, 0, -1, false, { "right edited" })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = session.right_buf })
+  vim.wait(100, function()
+    return session.right.text == "right edited\n"
+  end, 5)
+  assert_eq(session.right.text, "right edited\n",
+    "Editing the reusable right buffer should refresh the diff source text")
+  vim.api.nvim_set_current_win(session.right_win)
+  local undo_callback = buffer_keymap_callback(session.right_buf, "n", config.actions.keys.undo)
+  assert_eq(type(undo_callback), "function",
+    "Editable right-side buffer should have a callable undo mapping")
+  undo_callback()
+  vim.wait(100, function()
+    return session.right.text == "right original\n"
+  end, 5)
+  assert_eq(vim.api.nvim_buf_get_lines(session.right_buf, 0, -1, false)[1], "right original",
+    "Undo in an editable right-side buffer should use native buffer undo")
+  assert_eq(session.right.text, "right original\n",
+    "Undo in an editable right-side buffer should refresh the diff source text")
+  vim.api.nvim_win_set_cursor(session.right_win, { 1, #"right" })
+  vim.api.nvim_buf_set_lines(session.right_buf, 0, -1, false, { "right original plus" })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = session.right_buf })
+  vim.wait(100, function()
+    return session.right.text == "right original plus\n"
+  end, 5)
+  assert_eq(vim.api.nvim_win_get_cursor(session.right_win)[2], #"right",
+    "Editable right-side refresh should preserve the cursor column")
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = right_buf })
+  session:close()
+  pcall(vim.api.nvim_buf_delete, right_buf, { force = true })
+end
+
+do
+  local right_path = vim.fn.tempname() .. ".txt"
+  vim.fn.writefile({ "right original" }, right_path)
+  local session = assert((Session.start({
+    left = source_mod.from_lines({ "left original" }, nil, "left"),
+    right = source_mod.from_lines({ "right original" }, right_path, "right", {
+      editable = { target = "file", path = right_path },
+    }),
+  }, config, {})))
+  vim.api.nvim_set_current_win(session.right_win)
+  vim.api.nvim_buf_set_lines(session.right_buf, 0, -1, false, { "right saved" })
+  vim.cmd("write")
+  assert_eq(read_file(right_path)[1], "right saved",
+    "Writing an editable right-side file buffer should update disk content")
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.right_buf })
+  session:close()
+end
+
+do
+  local right_path = vim.fn.tempname() .. ".lua"
+  vim.fn.writefile({ "return { value = 1 }" }, right_path)
+  local lsp_start_buf = nil
+  local builtin_lsp_start_buf = nil
+  local created_lsp_start = false
+  local original_get_configs = vim.lsp.get_configs
+  local original_is_enabled = vim.lsp.is_enabled
+  local original_lsp_start = vim.lsp.start
+  vim.lsp.get_configs = function()
+    return {
+      { name = "test_lua_ls", cmd = { "lua-language-server" }, filetypes = { "lua" }, root_markers = { ".git" } },
+      { name = "test_pyright", cmd = { "pyright-langserver", "--stdio" }, filetypes = { "python" } },
+    }
+  end
+  vim.lsp.is_enabled = function(name)
+    return name == "test_lua_ls" or name == "test_pyright"
+  end
+  vim.lsp.start = function(_, opts)
+    builtin_lsp_start_buf = opts and opts.bufnr or nil
+    return 1000
+  end
+  if vim.fn.exists(":LspStart") == 0 then
+    vim.api.nvim_create_user_command("LspStart", function()
+      lsp_start_buf = vim.api.nvim_get_current_buf()
+    end, {})
+    created_lsp_start = true
+  end
+  local session = assert((Session.start({
+    left = source_mod.from_lines({ "return { value = 0 }" }, nil, "left"),
+    right = source_mod.from_lines({ "return { value = 1 }" }, right_path, "right", {
+      editable = { target = "file", path = right_path },
+    }),
+  }, config, {})))
+  assert_eq(vim.api.nvim_get_option_value("buflisted", { buf = session.right_buf }), true,
+    "DiffBandit-created editable right buffers should stay listed for editor integrations")
+  assert_eq(vim.api.nvim_get_option_value("filetype", { buf = session.right_buf }), "lua",
+    "DiffBandit-created editable right buffers should keep the detected filetype")
+  assert_eq(builtin_lsp_start_buf, session.right_buf,
+    "DiffBandit-created editable right buffers should start matching built-in LSP configs")
+  if created_lsp_start then
+    assert_eq(lsp_start_buf, session.right_buf,
+      "DiffBandit-created editable right buffers should request LSP startup on the editable buffer")
+  end
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.right_buf })
+  session:close()
+  if created_lsp_start then
+    pcall(vim.api.nvim_del_user_command, "LspStart")
+  end
+  vim.lsp.get_configs = original_get_configs
+  vim.lsp.is_enabled = original_is_enabled
+  vim.lsp.start = original_lsp_start
+end
+
+do
+  local lsp_start_count = 0
+  local command_start_count = 0
+  local created_lsp_start = false
+  local original_lsp_start = vim.lsp.start
+  vim.lsp.start = function(...)
+    lsp_start_count = lsp_start_count + 1
+    if original_lsp_start then
+      return original_lsp_start(...)
+    end
+    return nil
+  end
+  if vim.fn.exists(":LspStart") == 0 then
+    vim.api.nvim_create_user_command("LspStart", function()
+      command_start_count = command_start_count + 1
+    end, {})
+    created_lsp_start = true
+  end
+
+  local session = assert((Session.start({
+    left = source_mod.from_lines({ "return { value = 0 }" }, "syntax-left.lua", "left"),
+    right = source_mod.from_lines({ "return { value = 1 }" }, "syntax-right.lua", "right"),
+  }, config, {})))
+  assert_eq(vim.api.nvim_get_option_value("filetype", { buf = session.left_buf }), "lua",
+    "Read-only diff left buffer should keep Lua filetype for syntax")
+  assert_eq(vim.api.nvim_get_option_value("filetype", { buf = session.right_buf }), "lua",
+    "Read-only diff right buffer should keep Lua filetype for syntax")
+  assert_eq(vim.api.nvim_get_option_value("modifiable", { buf = session.left_buf }), false,
+    "Read-only diff left buffer should remain non-modifiable")
+  assert_eq(vim.api.nvim_get_option_value("modifiable", { buf = session.right_buf }), false,
+    "Read-only diff right buffer should remain non-modifiable")
+  assert_eq(vim.api.nvim_get_option_value("signcolumn", { scope = "local", win = session.left_win }), "no",
+    "Read-only diff left window should keep diagnostic signs hidden")
+  assert_eq(vim.api.nvim_get_option_value("signcolumn", { scope = "local", win = session.right_win }), "no",
+    "Read-only diff right window should keep diagnostic signs hidden")
+  assert_eq(lsp_start_count, 0,
+    "Read-only diff source buffers should not start built-in LSP clients")
+  assert_eq(command_start_count, 0,
+    "Read-only diff source buffers should not invoke :LspStart")
+  session:close()
+
+  if created_lsp_start then
+    pcall(vim.api.nvim_del_user_command, "LspStart")
+  end
+  vim.lsp.start = original_lsp_start
+end
+
+do
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo, "p")
+  local path = repo .. "/merge-real.txt"
+  vim.fn.writefile({ "conflict markers" }, path)
+  local worktree_buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_option_value("swapfile", false, { buf = worktree_buf })
+  vim.api.nvim_buf_set_name(worktree_buf, path)
+  vim.api.nvim_buf_set_lines(worktree_buf, 0, -1, false, { "conflict markers" })
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = worktree_buf })
+
+  local session = assert((merge_mod.start({
+    root = repo,
+    path = "merge-real.txt",
+    base_lines = { "base result" },
+    local_lines = { "local result" },
+    remote_lines = { "remote result" },
+    result_lines = { "base result" },
+    conflicts = {},
+    non_conflicting = {},
+    local_hunks = {},
+    remote_hunks = {},
+  }, config, {})))
+  assert_eq(session.result_buf, worktree_buf,
+    "Merge result should reuse an existing worktree buffer")
+  assert_eq(vim.api.nvim_buf_get_lines(worktree_buf, 0, -1, false)[1], "base result",
+    "Opening a merge result should initialize the real buffer content")
+  assert_eq(vim.api.nvim_get_option_value("modified", { buf = worktree_buf }), true,
+    "Initializing the merge result should leave the real buffer modified")
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = worktree_buf })
+  session:close()
+  pcall(vim.api.nvim_buf_delete, worktree_buf, { force = true })
+end
+
+do
+  local lsp_start_count = 0
+  local command_start_count = 0
+  local created_lsp_start = false
+  local original_lsp_start = vim.lsp.start
+  vim.lsp.start = function(...)
+    lsp_start_count = lsp_start_count + 1
+    if original_lsp_start then
+      return original_lsp_start(...)
+    end
+    return nil
+  end
+  if vim.fn.exists(":LspStart") == 0 then
+    vim.api.nvim_create_user_command("LspStart", function()
+      command_start_count = command_start_count + 1
+    end, {})
+    created_lsp_start = true
+  end
+
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo, "p")
+  local session = assert((merge_mod.start({
+    root = repo,
+    path = "merge-syntax.lua",
+    base_lines = { "return 0" },
+    local_lines = { "return 1" },
+    remote_lines = { "return 2" },
+    result_lines = { "return 0" },
+    conflicts = {},
+    non_conflicting = {},
+    local_hunks = {},
+    remote_hunks = {},
+  }, config, {})))
+  assert_eq(vim.api.nvim_get_option_value("filetype", { buf = session.local_buf }), "lua",
+    "Read-only merge local buffer should keep Lua filetype for syntax")
+  assert_eq(vim.api.nvim_get_option_value("filetype", { buf = session.remote_buf }), "lua",
+    "Read-only merge remote buffer should keep Lua filetype for syntax")
+  assert_eq(vim.api.nvim_get_option_value("modifiable", { buf = session.local_buf }), false,
+    "Read-only merge local buffer should remain non-modifiable")
+  assert_eq(vim.api.nvim_get_option_value("modifiable", { buf = session.remote_buf }), false,
+    "Read-only merge remote buffer should remain non-modifiable")
+  assert_eq(vim.api.nvim_get_option_value("signcolumn", { scope = "local", win = session.local_win }), "no",
+    "Read-only merge local window should keep diagnostic signs hidden")
+  assert_eq(vim.api.nvim_get_option_value("signcolumn", { scope = "local", win = session.remote_win }), "no",
+    "Read-only merge remote window should keep diagnostic signs hidden")
+  assert_eq(lsp_start_count, 0,
+    "Read-only merge source buffers should not start built-in LSP clients")
+  assert_eq(command_start_count, 0,
+    "Read-only merge source buffers should not invoke :LspStart")
+  session:close()
+
+  if created_lsp_start then
+    pcall(vim.api.nvim_del_user_command, "LspStart")
+  end
+  vim.lsp.start = original_lsp_start
 end
 
 do
@@ -1734,6 +2006,8 @@ do
     "Change emphasis should remain distinct from the base change background")
   assert_ne(get_hl("DiffBanditChangeEmphasis").bg, 0x007373,
     "Change emphasis should be adaptive instead of using DiffText directly")
+  assert_eq(get_hl("DiffBanditContext").fg, nil,
+    "Context backgrounds should not set a foreground that masks syntax highlighting")
 
   set_palette({
     Normal = { fg = 0x101010, bg = 0xFFFFFF },
@@ -2578,8 +2852,95 @@ if vim.fn.executable("git") == 1 then
     local loaded = select(1, queue.load(1))
     assert_eq(loaded.left.text, "saved\n", "Buffer diff left source should read index content")
     assert_eq(loaded.right.text, "unsaved\n", "Buffer diff right source should read live buffer content")
+    assert_eq(loaded.right.editable and loaded.right.editable.bufnr, bufnr,
+      "Git worktree right source should carry the reusable live buffer identity")
+    assert_eq(loaded.right.editable and loaded.right.editable.target, "git-worktree",
+      "Git worktree right source should be marked as an editable worktree target")
 
     pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "mapped-undo.txt", { "one", "two", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "mapped-undo.txt", { "one", "TWO", "three" })
+
+    local queue = assert((git_mod.queue({
+      root = repo,
+      mode = "unstaged",
+      pathspecs = { "mapped-undo.txt" },
+    }, config.git)))
+    local loaded = select(1, queue.load(1))
+    local session = assert((Session.start({
+      left = loaded.left,
+      right = loaded.right,
+    }, config, {
+      queue = queue,
+    })))
+
+    session:stage_hunk()
+    assert_eq(git_mod.read_index(repo, "mapped-undo.txt"), "one\nTWO\nthree\n",
+      "Mapped undo setup should stage the hunk first")
+
+    vim.api.nvim_set_current_win(session.right_win)
+    local undo_callback = buffer_keymap_callback(session.right_buf, "n", config.actions.keys.undo)
+    assert_eq(type(undo_callback), "function",
+      "Editable Git right buffer should have a callable undo mapping")
+    undo_callback()
+    assert_eq(git_mod.read_index(repo, "mapped-undo.txt"), "one\ntwo\nthree\n",
+      "Undo in an editable Git right buffer with no native edit should pop the DiffBandit action stack")
+
+    pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.right_buf })
+    session:close()
+  end
+
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "mapped-undo-after-edit.txt", { "one", "two", "three" })
+    commit_baseline(repo)
+    write_repo_file(repo, "mapped-undo-after-edit.txt", { "one", "TWO", "three" })
+
+    local queue = assert((git_mod.queue({
+      root = repo,
+      mode = "unstaged",
+      pathspecs = { "mapped-undo-after-edit.txt" },
+    }, config.git)))
+    local loaded = select(1, queue.load(1))
+    local session = assert((Session.start({
+      left = loaded.left,
+      right = loaded.right,
+    }, config, {
+      queue = queue,
+    })))
+
+    vim.api.nvim_set_current_win(session.right_win)
+    vim.api.nvim_buf_set_lines(session.right_buf, 0, -1, false, { "one", "THREE", "three" })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = session.right_buf })
+    vim.wait(100, function()
+      return session.right.text == "one\nTHREE\nthree\n"
+    end, 5)
+
+    session:stage_hunk()
+    assert_eq(git_mod.read_index(repo, "mapped-undo-after-edit.txt"), "one\nTHREE\nthree\n",
+      "Mapped undo after edit setup should stage the edited right-buffer content")
+
+    local undo_callback = buffer_keymap_callback(session.right_buf, "n", config.actions.keys.undo)
+    undo_callback()
+    assert_eq(git_mod.read_index(repo, "mapped-undo-after-edit.txt"), "one\ntwo\nthree\n",
+      "Undo after edit then stage should undo the newer stage action first")
+    assert_eq(vim.api.nvim_buf_get_lines(session.right_buf, 0, -1, false)[2], "THREE",
+      "Undoing the stage action first should leave the right-buffer edit intact")
+
+    undo_callback()
+    vim.wait(100, function()
+      return session.right.text == "one\nTWO\nthree\n"
+    end, 5)
+    assert_eq(vim.api.nvim_buf_get_lines(session.right_buf, 0, -1, false)[2], "TWO",
+      "A second undo should then use native buffer undo")
+
+    pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.right_buf })
+    session:close()
   end
 
   do

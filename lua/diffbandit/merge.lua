@@ -2,6 +2,7 @@ local diff_pair = require("diffbandit.diff_pair")
 local git = require("diffbandit.git")
 local merge_model = require("diffbandit.merge_model")
 local nvim = require("diffbandit.nvim")
+local document = require("diffbandit.document")
 local pair_renderer = require("diffbandit.pair_renderer")
 local panel_mod = require("diffbandit.panel")
 local queue_host = require("diffbandit.queue_host")
@@ -35,6 +36,10 @@ local set_win_options = nvim.set_window_options
 
 local function source_label(path, suffix)
   return string.format("%s (%s)", path or "[conflict]", suffix)
+end
+
+local function can_use_real_result_buffer(path)
+  return document.find_loaded_buffer(path) ~= nil or vim.fn.filereadable(path) == 1
 end
 
 function Merge.load(root, path, config)
@@ -113,12 +118,37 @@ function Merge.start(data, config, opts)
   self.connector_width = math.max((((self.config or {}).ui or {}).connector_width or 12), 1)
 
   local ft = source_mod.detect_filetype(self.path)
+  local result_path = git.abs_path(self.root, self.path)
+  if can_use_real_result_buffer(result_path) then
+    self.result_editable = {
+      target = "merge-result",
+      path = document.normalize_path(result_path) or result_path,
+    }
+  end
   self.local_buf = make_buffer(source_label(self.path, "local"), self.local_lines, { modifiable = false, filetype = ft })
-  self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, self.result_lines, {
-    buftype = "acwrite",
-    modifiable = true,
-    filetype = ft,
-  })
+  local result_buf, result_err
+  if self.result_editable then
+    result_buf, result_err = document.acquire_buffer(self.result_editable)
+  end
+  if result_buf then
+    self.result_buf = result_buf
+    vim.api.nvim_set_option_value("modifiable", true, { buf = self.result_buf })
+    if ft and ft ~= "" then
+      pcall(vim.api.nvim_set_option_value, "filetype", ft, { buf = self.result_buf })
+    end
+    self:set_result_buffer_lines(self.result_lines)
+    self.result_editable.initial_changedtick = vim.api.nvim_buf_get_changedtick(self.result_buf)
+  else
+    if result_err then
+      vim.notify("DiffBandit: " .. tostring(result_err), vim.log.levels.WARN)
+    end
+    self.result_editable = nil
+    self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, self.result_lines, {
+      buftype = "acwrite",
+      modifiable = true,
+      filetype = ft,
+    })
+  end
   self.remote_buf = make_buffer(source_label(self.path, "remote"), self.remote_lines, { modifiable = false, filetype = ft })
   self.local_num_buf = make_buffer(nil, {}, { modifiable = false })
   self.local_result_connector_buf = make_buffer(nil, {}, { modifiable = false })
@@ -218,6 +248,11 @@ function Merge.start(data, config, opts)
   self.remote_num_win = open_gutter(self.remote_num_buf, self.result_remote_connector_win, num_width + 1)
 
   self.right_win = self.result_win
+  document.ensure_syntax_features(self.local_buf, ft)
+  document.ensure_syntax_features(self.remote_buf, ft)
+  if self.result_editable then
+    document.ensure_language_features(self.result_buf, ft)
+  end
   if self.panel_enabled then
     local panel_config = (((self.config or {}).git or {}).panel or {})
     self.panel.commit_win = vim.api.nvim_open_win(self.panel.commit_buf, false, {
@@ -276,10 +311,11 @@ function Merge:configure_windows()
     .. split_winhl .. ",CursorLine:DiffBanditStatus"
   for _, win in ipairs({ self.local_win, self.result_win, self.remote_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
+      local is_result = win == self.result_win
       set_win_options(win, {
         number = false,
         relativenumber = false,
-        signcolumn = "no",
+        signcolumn = is_result and "auto" or "no",
         foldcolumn = "0",
         wrap = false,
         cursorline = true,
@@ -415,6 +451,18 @@ function Merge:setup_autocmds()
       self:request_render()
     end,
   })
+  if self.result_editable then
+    vim.api.nvim_create_autocmd("BufEnter", {
+      group = self.augroup,
+      buffer = self.result_buf,
+      callback = function()
+        if self.disposed then
+          return
+        end
+        document.ensure_language_features(self.result_buf, source_mod.detect_filetype(self.path))
+      end,
+    })
+  end
   vim.api.nvim_create_autocmd("WinEnter", {
     group = self.augroup,
     callback = function()
@@ -423,6 +471,9 @@ function Merge:setup_autocmds()
       end
       local win = vim.api.nvim_get_current_win()
       if win == self.local_win or win == self.result_win or win == self.remote_win then
+        if win == self.result_win and self.result_editable then
+          document.ensure_language_features(self.result_buf, source_mod.detect_filetype(self.path))
+        end
         self.last_content_win = win
         return
       end
@@ -508,13 +559,72 @@ function Merge:set_result_buffer_lines(lines)
   end
 end
 
+local function keymap_backup_key(mode, buf, lhs)
+  return table.concat({ tostring(mode), tostring(buf), tostring(lhs) }, "\31")
+end
+
+local function existing_buffer_keymap(mode, buf, lhs)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return nil
+  end
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
+    if map.lhs == lhs then
+      return map
+    end
+  end
+  return nil
+end
+
+function Merge:set_buffer_keymap(mode, buf, lhs, rhs, opts)
+  if not (buf and vim.api.nvim_buf_is_valid(buf) and lhs and lhs ~= "") then
+    return
+  end
+  self.keymap_backups = self.keymap_backups or {}
+  local key = keymap_backup_key(mode, buf, lhs)
+  if self.keymap_backups[key] == nil then
+    self.keymap_backups[key] = {
+      mode = mode,
+      buf = buf,
+      lhs = lhs,
+      previous = existing_buffer_keymap(mode, buf, lhs) or false,
+    }
+  end
+  vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", opts or {}, { buffer = buf }))
+end
+
+function Merge:clear_keymaps()
+  if not self.keymap_backups then
+    return
+  end
+  for _, backup in pairs(self.keymap_backups) do
+    local buf = backup.buf
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+      pcall(vim.keymap.del, backup.mode, backup.lhs, { buffer = buf })
+      local previous = backup.previous
+      if previous and previous ~= false then
+        local rhs = previous.callback or previous.rhs
+        if rhs and rhs ~= "" then
+          pcall(vim.keymap.set, backup.mode, backup.lhs, rhs, {
+            buffer = buf,
+            noremap = previous.noremap == 1,
+            silent = previous.silent == 1,
+            expr = previous.expr == 1,
+            nowait = previous.nowait == 1,
+            script = previous.script == 1,
+            desc = previous.desc,
+          })
+        end
+      end
+    end
+  end
+  self.keymap_backups = nil
+end
+
 function Merge:setup_keymaps()
   local keys = ((self.config or {}).merge or {}).keys or {}
   local document_keys = (((self.config or {}).navigation or {}).document_keys) or {}
   local function map(buf, lhs, rhs)
-    if lhs and lhs ~= "" then
-      vim.keymap.set("n", lhs, rhs, { buffer = buf, nowait = true, noremap = true, silent = true })
-    end
+    self:set_buffer_keymap("n", buf, lhs, rhs, { nowait = true, noremap = true, silent = true })
   end
   for _, buf in ipairs({ self.local_buf, self.result_buf, self.remote_buf }) do
     map(buf, keys.next_conflict, function() self:goto_next_hunk() end)
@@ -1271,6 +1381,7 @@ end
 
 function Merge:open_merge_file(index, opts)
   opts = opts or {}
+  self:clear_keymaps()
   local queue = self.file_queue
   local entry = queue and queue.entries and queue.entries[index]
   if not entry then
@@ -1303,12 +1414,46 @@ function Merge:open_merge_file(index, opts)
   self.merge_context = git.merge_context(self.root)
 
   local ft = source_mod.detect_filetype(self.path)
+  document.cleanup_created_buffer(self.result_editable, { discard_if_unchanged = true })
+  self.result_editable = nil
+  local result_path = git.abs_path(self.root, self.path)
+  if can_use_real_result_buffer(result_path) then
+    self.result_editable = {
+      target = "merge-result",
+      path = document.normalize_path(result_path) or result_path,
+    }
+  end
+  local result_buf, result_err
+  if self.result_editable then
+    result_buf, result_err = document.acquire_buffer(self.result_editable)
+  end
+  if result_buf then
+    self.result_buf = result_buf
+    if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
+      vim.api.nvim_win_set_buf(self.result_win, self.result_buf)
+    end
+  elseif result_err then
+    vim.notify("DiffBandit: " .. tostring(result_err), vim.log.levels.WARN)
+    self.result_editable = nil
+  else
+    self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, {}, {
+      buftype = "acwrite",
+      modifiable = true,
+      filetype = ft,
+    })
+    if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
+      vim.api.nvim_win_set_buf(self.result_win, self.result_buf)
+    end
+  end
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.local_buf })
   vim.api.nvim_buf_set_lines(self.local_buf, 0, -1, false, self.local_lines)
   vim.api.nvim_set_option_value("modified", false, { buf = self.local_buf })
   vim.api.nvim_set_option_value("modifiable", false, { buf = self.local_buf })
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.result_buf })
   self:set_result_buffer_lines(self.result_lines)
+  if self.result_editable then
+    self.result_editable.initial_changedtick = vim.api.nvim_buf_get_changedtick(self.result_buf)
+  end
   vim.api.nvim_set_option_value("modified", false, { buf = self.result_buf })
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.result_buf })
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.remote_buf })
@@ -1320,7 +1465,14 @@ function Merge:open_merge_file(index, opts)
       pcall(vim.api.nvim_set_option_value, "filetype", ft, { buf = buf })
     end
   end
+  document.ensure_syntax_features(self.local_buf, ft)
+  document.ensure_syntax_features(self.remote_buf, ft)
+  if self.result_editable then
+    document.ensure_language_features(self.result_buf, ft)
+  end
   self:configure_windows()
+  self:setup_autocmds()
+  self:setup_keymaps()
   self:render()
   if self.panel then
     panel_mod.render(self, index)
@@ -1575,6 +1727,7 @@ function Merge:close(from_autocmd)
     return
   end
   self.disposed = true
+  self:clear_keymaps()
   if self.augroup then
     pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
   end
@@ -1583,6 +1736,7 @@ function Merge:close(from_autocmd)
     self.render_timer:close()
     self.render_timer = nil
   end
+  document.cleanup_created_buffer(self.result_editable, { discard_if_unchanged = true })
   state.unregister(self.tabpage)
   if not from_autocmd and self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
     pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
