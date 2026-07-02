@@ -19,6 +19,10 @@ documents without distorting either one.
 - Independent source scrolling with synchronized line-number panes.
 - Connector routes for additions, deletions, changes, mixed hunks, and
   scroll-clipped regions.
+- Editable right-side target buffers for file, buffer, and Git worktree diffs,
+  with normal Neovim writes, undo, syntax, LSP diagnostics, and completion.
+- Read-only source panes keep filetype-driven syntax highlighting without
+  showing source-side diagnostics.
 - Git queue navigation for changed files with `]f` and `[f`.
 - Read-only Git workflow review for branch comparisons, commit logs, commit
   changes, and guarded branch checkout.
@@ -26,8 +30,8 @@ documents without distorting either one.
 - Optional Git commit panel with file staging, amend mode, commit message entry,
   and live diff preview.
 - Merge conflict group in the commit panel with a local/result/remote resolver,
-  editable result pane, gutter-guided accept actions, and resolve-on-write
-  staging.
+  editable result pane with editor integrations, gutter-guided accept actions,
+  and resolve-on-write staging.
 - Recursive folder comparison with efficient external digest checks and child
   file diffs that return to the folder view.
 - One-column overview gutters that show changed regions proportionally across
@@ -111,6 +115,20 @@ Resolve a Git conflict:
 ```vim
 :DiffBanditMerge path/to/conflicted-file
 ```
+
+## Editor Integration
+
+DiffBandit uses real editable buffers for the right-side target in file,
+buffer, and Git worktree diffs. Editing that pane behaves like editing the file
+directly: insert-mode completion, LSP diagnostics, suggestions, syntax
+highlighting, native undo, and `:w` all apply to the target buffer. When a
+target file is already open elsewhere, DiffBandit reuses that buffer so edits
+made in the diff view stay synchronized with the existing buffer.
+
+Read-only source panes are syntax-aware but intentionally do not attach LSP
+diagnostics. The left side of two-way diffs and the local/remote sides of merge
+views keep their filetype and syntax highlighting, while warnings and
+completion remain focused on the editable target/result pane.
 
 ## Screenshots
 
