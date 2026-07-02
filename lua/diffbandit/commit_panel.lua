@@ -1,5 +1,5 @@
 local nvim = require("diffbandit.nvim")
-local panel_host = require("diffbandit.panel_host")
+local amend_mode = require("diffbandit.amend_mode")
 local panel_mod = require("diffbandit.panel")
 local queue_host = require("diffbandit.queue_host")
 local state = require("diffbandit.state")
@@ -7,27 +7,8 @@ local state = require("diffbandit.state")
 local CommitPanel = {}
 CommitPanel.__index = CommitPanel
 
-local set_buffer_options = nvim.set_buffer_options
-local set_window_options = nvim.set_window_options
-local set_window_width = nvim.set_window_width
-local set_window_height = nvim.set_window_height
-
-local function panel_config(self)
-  return (((self.config or {}).git or {}).panel or {})
-end
-
 local function create_buffer(buftype, name)
-  local buf = vim.api.nvim_create_buf(false, true)
-  if name then
-    pcall(vim.api.nvim_buf_set_name, buf, name)
-  end
-  set_buffer_options(buf, {
-    buftype = buftype or "nofile",
-    swapfile = false,
-    modifiable = false,
-    bufhidden = "hide",
-  })
-  return buf
+  return nvim.make_buffer(name, nil, { buftype = buftype, bufhidden = "hide", modifiable = false })
 end
 
 function CommitPanel.start(config, queue, opts)
@@ -60,51 +41,18 @@ function CommitPanel:show_commit_panel()
   if self.disposed then
     return false
   end
-  if self.panel.visible
-      and self.panel.nav_win and vim.api.nvim_win_is_valid(self.panel.nav_win)
-      and self.panel.commit_win and vim.api.nvim_win_is_valid(self.panel.commit_win) then
+  if panel_mod.is_open(self) then
     panel_mod.focus_nav(self)
     return true
   end
 
-  local config = panel_config(self)
   local anchor = self.source_win
   if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
     anchor = vim.api.nvim_get_current_win()
     self.source_win = anchor
   end
 
-  local nav_win = vim.api.nvim_open_win(self.panel.nav_buf, false, {
-    split = "left",
-    win = anchor,
-    width = config.width or 42,
-  })
-  local commit_win = vim.api.nvim_open_win(self.panel.commit_buf, false, {
-    split = "below",
-    win = nav_win,
-    height = config.commit_height or 10,
-  })
-  self.panel.nav_win = nav_win
-  self.panel.commit_win = commit_win
-  self.panel.visible = true
-
-  local panel_winhl = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit,"
-    .. "Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,CursorLine:DiffBanditCursorLine"
-  for _, win in ipairs({ nav_win, commit_win }) do
-    set_window_options(win, {
-      number = false,
-      relativenumber = false,
-      list = false,
-      cursorline = true,
-      wrap = false,
-      signcolumn = "no",
-      foldcolumn = "0",
-      winfixwidth = true,
-      winhl = panel_winhl,
-    })
-    set_window_width(win, config.width or 42)
-  end
-  set_window_height(commit_win, config.commit_height or 10)
+  panel_mod.open_windows(self, anchor)
   panel_mod.attach(self)
   panel_mod.focus_nav(self)
   return true
@@ -145,11 +93,11 @@ function CommitPanel:refresh_git_queue(preferred_path, refresh_opts)
 end
 
 function CommitPanel:set_amend_mode(enabled)
-  return panel_host.set_amend_mode(self, enabled)
+  return amend_mode.set_amend_mode(self, enabled)
 end
 
 function CommitPanel:clear_amend_mode()
-  panel_host.clear_amend_mode(self)
+  amend_mode.clear_amend_mode(self)
 end
 
 function CommitPanel:goto_queue_file(index, opts)
@@ -160,7 +108,7 @@ function CommitPanel:goto_queue_file(index, opts)
   end
   local loaded, err = queue.load(index)
   if not loaded then
-    vim.notify("DiffBandit: " .. tostring(err or "unable to load changed file"), vim.log.levels.INFO)
+    nvim.notify_info(tostring(err or "unable to load changed file"))
     return false
   end
 
@@ -183,7 +131,7 @@ function CommitPanel:goto_queue_file(index, opts)
     panel_normal_queue_opts = self.normal_queue_opts,
   })
   if not session then
-    vim.notify("DiffBandit: " .. tostring(start_err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(start_err))
     return false
   end
   if opts.navigate_change == "prev" then
@@ -208,7 +156,7 @@ function CommitPanel:open_merge_file(index, opts)
   local amend = self.panel.amend == true
   self:close()
   if type(self.start_merge) ~= "function" then
-    vim.notify("DiffBandit: merge resolver is not configured", vim.log.levels.ERROR)
+    nvim.notify_error("merge resolver is not configured")
     return false
   end
   local session, err = self.start_merge(entry, queue, {
@@ -219,7 +167,7 @@ function CommitPanel:open_merge_file(index, opts)
     panel_amend = amend,
   })
   if not session then
-    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(err))
     return false
   end
   if opts.navigate_change == "prev" then

@@ -1,4 +1,8 @@
 local git = require("diffbandit.git")
+local nvim = require("diffbandit.nvim")
+local ui = require("diffbandit.ui")
+local config_mod = require("diffbandit.config")
+local layout = require("diffbandit.layout")
 
 local M = {}
 
@@ -27,34 +31,7 @@ local nerd_icons = {
 }
 
 local function panel_config(session)
-  return ((((session or {}).config or {}).git or {}).panel or {})
-end
-
-local function set_modifiable(buf, value)
-  if buf and vim.api.nvim_buf_is_valid(buf) then
-    vim.api.nvim_set_option_value("modifiable", value, { buf = buf })
-  end
-end
-
-local function trim_width(text, width)
-  text = tostring(text or "")
-  if width <= 0 then
-    return ""
-  end
-  if vim.fn.strdisplaywidth(text) <= width then
-    return text
-  end
-  local result = ""
-  local marker = "..."
-  local char_count = vim.fn.strchars(text)
-  for index = 0, char_count - 1 do
-    local next_text = result .. vim.fn.strcharpart(text, index, 1)
-    if vim.fn.strdisplaywidth(next_text .. marker) > width then
-      break
-    end
-    result = next_text
-  end
-  return result .. marker
+  return config_mod.section((session or {}).config, "git", "panel")
 end
 
 local function icons_for(session)
@@ -136,9 +113,9 @@ local function row_for_entry(session, entry, index, width)
   local parent_width = math.max(0, width - vim.fn.strdisplaywidth(base) - 1)
   local text
   if parent ~= "" and parent_width > 3 then
-    text = base .. " " .. trim_width(parent, parent_width)
+    text = base .. " " .. ui.truncate_dotted(parent, parent_width)
   else
-    text = trim_width(base, width)
+    text = ui.truncate_dotted(base, width)
   end
   return {
     text = text,
@@ -356,12 +333,12 @@ function M.refresh_git_queue(session, opts)
   local queue_opts = vim.tbl_extend("force", {}, queue.opts or {})
   queue_opts.pathspecs = queue_opts.pathspecs or {}
   local git_config = vim.tbl_extend("force", {}, (session.config or {}).git or {}, {
-    hex = ((session.config or {}).ui or {}).hex or {},
+    hex = config_mod.section(session.config, "ui", "hex"),
   })
   local next_queue, err = git.queue(queue_opts, git_config)
   if not next_queue then
     if err ~= "no git changes" then
-      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+      nvim.notify_info(tostring(err))
       return false, err
     end
     queue.entries = {}
@@ -561,7 +538,7 @@ local function execute_file_action(session, row, action, opts)
     return false, "unsupported file action"
   end
   if not ok then
-    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+    nvim.notify_info(tostring(err))
     return false, err
   end
   refresh_after_file_action(session, entry, row.index)
@@ -571,7 +548,7 @@ end
 function M.run_file_action(session, action_id, opts)
   local row = selected_row(session)
   if not row or row.type ~= "file" then
-    vim.notify("DiffBandit: no file selected", vim.log.levels.INFO)
+    nvim.notify_info("no file selected")
     return false, "no file selected"
   end
   local panel = session.panel or {}
@@ -580,7 +557,7 @@ function M.run_file_action(session, action_id, opts)
   local actions = file_actions_for_entry(session, row.entry, state)
   local action = find_action(actions, action_id)
   if not action then
-    vim.notify("DiffBandit: file action is not available for " .. tostring(row.entry.path), vim.log.levels.INFO)
+    nvim.notify_info("file action is not available for " .. tostring(row.entry.path))
     return false, "file action is not available"
   end
   return execute_file_action(session, row, action, opts)
@@ -589,7 +566,7 @@ end
 function M.open_file_actions(session)
   local row = selected_row(session)
   if not row or row.type ~= "file" then
-    vim.notify("DiffBandit: no file selected", vim.log.levels.INFO)
+    nvim.notify_info("no file selected")
     return
   end
   local panel = session.panel or {}
@@ -597,7 +574,7 @@ function M.open_file_actions(session)
     or git.file_stage_state((session.file_queue or {}).root, row.entry, (session.file_queue or {}).opts or {})
   local actions = file_actions_for_entry(session, row.entry, state)
   if #actions == 0 then
-    vim.notify("DiffBandit: no file actions available for " .. tostring(row.entry.path), vim.log.levels.INFO)
+    nvim.notify_info("no file actions available for " .. tostring(row.entry.path))
     return
   end
   vim.ui.select(actions, {
@@ -625,9 +602,9 @@ function M.render_nav(session, preferred_entry_index, opts)
   for _, row in ipairs(panel.rows) do
     lines[#lines + 1] = row.text
   end
-  set_modifiable(panel.nav_buf, true)
+  nvim.set_buffer_options(panel.nav_buf, { modifiable = true })
   vim.api.nvim_buf_set_lines(panel.nav_buf, 0, -1, false, lines)
-  set_modifiable(panel.nav_buf, false)
+  nvim.set_buffer_options(panel.nav_buf, { modifiable = false })
   apply_nav_highlights(session)
 
   local target_row
@@ -670,12 +647,12 @@ function M.render_commit(session)
       lines[#lines + 1] = ""
       lines[#lines + 1] = details.help
     end
-    set_modifiable(panel.commit_buf, true)
+    nvim.set_buffer_options(panel.commit_buf, { modifiable = true })
     vim.api.nvim_buf_set_lines(panel.commit_buf, 0, -1, false, lines)
     vim.api.nvim_buf_clear_namespace(panel.commit_buf, session.ns, 0, -1)
     vim.api.nvim_buf_add_highlight(panel.commit_buf, session.ns, "DiffBanditStatusAccent", 0, 0, -1)
     pcall(vim.api.nvim_set_option_value, "modified", false, { buf = panel.commit_buf })
-    set_modifiable(panel.commit_buf, false)
+    nvim.set_buffer_options(panel.commit_buf, { modifiable = false })
     return
   end
   local staged_count = 0
@@ -707,7 +684,7 @@ function M.render_commit(session)
   end
   local buffer_lines = { "", "" }
   vim.list_extend(buffer_lines, lines)
-  set_modifiable(panel.commit_buf, true)
+  nvim.set_buffer_options(panel.commit_buf, { modifiable = true })
   vim.api.nvim_buf_set_lines(panel.commit_buf, 0, -1, false, buffer_lines)
   vim.api.nvim_buf_clear_namespace(panel.commit_buf, session.ns, 0, -1)
   pcall(vim.api.nvim_buf_set_extmark, panel.commit_buf, session.ns, 0, 0, {
@@ -721,7 +698,7 @@ function M.render_commit(session)
     priority = 50,
   })
   pcall(vim.api.nvim_set_option_value, "modified", false, { buf = panel.commit_buf })
-  set_modifiable(panel.commit_buf, true)
+  nvim.set_buffer_options(panel.commit_buf, { modifiable = true })
 end
 
 function M.render(session, preferred_entry_index, opts)
@@ -799,6 +776,42 @@ function M.focus_nav(session)
   end
 end
 
+-- True when the host's panel is visible with both windows intact.
+function M.is_open(host)
+  local panel = host and host.panel
+  return (panel
+    and panel.visible
+    and panel.nav_win and vim.api.nvim_win_is_valid(panel.nav_win)
+    and panel.commit_win and vim.api.nvim_win_is_valid(panel.commit_win)) and true or false
+end
+
+-- Open the nav/commit window pair to the left of anchor and apply the shared
+-- panel window options. The host provides panel.nav_buf/commit_buf.
+function M.open_windows(host, anchor)
+  local config = panel_config(host)
+  local width = config.width or 42
+  local height = config.commit_height or 10
+  local nav_win = vim.api.nvim_open_win(host.panel.nav_buf, false, {
+    split = "left",
+    win = anchor,
+    width = width,
+  })
+  local commit_win = vim.api.nvim_open_win(host.panel.commit_buf, false, {
+    split = "below",
+    win = nav_win,
+    height = height,
+  })
+  host.panel.nav_win = nav_win
+  host.panel.commit_win = commit_win
+  host.panel.visible = true
+  for _, win in ipairs({ nav_win, commit_win }) do
+    nvim.set_window_options(win, layout.win_opts.panel())
+    nvim.set_window_width(win, width)
+  end
+  nvim.set_window_height(commit_win, height)
+  return nav_win, commit_win
+end
+
 function M.focus_commit(session)
   local panel = session.panel
   if panel and panel.commit_win and vim.api.nvim_win_is_valid(panel.commit_win) then
@@ -844,7 +857,7 @@ end
 
 function M.toggle_stage(session)
   if is_review_panel(session) then
-    vim.notify("DiffBandit: staging is disabled in read-only Git review views", vim.log.levels.INFO)
+    nvim.notify_info("staging is disabled in read-only Git review views")
     return
   end
   local row, row_index = selected_row(session)
@@ -852,7 +865,7 @@ function M.toggle_stage(session)
     return
   end
   if entry_kind(row.entry) == "unmerged" then
-    vim.notify("DiffBandit: resolve merge conflicts before staging " .. tostring(row.entry.path), vim.log.levels.INFO)
+    nvim.notify_info("resolve merge conflicts before staging " .. tostring(row.entry.path))
     return
   end
   local queue = session.file_queue or {}
@@ -872,7 +885,7 @@ function M.toggle_stage(session)
     if not ok then
       panel.stage_states[row.index] = previous
       M.render(session, row.index)
-      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+      nvim.notify_info(tostring(err))
       return
     end
     if type(session.refresh_git_queue) == "function" then
@@ -906,7 +919,7 @@ end
 
 function M.commit(session)
   if is_review_panel(session) then
-    vim.notify("DiffBandit: commits are disabled in read-only Git review views", vim.log.levels.INFO)
+    nvim.notify_info("commits are disabled in read-only Git review views")
     return false, "read-only Git review view"
   end
   local panel = session.panel or {}
@@ -915,7 +928,7 @@ function M.commit(session)
   if not ok then
     panel.validation_message = tostring(err or "commit failed")
     M.render_commit(session)
-    vim.notify("DiffBandit: " .. panel.validation_message, vim.log.levels.WARN)
+    nvim.notify_warn(panel.validation_message)
     return false, err
   end
   panel.message_lines = { "" }
@@ -928,7 +941,7 @@ function M.commit(session)
     panel.amend_loaded = false
   end
   session:refresh_git_queue()
-  vim.notify("DiffBandit: committed changes", vim.log.levels.INFO)
+  nvim.notify_info("committed changes")
   return true, nil
 end
 
@@ -972,113 +985,74 @@ function M.setup_keymaps(session)
     return
   end
   local keys = panel_config(session).keys or {}
-  local file_keys = ((((session or {}).config or {}).git or {}).file_keys or {})
-  local opts = { buffer = panel.nav_buf, nowait = true, noremap = true, silent = true }
-  vim.keymap.set("n", "j", function()
-    M.move(session, 1)
-  end, opts)
-  vim.keymap.set("n", "k", function()
-    M.move(session, -1)
-  end, opts)
-  if keys.toggle_stage then
-    vim.keymap.set("n", keys.toggle_stage, function()
-      M.toggle_stage(session)
-    end, opts)
+  local file_keys = config_mod.section((session or {}).config, "git", "file_keys")
+  local review = is_review_panel(session)
+  local has_queue = session.file_queue ~= nil
+
+  local function navigate_change(direction)
+    return function()
+      M.navigate_change(session, direction)
+    end
   end
-  if keys.focus_diff then
-    vim.keymap.set("n", keys.focus_diff, function()
-      M.focus_diff(session)
-    end, opts)
+  local function navigate_file(direction)
+    return function()
+      M.navigate_file(session, direction)
+    end
   end
-  if keys.focus_commit then
-    vim.keymap.set("n", keys.focus_commit, function()
-      M.focus_commit(session)
-    end, opts)
+  local focus_diff = function()
+    M.focus_diff(session)
   end
-  if keys.file_actions and not is_review_panel(session) then
-    vim.keymap.set("n", keys.file_actions, function()
-      M.open_file_actions(session)
-    end, opts)
+  local commit = function()
+    M.commit(session)
   end
-  vim.keymap.set("n", "]c", function()
-    M.navigate_change(session, "next")
-  end, opts)
-  vim.keymap.set("n", "[c", function()
-    M.navigate_change(session, "prev")
-  end, opts)
-  if session.file_queue and file_keys.next then
-    vim.keymap.set("n", file_keys.next, function()
-      M.navigate_file(session, "next")
-    end, opts)
+  local toggle_amend = function()
+    M.toggle_amend(session)
   end
-  if session.file_queue and file_keys.prev then
-    vim.keymap.set("n", file_keys.prev, function()
-      M.navigate_file(session, "prev")
-    end, opts)
-  end
-  if keys.commit and not is_review_panel(session) then
-    vim.keymap.set("n", keys.commit, function()
-      M.commit(session)
-    end, opts)
-  end
-  if keys.toggle_amend and keys.toggle_amend ~= keys.toggle_stage and not is_review_panel(session) then
-    vim.keymap.set("n", keys.toggle_amend, function()
-      M.toggle_amend(session)
-    end, opts)
-  end
-  if keys.refresh then
-    vim.keymap.set("n", keys.refresh, function()
-      session:refresh_git_queue()
-    end, opts)
-  end
-  if keys.close then
-    vim.keymap.set("n", keys.close, function()
-      M.close(session)
-    end, opts)
+  local close = function()
+    M.close(session)
   end
 
-  if panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) and is_review_panel(session) then
-    local review_opts = { buffer = panel.commit_buf, nowait = true, noremap = true, silent = true }
-    if keys.focus_diff then
-      vim.keymap.set("n", keys.focus_diff, function()
-        M.focus_diff(session)
-      end, review_opts)
-    end
-    vim.keymap.set("n", "]c", function()
-      M.navigate_change(session, "next")
-    end, review_opts)
-    vim.keymap.set("n", "[c", function()
-      M.navigate_change(session, "prev")
-    end, review_opts)
-    if session.file_queue and file_keys.next then
-      vim.keymap.set("n", file_keys.next, function()
-        M.navigate_file(session, "next")
-      end, review_opts)
-    end
-    if session.file_queue and file_keys.prev then
-      vim.keymap.set("n", file_keys.prev, function()
-        M.navigate_file(session, "prev")
-      end, review_opts)
-    end
-    if keys.close then
-      vim.keymap.set("n", keys.close, function()
-        M.close(session)
-      end, review_opts)
+  -- lhs = nil/false skips the map (unset config key or failed condition);
+  -- when = false skips it explicitly.
+  local specs = {
+    { buf = "nav", lhs = "j", fn = function() M.move(session, 1) end },
+    { buf = "nav", lhs = "k", fn = function() M.move(session, -1) end },
+    { buf = "nav", lhs = keys.toggle_stage, fn = function() M.toggle_stage(session) end },
+    { buf = "nav", lhs = keys.focus_diff, fn = focus_diff },
+    { buf = "nav", lhs = keys.focus_commit, fn = function() M.focus_commit(session) end },
+    { buf = "nav", lhs = keys.file_actions, fn = function() M.open_file_actions(session) end, when = not review },
+    { buf = "nav", lhs = "]c", fn = navigate_change("next") },
+    { buf = "nav", lhs = "[c", fn = navigate_change("prev") },
+    { buf = "nav", lhs = file_keys.next, fn = navigate_file("next"), when = has_queue },
+    { buf = "nav", lhs = file_keys.prev, fn = navigate_file("prev"), when = has_queue },
+    { buf = "nav", lhs = keys.commit, fn = commit, when = not review },
+    { buf = "nav", lhs = keys.toggle_amend, fn = toggle_amend, when = keys.toggle_amend ~= keys.toggle_stage and not review },
+    { buf = "nav", lhs = keys.refresh, fn = function() session:refresh_git_queue() end },
+    { buf = "nav", lhs = keys.close, fn = close },
+
+    { buf = "commit", lhs = keys.focus_diff, fn = focus_diff, when = review },
+    { buf = "commit", lhs = "]c", fn = navigate_change("next"), when = review },
+    { buf = "commit", lhs = "[c", fn = navigate_change("prev"), when = review },
+    { buf = "commit", lhs = file_keys.next, fn = navigate_file("next"), when = review and has_queue },
+    { buf = "commit", lhs = file_keys.prev, fn = navigate_file("prev"), when = review and has_queue },
+    { buf = "commit", lhs = keys.close, fn = close, when = review },
+
+    { buf = "commit", lhs = keys.commit, fn = commit, when = not review },
+    { buf = "commit", lhs = keys.toggle_amend, fn = toggle_amend, when = not review },
+  }
+
+  local buffers = { nav = panel.nav_buf }
+  if panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) then
+    buffers.commit = panel.commit_buf
+    if not review then
+      setup_commit_write_command(session)
     end
   end
 
-  if panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) and not is_review_panel(session) then
-    setup_commit_write_command(session)
-    local commit_opts = { buffer = panel.commit_buf, nowait = true, noremap = true, silent = true }
-    if keys.commit then
-      vim.keymap.set("n", keys.commit, function()
-        M.commit(session)
-      end, commit_opts)
-    end
-    if keys.toggle_amend then
-      vim.keymap.set("n", keys.toggle_amend, function()
-        M.toggle_amend(session)
-      end, commit_opts)
+  for _, spec in ipairs(specs) do
+    local buf = buffers[spec.buf]
+    if buf and spec.lhs and spec.when ~= false then
+      vim.keymap.set("n", spec.lhs, spec.fn, { buffer = buf, nowait = true, noremap = true, silent = true })
     end
   end
 end

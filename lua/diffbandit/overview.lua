@@ -1,3 +1,4 @@
+local config_mod = require("diffbandit.config")
 local M = {}
 
 local KIND_PRIORITY = {
@@ -24,7 +25,7 @@ local KIND_HIGHLIGHTS = {
 }
 
 local function overview_config(config)
-  return (((config or {}).ui or {}).overview or {})
+  return config_mod.section(config, "ui", "overview")
 end
 
 function M.enabled(config)

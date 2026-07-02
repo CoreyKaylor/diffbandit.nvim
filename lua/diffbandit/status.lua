@@ -1,3 +1,4 @@
+local config_mod = require("diffbandit.config")
 local M = {}
 
 local plain_icons = {
@@ -17,7 +18,7 @@ local nerd_icons = {
 }
 
 local function status_config(config)
-  return (((config or {}).ui or {}).status or {})
+  return config_mod.section(config, "ui", "status")
 end
 
 local function icons_for(config)

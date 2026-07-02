@@ -1,15 +1,8 @@
+local nvim = require("diffbandit.nvim")
+
 local M = {}
 
-local function set_buffer_options(buf, opts)
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    return
-  end
-  for key, value in pairs(opts or {}) do
-    if value ~= nil then
-      vim.api.nvim_set_option_value(key, value, { buf = buf })
-    end
-  end
-end
+local set_buffer_options = nvim.set_buffer_options
 
 function M.truncate_display(text, width)
   text = text or ""
@@ -80,6 +73,27 @@ function M.set_header_line_with_right(buf, namespace, text, right_text, width)
   end
   local start_col = math.max(0, #line - #right_text)
   vim.api.nvim_buf_add_highlight(buf, namespace, "DiffBanditStatusMuted", 0, start_col, -1)
+end
+
+function M.truncate_dotted(text, width)
+  text = tostring(text or "")
+  if width <= 0 then
+    return ""
+  end
+  if vim.fn.strdisplaywidth(text) <= width then
+    return text
+  end
+  local result = ""
+  local marker = "..."
+  local char_count = vim.fn.strchars(text)
+  for index = 0, char_count - 1 do
+    local next_text = result .. vim.fn.strcharpart(text, index, 1)
+    if vim.fn.strdisplaywidth(next_text .. marker) > width then
+      break
+    end
+    result = next_text
+  end
+  return result .. marker
 end
 
 function M.digits_of(count)

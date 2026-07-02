@@ -1,82 +1,32 @@
 local diff_mod = require("diffbandit.diff")
 local view_builder = require("diffbandit.view")
 local state = require("diffbandit.state")
-local paths_mod = require("diffbandit.paths")
+local paths_mod = require("diffbandit.connector_routes")
 local actions = require("diffbandit.actions")
 local status = require("diffbandit.status")
 local panel_mod = require("diffbandit.panel")
 local nvim = require("diffbandit.nvim")
 local document = require("diffbandit.document")
 local overview = require("diffbandit.overview")
-local panel_host = require("diffbandit.panel_host")
+local amend_mode = require("diffbandit.amend_mode")
 local queue_host = require("diffbandit.queue_host")
 local ui = require("diffbandit.ui")
 local connector_width = require("diffbandit.connector_width")
+local keymaps = require("diffbandit.keymaps")
+local session_layout = require("diffbandit.session_layout")
+local session_render = require("diffbandit.session_render")
+local config_mod = require("diffbandit.config")
 
 local Session = {}
 Session.__index = Session
 
-local function digits_of(count)
-  return math.max(3, #tostring(math.max(1, count)))
-end
-
 local function display_number_width(source)
-  local width = digits_of(#(source and source.lines or {}))
+  local width = ui.digits_of(#(source and source.lines or {}))
   local override = tonumber(source and source.display_number_width)
   if override and override > width then
     width = override
   end
   return width
-end
-
-local function format_line_number(num, width)
-  if not num then
-    return string.rep(" ", width)
-  end
-  local fmt = string.format("%%%dd", width)
-  return string.format(fmt, num)
-end
-
-local function format_line_number_left(num, width)
-  if not num then
-    return string.rep(" ", width)
-  end
-  -- Left-align number (pad on right) so numbers expand rightward toward center
-  local fmt = string.format("%%-%dd", width)
-  return string.format(fmt, num)
-end
-
-local function source_display_number(source, line_num)
-  if not line_num then
-    return nil
-  end
-  local display_numbers = source and source.display_numbers
-  if display_numbers and display_numbers[line_num] then
-    return display_numbers[line_num]
-  end
-  return line_num
-end
-
-local function format_display_number(value, width, align_left)
-  if not value then
-    return string.rep(" ", width)
-  end
-  if type(value) == "number" then
-    if align_left then
-      return format_line_number_left(value, width)
-    end
-    return format_line_number(value, width)
-  end
-  value = tostring(value)
-  local display = vim.fn.strdisplaywidth(value)
-  if display >= width then
-    return value
-  end
-  local padding = string.rep(" ", width - display)
-  if align_left then
-    return value .. padding
-  end
-  return padding .. value
 end
 
 local function is_git_queue(queue)
@@ -91,49 +41,10 @@ local function git_action_markers_enabled(queue, index)
   return entry ~= nil and entry.actions_enabled ~= false
 end
 
-local function build_display_lines(session)
-  -- View arrays have different lengths; copy them so render-time scroll
-  -- padding does not mutate the canonical diff view.
-  local left_lines = vim.list_extend({}, session.view.left)
-  local right_lines = vim.list_extend({}, session.view.right)
-  local padding = session:get_scroll_padding()
-  for _ = 1, padding do
-    left_lines[#left_lines + 1] = ""
-    right_lines[#right_lines + 1] = ""
-  end
-  return left_lines, right_lines
-end
-
-local function render_empty_source_notice(buf, namespace, source)
-  if not source or not source.empty_reason or #(source.lines or {}) > 0 then
-    return
-  end
-  if not buf or not vim.api.nvim_buf_is_valid(buf) then
-    return
-  end
-
-  vim.api.nvim_buf_set_extmark(buf, namespace, 0, 0, {
-    virt_text = { { "  " .. source.empty_reason, "DiffBanditEmptyNotice" } },
-    virt_text_pos = "overlay",
-    priority = 20,
-  })
-end
-
 local set_win_view_topline = nvim.set_win_view_topline
 local get_win_view_topline = nvim.get_win_view_topline
 
-local function shallow_copy(tbl)
-  local copy = {}
-  for key, value in pairs(tbl) do
-    copy[key] = value
-  end
-  return copy
-end
-
 local set_buffer_options = nvim.set_buffer_options
-local set_window_options = nvim.set_window_options
-local set_window_width = nvim.set_window_width
-local set_window_height = nvim.set_window_height
 
 local function build_view_for_sources(sources, config)
   local hunks, err = diff_mod.compute_hunks(sources.left.text, sources.right.text, config.diff)
@@ -143,10 +54,6 @@ local function build_view_for_sources(sources, config)
 
   local view = view_builder.build(sources.left.lines, sources.right.lines, hunks, config)
   return hunks, view
-end
-
-local function connector_core_base_width(view, config)
-  return connector_width.base(view, config)
 end
 
 function Session:invalidate_render_caches()
@@ -166,7 +73,7 @@ end
 function Session:display_lines()
   local padding = self:get_scroll_padding()
   if not self.display_lines_cache or self.display_lines_cache.padding ~= padding then
-    local left_lines, right_lines = build_display_lines(self)
+    local left_lines, right_lines = session_render.build_display_lines(self)
     self.display_lines_cache = {
       left = left_lines,
       right = right_lines,
@@ -183,6 +90,20 @@ function Session:overview_marks(side)
     self.overview_marks_cache[key] = overview.build_marks(self.view, side, self.current_chunk)
   end
   return self.overview_marks_cache[key]
+end
+
+-- Width/marker fields shared by Session.start and replace_sources; both must
+-- recompute these identically whenever sources or view change.
+local function assign_pane_metrics(self, sources, view)
+  self.left_number_width = math.max(2, display_number_width(sources.left))
+  self.right_number_width = display_number_width(sources.right)
+  self.stage_marker_width = git_action_markers_enabled(self.file_queue, self.file_queue_index) and 1 or 0
+  self.left_stage_marker_width = 0
+  self.right_stage_marker_width = self.stage_marker_width
+  self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
+  self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
+  self.connector_core_width = connector_width.base(view, self.config)
+  self.gutter_width = self.connector_core_width
 end
 
 function Session.start(sources, config, opts)
@@ -203,8 +124,6 @@ function Session.start(sources, config, opts)
   self.file_queue = opts.queue
   self.file_queue_index = opts.queue and (opts.queue.index or 1) or nil
   self.pending_file_boundary = nil
-  self.left_number_width = math.max(2, display_number_width(sources.left))
-  self.right_number_width = display_number_width(sources.right)
   self.right_number_padding = self.config.ui.right_number_padding or 2
   self.ns = vim.api.nvim_create_namespace("DiffBanditHighlights" .. self.id)
   self.active_ns = vim.api.nvim_create_namespace("DiffBanditActive" .. self.id)
@@ -213,15 +132,9 @@ function Session.start(sources, config, opts)
   self.autocmd_group = nil
   self.disposed = false
 
-  self.connector_core_width = connector_core_base_width(view, self.config)
+  assign_pane_metrics(self, sources, view)
   self.overview_enabled = overview.enabled(self.config)
   self.overview_width = self.overview_enabled and overview.width(self.config) or 0
-  self.stage_marker_width = git_action_markers_enabled(self.file_queue, self.file_queue_index) and 1 or 0
-  self.left_stage_marker_width = 0
-  self.right_stage_marker_width = self.stage_marker_width
-  self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
-  self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
-  self.gutter_width = self.connector_core_width
   self.connector_width_cache = {}
   self:invalidate_render_caches()
   self.staged_chunk_states = actions.staged_chunk_states(self)
@@ -313,553 +226,11 @@ function Session:display_glyph(glyph)
 end
 
 function Session:open_layout()
-  vim.cmd("tabnew")
-  self.tabpage = vim.api.nvim_get_current_tabpage()
-  self.tabnr = vim.api.nvim_tabpage_get_number(self.tabpage)
-
-  -- Create buffers with basic options first (avoid bufhidden=wipe until in windows)
-  local left_buf = vim.api.nvim_create_buf(false, true)
-  local left_overview_buf = self.overview_enabled and vim.api.nvim_create_buf(false, true) or nil
-  local left_num_buf = vim.api.nvim_create_buf(false, true)
-  local connector_buf = vim.api.nvim_create_buf(false, true)
-  local right_num_buf = vim.api.nvim_create_buf(false, true)
-  local right_overview_buf = self.overview_enabled and vim.api.nvim_create_buf(false, true) or nil
-  local right_buf
-  if self.right.editable then
-    local acquired, acquire_err = document.acquire_buffer(self.right.editable)
-    if acquired then
-      right_buf = acquired
-      document.refresh_source_from_editable(self.right)
-    else
-      vim.notify("DiffBandit: " .. tostring(acquire_err), vim.log.levels.WARN)
-      self.right.editable = nil
-      self.preserve_right_buffer_lines = false
-    end
-  end
-  right_buf = right_buf or vim.api.nvim_create_buf(false, true)
-  local left_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
-  local center_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
-  local right_header_buf = self.status_enabled and vim.api.nvim_create_buf(false, true) or nil
-  local panel_nav_buf = self.panel_enabled and vim.api.nvim_create_buf(false, true) or nil
-  local panel_commit_buf = self.panel_enabled and vim.api.nvim_create_buf(false, true) or nil
-  if panel_commit_buf then
-    pcall(vim.api.nvim_buf_set_name, panel_commit_buf, "diffbandit-commit-" .. tostring(self.id))
-  end
-
-  self.left_buf = left_buf
-  self.left_overview_buf = left_overview_buf
-  self.left_num_buf = left_num_buf
-  self.connector_buf = connector_buf
-  self.right_num_buf = right_num_buf
-  self.right_overview_buf = right_overview_buf
-  self.right_buf = right_buf
-  self.left_header_buf = left_header_buf
-  self.center_header_buf = center_header_buf
-  self.right_header_buf = right_header_buf
-  if self.panel_enabled then
-    self.panel = {
-      nav_buf = panel_nav_buf,
-      commit_buf = panel_commit_buf,
-      message_lines = self.panel_message_lines or { "" },
-      amend = self.panel_amend == true,
-      mode = self.panel_mode,
-      details = self.panel_details,
-      visible = false,
-    }
-  end
-
-  -- Set non-destructive options first
-  set_buffer_options(left_buf, {
-    buftype = "nofile",
-    swapfile = false,
-    modifiable = false,
-    filetype = self.left.filetype,
-  })
-
-  for _, buf in ipairs({ left_overview_buf, right_overview_buf }) do
-    if buf then
-      set_buffer_options(buf, {
-        buftype = "nofile",
-        swapfile = false,
-        modifiable = false,
-      })
-    end
-  end
-
-  if self.right.editable then
-    set_buffer_options(right_buf, {
-      modifiable = true,
-      filetype = self.right.filetype,
-    })
-  else
-    set_buffer_options(right_buf, {
-      buftype = "nofile",
-      swapfile = false,
-      modifiable = true,
-      filetype = self.right.filetype,
-    })
-  end
-
-  set_buffer_options(left_num_buf, {
-    buftype = "nofile",
-    swapfile = false,
-    modifiable = false,
-  })
-
-  set_buffer_options(connector_buf, {
-    buftype = "nofile",
-    swapfile = false,
-    modifiable = false,
-  })
-
-  set_buffer_options(right_num_buf, {
-    buftype = "nofile",
-    swapfile = false,
-    modifiable = false,
-  })
-
-  for _, buf in ipairs({ left_header_buf, center_header_buf, right_header_buf }) do
-    if buf then
-      set_buffer_options(buf, {
-        buftype = "nofile",
-        swapfile = false,
-        modifiable = false,
-      })
-    end
-  end
-
-  if panel_nav_buf then
-    set_buffer_options(panel_nav_buf, {
-      buftype = "nofile",
-      swapfile = false,
-      modifiable = false,
-    })
-  end
-  if panel_commit_buf then
-    set_buffer_options(panel_commit_buf, {
-      buftype = "acwrite",
-      swapfile = false,
-      modifiable = false,
-    })
-  end
-
-  -- Put buffers in windows BEFORE setting bufhidden=wipe.
-  -- Final order:
-  -- LEFT OVERVIEW | LEFT CONTENT | LEFT NUMBERS | CONNECTOR | RIGHT NUMBERS | RIGHT CONTENT | RIGHT OVERVIEW.
-  -- nvim_open_win() split configs let gutter panes opt out of mouse/focus where
-  -- the running Nvim supports it.
-
-  local left_win
-  local left_overview_win
-  local right_win
-  local right_overview_win
-  local left_header_win
-  local center_header_win
-  local right_header_win
-  local panel_nav_win
-  local panel_commit_win
-
-  local function open_gutter_win(buf, anchor_win, width)
-    local ok, win = pcall(vim.api.nvim_open_win, buf, false, {
-      split = "right",
-      win = anchor_win,
-      width = width,
-      focusable = false,
-      mouse = false,
-    })
-    if ok then
-      return win
-    end
-    win = vim.api.nvim_open_win(buf, false, {
-      split = "right",
-      win = anchor_win,
-      width = width,
-    })
-    return win
-  end
-
-  local function open_sidecar_win(buf, anchor_win, split, width)
-    if not buf then
-      return nil
-    end
-    local ok, win = pcall(vim.api.nvim_open_win, buf, false, {
-      split = split,
-      win = anchor_win,
-      width = width,
-      focusable = false,
-      mouse = false,
-    })
-    if ok then
-      return win
-    end
-    return vim.api.nvim_open_win(buf, false, {
-      split = split,
-      win = anchor_win,
-      width = width,
-    })
-  end
-
-  local function open_status_win(buf, anchor_win, split)
-    local ok, win = pcall(vim.api.nvim_open_win, buf, false, {
-      split = split,
-      win = anchor_win,
-      focusable = false,
-      mouse = false,
-    })
-    if ok then
-      return win
-    end
-    return vim.api.nvim_open_win(buf, false, {
-      split = split,
-      win = anchor_win,
-    })
-  end
-
-  local left_num_win
-  local connector_win
-  local right_num_win
-
-  if self.panel_enabled then
-    local panel_config = (((self.config or {}).git or {}).panel or {})
-    panel_nav_win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(panel_nav_win, panel_nav_buf)
-    set_window_width(panel_nav_win, panel_config.width or 42)
-    if self.status_enabled then
-      left_header_win = vim.api.nvim_open_win(left_header_buf, false, {
-        split = "right",
-        win = panel_nav_win,
-      })
-    else
-      left_win = vim.api.nvim_open_win(left_buf, false, {
-        split = "right",
-        win = panel_nav_win,
-      })
-      left_overview_win = open_sidecar_win(left_overview_buf, left_win, "left", self.overview_width)
-    end
-    panel_commit_win = vim.api.nvim_open_win(panel_commit_buf, false, {
-      split = "below",
-      win = panel_nav_win,
-      height = panel_config.commit_height or 10,
-    })
-  end
-
-  if self.status_enabled then
-    if not self.panel_enabled then
-      left_header_win = vim.api.nvim_get_current_win()
-      vim.api.nvim_win_set_buf(left_header_win, left_header_buf)
-    end
-    left_win = vim.api.nvim_open_win(left_buf, false, {
-      split = "below",
-      win = left_header_win,
-    })
-    left_overview_win = open_sidecar_win(left_overview_buf, left_win, "left", self.overview_width)
-
-    center_header_win = open_status_win(center_header_buf, left_header_win, "right")
-    right_header_win = open_status_win(right_header_buf, center_header_win, "right")
-
-    right_win = vim.api.nvim_open_win(right_buf, false, {
-      split = "right",
-      win = left_win,
-    })
-    left_num_win = open_gutter_win(left_num_buf, left_win, self.left_number_pane_width)
-    connector_win = open_gutter_win(connector_buf, left_num_win, self.connector_core_width)
-    right_num_win = open_gutter_win(right_num_buf, connector_win, self.right_number_pane_width)
-    right_overview_win = open_sidecar_win(right_overview_buf, right_win, "right", self.overview_width)
-  else
-    if not self.panel_enabled then
-      left_win = vim.api.nvim_get_current_win()
-      vim.api.nvim_win_set_buf(left_win, left_buf)
-    end
-    if not left_overview_win then
-      left_overview_win = open_sidecar_win(left_overview_buf, left_win, "left", self.overview_width)
-    end
-    right_win = vim.api.nvim_open_win(right_buf, false, {
-      split = "right",
-      win = left_win,
-    })
-    vim.api.nvim_win_set_buf(right_win, right_buf)
-    left_num_win = open_gutter_win(left_num_buf, left_win, self.left_number_pane_width)
-    connector_win = open_gutter_win(connector_buf, left_num_win, self.connector_core_width)
-    right_num_win = open_gutter_win(right_num_buf, connector_win, self.right_number_pane_width)
-    right_overview_win = open_sidecar_win(right_overview_buf, right_win, "right", self.overview_width)
-  end
-
-  self.left_win = left_win
-  self.left_overview_win = left_overview_win
-  self.left_num_win = left_num_win
-  self.connector_win = connector_win
-  self.right_num_win = right_num_win
-  self.right_overview_win = right_overview_win
-  self.right_win = right_win
-  self.left_header_win = left_header_win
-  self.center_header_win = center_header_win
-  self.right_header_win = right_header_win
-  if self.panel_enabled then
-    self.panel.nav_win = panel_nav_win
-    self.panel.commit_win = panel_commit_win
-  end
-
-  local split_winhl = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit"
-  local hidden_split_winhl = "VertSplit:DiffBanditHiddenSplit,WinSeparator:DiffBanditHiddenSplit"
-  local source_winhl = split_winhl .. ",CursorLine:DiffBanditCursorLine"
-  local right_source_winhl = (self.overview_enabled and hidden_split_winhl or split_winhl)
-    .. ",CursorLine:DiffBanditCursorLine"
-  local gutter_winhl = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
-    .. split_winhl .. ",CursorLine:DiffBanditCursorLine"
-  local overview_winhl = "Normal:DiffBanditOverviewContext,NormalNC:DiffBanditOverviewContext,"
-    .. hidden_split_winhl .. ",CursorLine:DiffBanditCursorLine"
-  local status_winhl = "Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,"
-    .. "StatusLine:DiffBanditStatusLine,StatusLineNC:DiffBanditStatusLine,"
-    .. split_winhl .. ",CursorLine:DiffBanditStatus"
-
-  set_window_options(left_win, {
-    number = false,
-    relativenumber = false,
-    cursorline = true,
-    wrap = false,
-    signcolumn = "no",
-    winhl = source_winhl,
-  })
-
-  for _, win in ipairs({ left_overview_win, right_overview_win }) do
-    if win then
-      set_window_options(win, {
-        number = false,
-        relativenumber = false,
-        list = false,
-        cursorline = false,
-        wrap = false,
-        signcolumn = "no",
-        foldcolumn = "0",
-        winfixwidth = true,
-        winhl = overview_winhl,
-      })
-      set_window_width(win, self.overview_width)
-    end
-  end
-
-  set_window_options(left_num_win, {
-    number = false,
-    relativenumber = false,
-    list = false,
-    cursorline = false,
-    wrap = false,
-    signcolumn = "no",
-    foldcolumn = "0",
-    winfixwidth = true,
-    winhl = gutter_winhl,
-  })
-
-  set_window_options(connector_win, {
-    number = false,
-    relativenumber = false,
-    list = false,
-    cursorline = false,
-    wrap = false,
-    signcolumn = "no",
-    foldcolumn = "0",
-    winfixwidth = true,
-    winhl = gutter_winhl,
-  })
-
-  set_window_options(right_num_win, {
-    number = false,
-    relativenumber = false,
-    list = false,
-    cursorline = false,
-    wrap = false,
-    signcolumn = "no",
-    foldcolumn = "0",
-    winfixwidth = true,
-    winhl = gutter_winhl,
-  })
-
-  set_window_options(right_win, {
-    number = false,
-    relativenumber = false,
-    cursorline = true,
-    wrap = false,
-    signcolumn = self.right.editable and "auto" or "no",
-    winhl = right_source_winhl,
-  })
-
-  for _, win in ipairs({ left_header_win, center_header_win, right_header_win }) do
-    if win then
-      set_window_options(win, {
-        number = false,
-        relativenumber = false,
-        list = false,
-        cursorline = false,
-        wrap = false,
-        signcolumn = "no",
-        foldcolumn = "0",
-        winfixheight = true,
-        winhl = status_winhl,
-        statusline = " ",
-      })
-      set_window_height(win, 1)
-    end
-  end
-
-  if self.panel_enabled then
-    local panel_config = (((self.config or {}).git or {}).panel or {})
-    local panel_winhl = split_winhl .. ",Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,CursorLine:DiffBanditCursorLine"
-    for _, win in ipairs({ panel_nav_win, panel_commit_win }) do
-      if win then
-        set_window_options(win, {
-          number = false,
-          relativenumber = false,
-          list = false,
-          cursorline = true,
-          wrap = false,
-          signcolumn = "no",
-          foldcolumn = "0",
-          winfixwidth = true,
-          winhl = panel_winhl,
-        })
-        set_window_width(win, panel_config.width or 42)
-      end
-    end
-    if panel_commit_win then
-      set_window_height(panel_commit_win, panel_config.commit_height or 10)
-    end
-  end
-
-  self:resize_layout()
-
-  -- Now that all buffers are displayed in windows, set bufhidden=wipe for cleanup
-  set_buffer_options(left_buf, { bufhidden = "wipe" })
-  for _, buf in ipairs({ left_overview_buf, right_overview_buf }) do
-    if buf then
-      set_buffer_options(buf, { bufhidden = "wipe" })
-    end
-  end
-  set_buffer_options(left_num_buf, { bufhidden = "wipe" })
-  set_buffer_options(connector_buf, { bufhidden = "wipe" })
-  set_buffer_options(right_num_buf, { bufhidden = "wipe" })
-  if self.right.editable then
-    set_buffer_options(right_buf, { bufhidden = "hide" })
-  else
-    set_buffer_options(right_buf, { bufhidden = "wipe" })
-  end
-  for _, buf in ipairs({ left_header_buf, center_header_buf, right_header_buf }) do
-    if buf then
-      set_buffer_options(buf, { bufhidden = "wipe" })
-    end
-  end
-  for _, buf in ipairs({ panel_nav_buf, panel_commit_buf }) do
-    if buf then
-      set_buffer_options(buf, { bufhidden = "hide" })
-    end
-  end
-
-  -- Set vertical split character to thin line
-  vim.opt.fillchars:append({ vert = "│" })
-
-  local navigation = self.config.navigation or {}
-  local initial_focus = navigation.initial_focus == "left" and "left" or "right"
-  local initial_win = initial_focus == "left" and self.left_win or self.right_win
-  if self.panel_enabled and (((self.config.git or {}).panel or {}).focus_on_open or "panel") == "panel" then
-    initial_win = self.panel.nav_win
-  end
-  document.ensure_syntax_features(self.left_buf, self.left.filetype)
-  if self.right.editable then
-    document.ensure_language_features(self.right_buf, self.right.filetype)
-  else
-    document.ensure_syntax_features(self.right_buf, self.right.filetype)
-  end
-  vim.api.nvim_set_current_win(initial_win)
-  self.last_source_win = (self.panel and initial_win == self.panel.nav_win) and self.right_win or initial_win
-  self.last_source_side = initial_focus
-
-  local left_name = self.left.label or self.left.path or ""
-  local right_name = self.right.label or self.right.path or ""
-  self.title = string.format("DiffBandit: %s ↔ %s", left_name, right_name)
-  vim.api.nvim_tabpage_set_var(self.tabpage, "diffbandit_title", self.title)
+  session_layout.open(self)
 end
 
 function Session:resize_layout()
-  if self.panel then
-    local panel_config = (((self.config or {}).git or {}).panel or {})
-    if self.panel.nav_win and vim.api.nvim_win_is_valid(self.panel.nav_win) then
-      set_window_width(self.panel.nav_win, panel_config.width or 42)
-    end
-    if self.panel.commit_win and vim.api.nvim_win_is_valid(self.panel.commit_win) then
-      set_window_width(self.panel.commit_win, panel_config.width or 42)
-      set_window_height(self.panel.commit_win, panel_config.commit_height or 10)
-    end
-  end
-
-  local windows = {
-    self.left_overview_win,
-    self.left_win,
-    self.left_num_win,
-    self.connector_win,
-    self.right_num_win,
-    self.right_win,
-    self.right_overview_win,
-  }
-  local valid_windows = {}
-  for _, win in ipairs(windows) do
-    if win then
-      valid_windows[#valid_windows + 1] = win
-    end
-  end
-  for _, win in ipairs(valid_windows) do
-    if not vim.api.nvim_win_is_valid(win) then
-      return
-    end
-  end
-
-  if self.left_overview_win then
-    set_window_width(self.left_overview_win, self.overview_width)
-  end
-  set_window_width(self.left_num_win, self.left_number_pane_width)
-  set_window_width(self.connector_win, self.connector_core_width)
-  set_window_width(self.right_num_win, self.right_number_pane_width)
-  if self.right_overview_win then
-    set_window_width(self.right_overview_win, self.overview_width)
-  end
-
-  local total_width = 0
-  for _, win in ipairs(valid_windows) do
-    total_width = total_width + vim.api.nvim_win_get_width(win)
-  end
-  local separator_width = #valid_windows - 1
-  total_width = total_width + separator_width
-
-  local overview_fixed_width = (self.overview_enabled and (self.overview_width * 2) or 0)
-  local fixed_width = self.left_number_pane_width + self.connector_core_width + self.right_number_pane_width + overview_fixed_width
-  local content_width = total_width - fixed_width - separator_width
-  if content_width < 2 then
-    return
-  end
-
-  local left_width = math.floor(content_width / 2)
-  local right_width = content_width - left_width
-  set_window_width(self.left_win, left_width)
-  set_window_width(self.right_win, right_width)
-  if self.left_overview_win then
-    set_window_width(self.left_overview_win, self.overview_width)
-  end
-  set_window_width(self.left_num_win, self.left_number_pane_width)
-  set_window_width(self.connector_win, self.connector_core_width)
-  set_window_width(self.right_num_win, self.right_number_pane_width)
-  if self.right_overview_win then
-    set_window_width(self.right_overview_win, self.overview_width)
-  end
-
-  if self.status_enabled then
-    local overview_header_extra = self.overview_enabled and (self.overview_width + 1) or 0
-    local center_fixed_width = self.left_number_pane_width + self.connector_core_width + self.right_number_pane_width
-    set_window_width(self.left_header_win, left_width + overview_header_extra)
-    set_window_width(self.center_header_win, center_fixed_width + 2)
-    set_window_width(self.right_header_win, right_width + overview_header_extra)
-    set_window_height(self.left_header_win, 1)
-    set_window_height(self.center_header_win, 1)
-    set_window_height(self.right_header_win, 1)
-    self:render_status_headers()
-  end
+  session_layout.resize(self)
 end
 
 function Session:render_overviews()
@@ -936,13 +307,29 @@ function Session:setup_autocmds()
     end,
   })
 
-  vim.api.nvim_create_autocmd("BufWipeout", {
-    group = augroup,
-    buffer = self.left_buf,
-    callback = function()
-      self:dispose()
-    end,
-  })
+  -- Dispose the session when any of its buffers is wiped; the right buffer
+  -- survives wipes triggered by replace_sources.
+  for _, field in ipairs({
+    "left_buf",
+    "left_num_buf",
+    "right_num_buf",
+    "left_overview_buf",
+    "right_overview_buf",
+    "left_header_buf",
+    "center_header_buf",
+    "right_header_buf",
+  }) do
+    local buf = self[field]
+    if buf then
+      vim.api.nvim_create_autocmd("BufWipeout", {
+        group = augroup,
+        buffer = buf,
+        callback = function()
+          self:dispose()
+        end,
+      })
+    end
+  end
 
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = augroup,
@@ -954,46 +341,6 @@ function Session:setup_autocmds()
       self:dispose()
     end,
   })
-
-  vim.api.nvim_create_autocmd("BufWipeout", {
-    group = augroup,
-    buffer = self.left_num_buf,
-    callback = function()
-      self:dispose()
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("BufWipeout", {
-    group = augroup,
-    buffer = self.right_num_buf,
-    callback = function()
-      self:dispose()
-    end,
-  })
-
-  for _, buf in ipairs({ self.left_overview_buf, self.right_overview_buf }) do
-    if buf then
-      vim.api.nvim_create_autocmd("BufWipeout", {
-        group = augroup,
-        buffer = buf,
-        callback = function()
-          self:dispose()
-        end,
-      })
-    end
-  end
-
-  for _, buf in ipairs({ self.left_header_buf, self.center_header_buf, self.right_header_buf }) do
-    if buf then
-      vim.api.nvim_create_autocmd("BufWipeout", {
-        group = augroup,
-        buffer = buf,
-        callback = function()
-          self:dispose()
-        end,
-      })
-    end
-  end
 
   vim.api.nvim_create_autocmd("WinEnter", {
     group = augroup,
@@ -1155,8 +502,8 @@ function Session:setup_keymaps()
   end
   local navigation = self.config.navigation or {}
   local document_keys = navigation.document_keys or {}
-  local git_keys = ((self.config.git or {}).file_keys or {})
-  local panel_keys = (((self.config.git or {}).panel or {}).keys or {})
+  local git_keys = config_mod.section(self.config, "git", "file_keys")
+  local panel_keys = config_mod.section(self.config, "git", "panel", "keys")
   local action_keys = ((self.config.actions or {}).keys or {})
 
   local function buffer_maps(buf)
@@ -1242,65 +589,12 @@ function Session:setup_keymaps()
   end)
 end
 
-local function keymap_backup_key(mode, buf, lhs)
-  return table.concat({ tostring(mode), tostring(buf), tostring(lhs) }, "\31")
-end
-
-local function existing_buffer_keymap(mode, buf, lhs)
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
-    return nil
-  end
-  for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
-    if map.lhs == lhs then
-      return map
-    end
-  end
-  return nil
-end
-
 function Session:set_buffer_keymap(mode, buf, lhs, rhs, opts)
-  if not (buf and vim.api.nvim_buf_is_valid(buf) and lhs and lhs ~= "") then
-    return
-  end
-  self.keymap_backups = self.keymap_backups or {}
-  local key = keymap_backup_key(mode, buf, lhs)
-  if self.keymap_backups[key] == nil then
-    self.keymap_backups[key] = {
-      mode = mode,
-      buf = buf,
-      lhs = lhs,
-      previous = existing_buffer_keymap(mode, buf, lhs) or false,
-    }
-  end
-  vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", opts or {}, { buffer = buf }))
+  keymaps.set(self, mode, buf, lhs, rhs, opts)
 end
 
 function Session:clear_keymaps()
-  if not self.keymap_backups then
-    return
-  end
-  for _, backup in pairs(self.keymap_backups) do
-    local buf = backup.buf
-    if buf and vim.api.nvim_buf_is_valid(buf) then
-      pcall(vim.keymap.del, backup.mode, backup.lhs, { buffer = buf })
-      local previous = backup.previous
-      if previous and previous ~= false then
-        local rhs = previous.callback or previous.rhs
-        if rhs and rhs ~= "" then
-          pcall(vim.keymap.set, backup.mode, backup.lhs, rhs, {
-            buffer = buf,
-            noremap = previous.noremap == 1,
-            silent = previous.silent == 1,
-            expr = previous.expr == 1,
-            nowait = previous.nowait == 1,
-            script = previous.script == 1,
-            desc = previous.desc,
-          })
-        end
-      end
-    end
-  end
-  self.keymap_backups = nil
+  keymaps.clear(self)
 end
 
 local function sync_source_to_gutter(self, source_win, number_win)
@@ -1338,38 +632,38 @@ function Session:sync_from_right()
   sync_source_to_gutter(self, self.right_win, self.right_num_win)
 end
 
+-- Debounce a per-session action behind a boolean flag field: the first call
+-- schedules, later calls coalesce until the deferred fn clears the flag.
+local function schedule_once(self, flag_field, fn)
+  if self[flag_field] then
+    return
+  end
+  self[flag_field] = true
+  local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
+  vim.defer_fn(function()
+    self[flag_field] = false
+    if self.disposed then
+      return
+    end
+    fn()
+  end, math.max(0, delay))
+end
+
 function Session:request_viewport_rerender()
   if self.disposed or self.rendering_viewport then
     return
   end
-  if self.viewport_rerender_scheduled then
-    return
-  end
-
-  self.viewport_rerender_scheduled = true
-  local delay = tonumber(((self.config or {}).ui or {}).scroll_debounce_ms) or 16
-  delay = math.max(0, delay)
-  vim.defer_fn(function()
-    self.viewport_rerender_scheduled = false
-    if self.disposed then
-      return
-    end
+  schedule_once(self, "viewport_rerender_scheduled", function()
     self:rerender_for_viewport()
-  end, delay)
+  end)
 end
 
 function Session:request_editable_right_refresh()
   if self.disposed or not (self.right and self.right.editable) then
     return
   end
-  if self.editable_right_refresh_scheduled then
-    return
-  end
-  self.editable_right_refresh_scheduled = true
-  local delay = tonumber(((self.config or {}).ui or {}).scroll_debounce_ms) or 16
-  vim.defer_fn(function()
-    self.editable_right_refresh_scheduled = false
-    if self.disposed or not (self.right and self.right.editable) then
+  schedule_once(self, "editable_right_refresh_scheduled", function()
+    if not (self.right and self.right.editable) then
       return
     end
     document.refresh_source_from_editable(self.right)
@@ -1381,24 +675,24 @@ function Session:request_editable_right_refresh()
       chunk_position = "preserve",
       preferred_chunk = self.current_chunk,
     })
-  end, math.max(0, delay))
+  end)
 end
 
-function Session:set_viewport_toplines(left_topline, right_topline)
+local function apply_viewport_toplines(self, left_topline, right_topline)
   set_win_view_topline(self.left_win, left_topline)
   set_win_view_topline(self.left_num_win, left_topline)
   set_win_view_topline(self.right_win, right_topline)
   set_win_view_topline(self.right_num_win, right_topline)
   set_win_view_topline(self.connector_win, left_topline or 1)
+end
+
+function Session:set_viewport_toplines(left_topline, right_topline)
+  apply_viewport_toplines(self, left_topline, right_topline)
   self:rerender_for_viewport()
 end
 
 function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_cursor, right_cursor)
-  set_win_view_topline(self.left_win, left_topline)
-  set_win_view_topline(self.left_num_win, left_topline)
-  set_win_view_topline(self.right_win, right_topline)
-  set_win_view_topline(self.right_num_win, right_topline)
-  set_win_view_topline(self.connector_win, left_topline or 1)
+  apply_viewport_toplines(self, left_topline, right_topline)
   local function cursor_pair(cursor)
     if type(cursor) == "table" then
       return { math.max(1, cursor[1] or 1), math.max(0, cursor[2] or 0) }
@@ -1431,97 +725,56 @@ local function first_meta_index_with(meta_list, start_idx, end_idx, predicate)
   return nil, nil
 end
 
-function Session:chunk_navigation_anchors(chunk)
+-- Shared scanner for chunk anchors (viewport alignment) and cursor rows
+-- (cursor placement). The two differ only in how an add chunk picks its right
+-- row (origin row vs first real right line) and whether missing origin rows
+-- fall back to row 1.
+local function chunk_rows(self, chunk, opts)
   local meta_list = self.view and self.view.line_meta or {}
   local start_idx = chunk and chunk.display_start or 1
   local end_idx = chunk and chunk.display_end or start_idx
-  local left_anchor
-  local right_anchor
 
+  local function first_left()
+    local _, meta = first_meta_index_with(meta_list, start_idx, end_idx, function(m)
+      return m.left_index ~= nil
+    end)
+    return meta and meta.left_index or nil
+  end
+  local function first_right()
+    local _, meta = first_meta_index_with(meta_list, start_idx, end_idx, function(m)
+      return m.right_index ~= nil
+    end)
+    return meta and meta.right_index or nil
+  end
+
+  local left_row
+  local right_row
   if chunk and chunk.type == "add" then
     local origin_meta = meta_list[start_idx - 1]
-    left_anchor = origin_meta and origin_meta.left_index or 1
-    right_anchor = origin_meta and origin_meta.right_index or 1
+    left_row = origin_meta and origin_meta.left_index or opts.origin_fallback
+    if opts.add_right_from_origin then
+      right_row = origin_meta and origin_meta.right_index or opts.origin_fallback
+    else
+      right_row = first_right()
+    end
   elseif chunk and chunk.type == "delete" then
-    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.left_index ~= nil
-    end)
-    left_anchor = left_meta and left_meta.left_index or nil
+    left_row = first_left()
     local origin_meta = meta_list[start_idx - 1]
-    right_anchor = origin_meta and origin_meta.right_index or 1
+    right_row = origin_meta and origin_meta.right_index or opts.origin_fallback
   else
-    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.left_index ~= nil
-    end)
-    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.right_index ~= nil
-    end)
-    left_anchor = left_meta and left_meta.left_index or nil
-    right_anchor = right_meta and right_meta.right_index or nil
+    left_row = first_left()
+    right_row = first_right()
   end
 
-  if not left_anchor then
-    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.left_index ~= nil
-    end)
-    left_anchor = left_meta and left_meta.left_index or nil
-  end
-  if not right_anchor then
-    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.right_index ~= nil
-    end)
-    right_anchor = right_meta and right_meta.right_index or nil
-  end
+  return left_row or first_left(), right_row or first_right()
+end
 
-  return left_anchor, right_anchor
+function Session:chunk_navigation_anchors(chunk)
+  return chunk_rows(self, chunk, { origin_fallback = 1, add_right_from_origin = true })
 end
 
 function Session:chunk_cursor_rows(chunk)
-  local meta_list = self.view and self.view.line_meta or {}
-  local start_idx = chunk and chunk.display_start or 1
-  local end_idx = chunk and chunk.display_end or start_idx
-  local left_cursor
-  local right_cursor
-
-  if chunk and chunk.type == "add" then
-    local origin_meta = meta_list[start_idx - 1]
-    left_cursor = origin_meta and origin_meta.left_index or nil
-    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.right_index ~= nil
-    end)
-    right_cursor = right_meta and right_meta.right_index or nil
-  elseif chunk and chunk.type == "delete" then
-    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.left_index ~= nil
-    end)
-    left_cursor = left_meta and left_meta.left_index or nil
-    local origin_meta = meta_list[start_idx - 1]
-    right_cursor = origin_meta and origin_meta.right_index or nil
-  else
-    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.left_index ~= nil
-    end)
-    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.right_index ~= nil
-    end)
-    left_cursor = left_meta and left_meta.left_index or nil
-    right_cursor = right_meta and right_meta.right_index or nil
-  end
-
-  if not left_cursor then
-    local _, left_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.left_index ~= nil
-    end)
-    left_cursor = left_meta and left_meta.left_index or nil
-  end
-  if not right_cursor then
-    local _, right_meta = first_meta_index_with(meta_list, start_idx, end_idx, function(meta)
-      return meta.right_index ~= nil
-    end)
-    right_cursor = right_meta and right_meta.right_index or nil
-  end
-
-  return left_cursor, right_cursor
+  return chunk_rows(self, chunk, { add_right_from_origin = false })
 end
 
 function Session:align_chunk_viewports(chunk)
@@ -1710,7 +963,7 @@ function Session:replace_sources(sources, opts)
     if acquired then
       document.refresh_source_from_editable(sources.right)
     else
-      vim.notify("DiffBandit: " .. tostring(acquire_err), vim.log.levels.WARN)
+      nvim.notify_warn(tostring(acquire_err))
       sources.right.editable = nil
     end
   end
@@ -1765,15 +1018,7 @@ function Session:replace_sources(sources, opts)
   self.view = view
   self:invalidate_render_caches()
   self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
-  self.left_number_width = math.max(2, display_number_width(sources.left))
-  self.right_number_width = display_number_width(sources.right)
-  self.stage_marker_width = git_action_markers_enabled(self.file_queue, self.file_queue_index) and 1 or 0
-  self.left_stage_marker_width = 0
-  self.right_stage_marker_width = self.stage_marker_width
-  self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
-  self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
-  self.connector_core_width = connector_core_base_width(view, self.config)
-  self.gutter_width = self.connector_core_width
+  assign_pane_metrics(self, sources, view)
   self:reset_pending_file_boundary()
   self.staged_chunk_states = actions.staged_chunk_states(self)
 
@@ -1845,374 +1090,8 @@ function Session:replace_sources(sources, opts)
   return true, nil
 end
 
--- Highlight lookup tables for left/right/connector panes
-local HIGHLIGHT_LEFT = {
-  context = "DiffBanditContext",
-  add = "DiffBanditAddLeft",
-  delete = "DiffBanditDelete",
-  change = { default = "DiffBanditChangeLeft", filler = "DiffBanditGap" },
-}
-
-local HIGHLIGHT_RIGHT = {
-  context = "DiffBanditContext",
-  add = { default = "DiffBanditAdd", filler = "DiffBanditGap" },
-  delete = { default = "DiffBanditChangeRight", filler = "DiffBanditGap" },
-  change = { default = "DiffBanditChangeRight", filler = "DiffBanditGap" },
-}
-
-local function get_highlight(tbl, meta, filler_key)
-  local entry = tbl[meta.kind]
-  if type(entry) == "table" then
-    return meta[filler_key] and entry.filler or entry.default
-  end
-  return entry
-end
-
-local function highlight_for_left(meta)
-  return get_highlight(HIGHLIGHT_LEFT, meta, "filler_left")
-end
-
-local function highlight_for_right(meta)
-  return get_highlight(HIGHLIGHT_RIGHT, meta, "filler_right")
-end
-
 function Session:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
-  left_topline = math.max(1, left_topline or 1)
-  right_topline = math.max(1, right_topline or 1)
-  left_height = math.max(1, left_height or 1)
-  right_height = math.max(1, right_height or 1)
-  local projected = {}
-
-  local function right_to_connector_row(right_index)
-    return left_topline + (right_index - right_topline)
-  end
-
-  local function delete_glyph_for_target(origin_row, target_row)
-    return origin_row > target_row and "◣" or "◤"
-  end
-
-  local function change_glyph_for(side, row, other_row)
-    if side == "right" then
-      return other_row > row and "◢" or "◥"
-    end
-    return other_row > row and "◣" or "◤"
-  end
-
-  local function set_lane_occupancy(path, row_a, row_b)
-    if not row_a or not row_b then
-      return
-    end
-    local viewport_start = left_topline
-    local viewport_end = left_topline + left_height - 1
-    local start_row = math.max(viewport_start, math.min(row_a, row_b))
-    local end_row = math.min(viewport_end, math.max(row_a, row_b))
-    if start_row <= end_row then
-      path.lane_occupancy_start = start_row
-      path.lane_occupancy_end = end_row
-    end
-  end
-
-  local function add_projected_path(path, target_index, glyph, show_triangle, suppress_tail)
-    local projected_target = right_to_connector_row(target_index)
-    local q = shallow_copy(path)
-    q.route_group = path.route_group or path
-    q.top = path.origin_left_index or path.origin_display_row
-    q.origin_display_row = q.top
-    q.display_start_row = projected_target
-    q.display_end_row = projected_target
-    q.triangle_display_row = projected_target
-    q.target_start_index = target_index
-    q.target_end_index = target_index
-    q.approach = glyph == "◢" and "from_below" or "from_above"
-    q.triangle_glyph = glyph
-    q.connect_tail_on_triangle_row = path.kind == "add" and glyph == "◢" and show_triangle ~= false
-    q.hide_triangle = show_triangle == false
-    q.suppress_tail = suppress_tail == true
-    set_lane_occupancy(q, q.origin_display_row, projected_target)
-    projected[#projected + 1] = q
-  end
-
-  local function add_projected_delete_path(path, origin_row, target_index, glyph, show_triangle, suppress_tail)
-    local q = shallow_copy(path)
-    q.route_group = path.route_group or path
-    q.top = origin_row
-    q.origin_display_row = origin_row
-    q.display_start_row = target_index
-    q.display_end_row = target_index
-    q.triangle_display_row = target_index
-    q.target_start_index = target_index
-    q.target_end_index = target_index
-    q.approach = (glyph == "◣" or glyph == "◥") and "from_below" or "from_above"
-    q.triangle_glyph = glyph
-    q.connect_tail_on_triangle_row = (glyph == "◣" or glyph == "◥") and show_triangle ~= false
-    q.hide_triangle = show_triangle == false
-    q.suppress_tail = suppress_tail == true
-    set_lane_occupancy(q, origin_row, target_index)
-    projected[#projected + 1] = q
-  end
-
-  local function add_change_link(links, from_side, from_row, to_side, to_row, show_from, show_to, from_glyph, to_glyph, no_vertical, underline_row)
-    if not from_row or not to_row then
-      return
-    end
-
-    links[#links + 1] = {
-      from_side = from_side,
-      from_row = from_row,
-      from_glyph = from_glyph or change_glyph_for(from_side, from_row, to_row),
-      from_visible = show_from ~= false,
-      to_side = to_side,
-      to_row = to_row,
-      to_glyph = to_glyph or change_glyph_for(to_side, to_row, from_row),
-      to_visible = show_to ~= false,
-      no_vertical = no_vertical == true,
-      underline_row = underline_row,
-    }
-  end
-
-  local function add_change_edge(edges, side, row, overlap_row)
-    if not row or not overlap_row then
-      return
-    end
-    edges[#edges + 1] = {
-      side = side,
-      row = row,
-      glyph = change_glyph_for(side, row, overlap_row),
-    }
-  end
-
-  local function set_change_lane_occupancy(path)
-    local start_row, end_row
-    local viewport_start = left_topline
-    local viewport_end = left_topline + left_height - 1
-    local function include_row(row)
-      if not row then
-        return
-      end
-      row = math.max(viewport_start, math.min(viewport_end, row))
-      start_row = start_row and math.min(start_row, row) or row
-      end_row = end_row and math.max(end_row, row) or row
-    end
-
-    for _, link in ipairs(path.viewport_change_links or {}) do
-      include_row(link.from_row)
-      include_row(link.to_row)
-    end
-    for _, edge in ipairs(path.viewport_change_edges or {}) do
-      include_row(edge.row)
-    end
-
-    if start_row and end_row then
-      path.lane_occupancy_start = start_row
-      path.lane_occupancy_end = end_row
-    end
-  end
-
-  local function project_change_path(path)
-    local q = shallow_copy(path)
-    q.route_group = path.route_group or path
-    q.viewport_change_links = {}
-    q.viewport_change_edges = {}
-
-    if not (path.start_left_index and path.end_left_index
-        and path.start_right_index and path.end_right_index) then
-      return q
-    end
-
-    local left_visible_start = math.max(path.start_left_index, left_topline)
-    local left_visible_end = math.min(path.end_left_index, left_topline + left_height - 1)
-    local right_visible_index_start = math.max(path.start_right_index, right_topline)
-    local right_visible_index_end = math.min(path.end_right_index, right_topline + right_height - 1)
-
-    if left_visible_start <= left_visible_end then
-      q.viewport_left_start = left_visible_start
-      q.viewport_left_end = left_visible_end
-    end
-    if right_visible_index_start <= right_visible_index_end then
-      q.viewport_right_index_start = right_visible_index_start
-      q.viewport_right_index_end = right_visible_index_end
-      q.viewport_right_start = right_to_connector_row(right_visible_index_start)
-      q.viewport_right_end = right_to_connector_row(right_visible_index_end)
-    end
-
-    local ls, le = q.viewport_left_start, q.viewport_left_end
-    local rs, re = q.viewport_right_start, q.viewport_right_end
-    if ls and le and rs and re then
-      local overlap_start = math.max(ls, rs)
-      local overlap_end = math.min(le, re)
-      if overlap_start <= overlap_end then
-        q.viewport_solid_start = overlap_start
-        q.viewport_solid_end = overlap_end
-
-        if rs < overlap_start then
-          local edge_row = overlap_start - 1
-          add_change_edge(q.viewport_change_edges, "right", edge_row, overlap_start)
-        end
-        if ls < overlap_start then
-          local edge_row = overlap_start - 1
-          add_change_edge(q.viewport_change_edges, "left", edge_row, overlap_start)
-        end
-        if re > overlap_end then
-          local edge_row = overlap_end + 1
-          add_change_edge(q.viewport_change_edges, "right", edge_row, overlap_end)
-        end
-        if le > overlap_end then
-          local edge_row = overlap_end + 1
-          add_change_edge(q.viewport_change_edges, "left", edge_row, overlap_end)
-        end
-      elseif re < ls then
-        if re + 1 == ls then
-          add_change_link(q.viewport_change_links, "right", re, "left", ls, true, true,
-            change_glyph_for("right", re, ls), change_glyph_for("left", ls, re), true, re)
-        else
-          add_change_link(q.viewport_change_links, "right", re, "left", ls, true, true)
-        end
-      elseif le < rs then
-        if le + 1 == rs then
-          add_change_link(q.viewport_change_links, "left", le, "right", rs, true, true,
-            change_glyph_for("left", le, rs), change_glyph_for("right", rs, le), true, le)
-        else
-          add_change_link(q.viewport_change_links, "left", le, "right", rs, true, true)
-        end
-      end
-    elseif ls and le then
-      local projected_right_start = right_to_connector_row(path.start_right_index)
-      local projected_right_end = right_to_connector_row(path.end_right_index)
-      if projected_right_end < ls then
-        add_change_link(q.viewport_change_links, "left", ls, "right", left_topline - 1, true, false,
-          nil, nil, false, math.max(left_topline, ls - 1))
-      elseif projected_right_start > le then
-        add_change_link(q.viewport_change_links, "left", le, "right", left_topline + left_height, true, false,
-          nil, nil, false, le)
-      end
-    elseif rs and re then
-      if path.end_left_index < rs then
-        add_change_link(q.viewport_change_links, "right", rs, "left", left_topline - 1, true, false,
-          nil, nil, false, math.max(left_topline, rs - 1))
-      elseif path.start_left_index > re then
-        add_change_link(q.viewport_change_links, "right", re, "left", left_topline + left_height, true, false,
-          nil, nil, false, re)
-      end
-    end
-
-    set_change_lane_occupancy(q)
-    return q
-  end
-
-  for _, p in ipairs(paths) do
-    if p.kind == "add" and not p.embedded_in_change then
-      local origin_row = p.origin_left_index or p.origin_display_row
-      local block_start = p.target_start_index or p.triangle_display_row or p.display_start_row
-      local block_end = p.target_end_index or block_start
-      if origin_row and block_start and block_end then
-        local origin_visible = origin_row >= left_topline and origin_row <= (left_topline + left_height - 1)
-        local visible_start = math.max(block_start, right_topline)
-        local visible_end = math.min(block_end, right_topline + right_height - 1)
-        if visible_start > visible_end then
-          if origin_visible then
-            if block_start > right_topline + right_height - 1 then
-              add_projected_path(p, right_topline + right_height, "◥", false, true)
-            elseif block_end < right_topline then
-              add_projected_path(p, right_topline - 1, "◢", false, true)
-            end
-          end
-        else
-          local visible_start_row = right_to_connector_row(visible_start)
-          local visible_end_row = right_to_connector_row(visible_end)
-          local right_index_at_origin = right_topline + (origin_row - left_topline)
-
-          if not origin_visible then
-            local target = block_start
-            if visible_end_row < origin_row then
-              target = visible_end
-            elseif visible_start_row > origin_row then
-              target = visible_start
-            end
-            add_projected_path(p, target, visible_start_row < origin_row and "◢" or "◥", false)
-          elseif visible_start_row > origin_row then
-            add_projected_path(p, visible_start, "◥", true)
-          elseif visible_end_row < origin_row then
-            add_projected_path(p, visible_end, "◢", true)
-          else
-            local target_above
-            local target_below
-            if visible_start_row == origin_row then
-              target_above = visible_start
-              target_below = visible_start + 1
-            else
-              target_above = right_index_at_origin
-              target_below = right_index_at_origin + 1
-            end
-
-            if target_above >= visible_start and target_above <= visible_end then
-              add_projected_path(p, target_above, "◢", true)
-            end
-            if target_below >= visible_start and target_below <= visible_end then
-              add_projected_path(p, target_below, "◥", true)
-            end
-          end
-        end
-      end
-    elseif p.kind == "delete" then
-      local origin_row = p.origin_right_index and right_to_connector_row(p.origin_right_index) or p.origin_display_row
-      local block_start = p.target_start_index or p.triangle_display_row or p.display_start_row
-      local block_end = p.target_end_index or block_start
-      if origin_row and block_start and block_end then
-        local origin_visible = origin_row >= left_topline and origin_row <= (left_topline + left_height - 1)
-        local visible_start = math.max(block_start, left_topline)
-        local visible_end = math.min(block_end, left_topline + left_height - 1)
-        if visible_start > visible_end then
-          if origin_visible then
-            if block_start > left_topline + left_height - 1 then
-              local target = left_topline + left_height
-              add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false, true)
-            elseif block_end < left_topline then
-              local target = left_topline - 1
-              add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false, true)
-            end
-          end
-        elseif not origin_visible then
-          local target = block_start
-          if visible_end < origin_row then
-            target = visible_end
-          elseif visible_start > origin_row then
-            target = visible_start
-          end
-          add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), true)
-        elseif visible_start > origin_row then
-          add_projected_delete_path(p, origin_row, visible_start, "◤", true)
-        elseif visible_end < origin_row then
-          add_projected_delete_path(p, origin_row, visible_end, "◣", true)
-        else
-          local target_above
-          local target_below
-          if visible_start == origin_row then
-            target_above = visible_start
-            target_below = visible_start + 1
-          else
-            target_above = origin_row
-            target_below = origin_row + 1
-          end
-
-          if target_above >= visible_start and target_above <= visible_end then
-            add_projected_delete_path(p, origin_row, target_above, "◣", true)
-          end
-          if target_below >= visible_start and target_below <= visible_end then
-            add_projected_delete_path(p, origin_row, target_below, "◤", true)
-          end
-        end
-      end
-    elseif p.kind == "change" then
-      projected[#projected + 1] = project_change_path(p)
-    else
-      local q = shallow_copy(p)
-      q.route_group = p.route_group or p
-      projected[#projected + 1] = q
-    end
-  end
-
-  paths_mod.assign_lanes(projected)
-  return projected
+  return paths_mod.project_for_toplines(paths, left_topline, right_topline, left_height, right_height)
 end
 
 function Session:project_paths_for_viewport(paths)
@@ -2269,6 +1148,14 @@ function Session:precompute_connector_core_width()
     active = active + pressure_events[row]
     max_pressure = math.max(max_pressure, active)
   end
+  -- Document-space pressure cannot see overlaps created by scrolling the
+  -- panes independently (a route whose origin scrolls off-screen stretches
+  -- its rail across rows it never touches in the aligned view). Reserve one
+  -- extra lane of slack whenever the document has any routed content so
+  -- those transient overlaps still plan without hiding routes.
+  if max_pressure > 0 then
+    max_pressure = max_pressure + 1
+  end
   local required_core = math.max(minimum_width, minimum_width + (max_pressure * 2))
   required_core = math.min(connector_width.maximum(self.config), required_core)
   if required_core ~= self.connector_core_width then
@@ -2281,753 +1168,7 @@ function Session:precompute_connector_core_width()
 end
 
 function Session:render()
-  set_buffer_options(self.left_buf, { modifiable = true })
-  set_buffer_options(self.left_num_buf, { modifiable = true })
-  set_buffer_options(self.right_buf, { modifiable = true })
-  set_buffer_options(self.right_num_buf, { modifiable = true })
-  set_buffer_options(self.connector_buf, { modifiable = true })
-
-  local left_lines, right_lines = self:display_lines()
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
-  local right_text_hl_mode = self.right.editable and "combine" or "replace"
-
-  -- Compute connector routing lanes using extracted paths module
-  local paths = self:base_paths()
-  local route_paths = self:project_paths_for_viewport(paths)
-  local route_plan = paths_mod.plan_routes(route_paths, {
-    connector_core_width = self.connector_core_width,
-    viewport_topline = left_topline,
-    viewport_height = left_height,
-    max_route_backtrack_steps = 500,
-  })
-
-  -- Compute underline data using extracted helper
-  local underline_layout = {
-    left_number_width = 0,
-    connector_core_width = self.connector_core_width,
-    rail_spacing = 1,
-    sidecar_numbers = true,
-  }
-  local underline_data = paths_mod.compute_underlines(route_paths, paths_mod.compute_active_bars(route_paths), underline_layout)
-  local delete_origin_right_lines = underline_data.delete_origin_right_lines or {}
-  local add_origin_row_has_transition = {}
-  for _, p in ipairs(route_paths) do
-    if p.kind == "add"
-        and not p.embedded_in_change
-        and not p.hide_triangle
-        and not p.overflow_hidden
-        and p.origin_display_row
-        and (p.triangle_display_row or p.display_start_row) == p.origin_display_row then
-      add_origin_row_has_transition[p.origin_display_row] = true
-    end
-  end
-  local embedded_add_terminal_right_indexes = {}
-  local embedded_add_origin_left_indexes = {}
-  local change_number_left_indexes = {}
-  local change_number_right_indexes = {}
-  local solid_change_number_left_indexes = {}
-  local solid_change_number_right_indexes = {}
-  local function display_row_to_left_index(display_row)
-    local meta = self.view.line_meta[display_row]
-    if meta and meta.left_index then
-      return meta.left_index
-    end
-    if display_row and display_row >= 1 and display_row <= #left_lines then
-      return display_row
-    end
-    return nil
-  end
-  local function display_row_to_right_index(display_row)
-    local meta = self.view.line_meta[display_row]
-    if meta and meta.right_index then
-      return meta.right_index
-    end
-    local right_index = right_topline + ((display_row or left_topline) - left_topline)
-    if right_index >= 1 and right_index <= #right_lines then
-      return right_index
-    end
-    return nil
-  end
-  for _, p in ipairs(paths) do
-    if p.kind == "add" and p.embedded_in_change then
-      if p.origin_left_index then
-        embedded_add_origin_left_indexes[p.origin_left_index] = true
-      end
-      if p.target_start_index and p.target_end_index then
-        embedded_add_terminal_right_indexes[p.target_end_index] = true
-      end
-    elseif p.kind == "change" then
-      if p.start_left_index and p.end_left_index then
-        for row = p.start_left_index, p.end_left_index do
-          change_number_left_indexes[row] = true
-        end
-      end
-      if p.start_right_index and p.end_right_index then
-        for row = p.start_right_index, p.end_right_index do
-          change_number_right_indexes[row] = true
-        end
-      end
-    end
-  end
-  for _, p in ipairs(route_paths) do
-    if p.kind == "change" and p.viewport_solid_start and p.viewport_solid_end then
-      for row = p.viewport_solid_start, p.viewport_solid_end do
-        local left_index = display_row_to_left_index(row)
-        if left_index then
-          solid_change_number_left_indexes[left_index] = true
-        end
-        local right_index = display_row_to_right_index(row)
-        if right_index then
-          solid_change_number_right_indexes[right_index] = true
-        end
-      end
-    end
-  end
-
-  -- The connector buffer owns the aligned display model and must include the
-  -- same scroll padding as the source panes so routes can remain visible while
-  -- either side is scrolled past real EOF.
-  local connector_height = math.max(#self.view.line_meta, #left_lines, #right_lines)
-  local connector_lines = {}
-  for i = 1, connector_height do
-    -- Initialize with spaces for the full gutter width
-    connector_lines[i] = string.rep(" ", self.gutter_width)
-  end
-
-  local right_stage_markers = {}
-  if (self.right_stage_marker_width or 0) > 0 then
-    local indicator = ((self.config.actions or {}).staged_indicator or {})
-    local staged_glyph = indicator.staged or "▣"
-    local unstaged_glyph = indicator.unstaged or "□"
-    local staged_states = self.staged_chunk_states or {}
-
-    local function marker_for_chunk(chunk_index)
-      return staged_states[chunk_index] and staged_glyph or unstaged_glyph
-    end
-
-    local function mark_right(row, chunk_index)
-      if row and row >= 1 and row <= #right_lines then
-        right_stage_markers[row] = marker_for_chunk(chunk_index)
-      end
-    end
-
-    local function right_index_for_connector_row(row)
-      return display_row_to_right_index(row)
-    end
-
-    local function mark_right_connector_row(row, chunk_index)
-      mark_right(right_index_for_connector_row(row), chunk_index)
-    end
-
-    for _, p in ipairs(route_paths) do
-      if p.kind == "add" and not p.embedded_in_change and not p.hide_triangle and not p.overflow_hidden then
-        mark_right(p.target_start_index, p.chunk)
-      elseif p.kind == "delete" and not p.hide_triangle and not p.overflow_hidden then
-        mark_right(p.origin_right_index, p.chunk)
-        mark_right_connector_row(p.origin_display_row or p.target_start_index, p.chunk)
-      elseif p.kind == "change" then
-        for _, edge in ipairs(p.viewport_change_edges or {}) do
-          if edge.side == "right" then
-            mark_right(right_index_for_connector_row(edge.row), p.chunk)
-          end
-        end
-        for _, link in ipairs(p.viewport_change_links or {}) do
-          if not link.overflow_hidden and link.from_visible then
-            if link.from_side == "right" then
-              mark_right(right_index_for_connector_row(link.from_row), p.chunk)
-            end
-          end
-          if not link.overflow_hidden and link.to_visible then
-            if link.to_side == "right" then
-              mark_right(right_index_for_connector_row(link.to_row), p.chunk)
-            end
-          end
-        end
-        if p.viewport_solid_start and p.viewport_solid_end then
-          mark_right(right_index_for_connector_row(p.viewport_solid_start), p.chunk)
-          mark_right(right_index_for_connector_row(p.viewport_solid_end), p.chunk)
-        end
-      end
-    end
-  end
-
-  -- Left and right buffers now have different line counts
-  local left_num_lines = {}
-  for i = 1, #left_lines do
-    left_num_lines[i] = string.rep(" ", self.left_number_pane_width)
-  end
-  local right_num_lines = {}
-  for i = 1, #right_lines do
-    right_num_lines[i] = string.rep(" ", self.right_number_pane_width)
-  end
-  for _, meta in ipairs(self.view.line_meta) do
-    if meta.left_index then
-      if (self.left_stage_marker_width or 0) > 0 then
-        left_num_lines[meta.left_index] = " "
-          .. format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false)
-          .. " "
-      else
-        left_num_lines[meta.left_index] = format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false) .. " "
-      end
-    end
-    if meta.right_index then
-      if self.mirror_connector_sides then
-        right_num_lines[meta.right_index] = format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, false) .. " "
-      elseif (self.right_stage_marker_width or 0) > 0 then
-        right_num_lines[meta.right_index] = " "
-          .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
-          .. (right_stage_markers[meta.right_index] or " ")
-      else
-        right_num_lines[meta.right_index] = " " .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
-      end
-    end
-  end
-
-  if not self.preserve_left_buffer_lines then
-    vim.api.nvim_buf_set_lines(self.left_buf, 0, -1, false, left_lines)
-  end
-  vim.api.nvim_buf_set_lines(self.left_num_buf, 0, -1, false, left_num_lines)
-  if not self.preserve_right_buffer_lines then
-    vim.api.nvim_buf_set_lines(self.right_buf, 0, -1, false, right_lines)
-  end
-  vim.api.nvim_buf_set_lines(self.right_num_buf, 0, -1, false, right_num_lines)
-  vim.api.nvim_buf_set_lines(self.connector_buf, 0, -1, false, connector_lines)
-
-  set_buffer_options(self.left_buf, { modifiable = false })
-  set_buffer_options(self.left_num_buf, { modifiable = false })
-  set_buffer_options(self.right_buf, { modifiable = self.right.editable ~= nil })
-  set_buffer_options(self.right_num_buf, { modifiable = false })
-  set_buffer_options(self.connector_buf, { modifiable = false })
-
-  vim.api.nvim_buf_clear_namespace(self.left_buf, self.ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.left_num_buf, self.ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_buf, self.ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.connector_buf, self.ns, 0, -1)
-
-  -- Clear extmark namespace for full-width backgrounds
-  self.extmark_ns = self.extmark_ns or vim.api.nvim_create_namespace("DiffBanditExtmarks" .. self.id)
-  vim.api.nvim_buf_clear_namespace(self.left_buf, self.extmark_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.left_num_buf, self.extmark_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_buf, self.extmark_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.extmark_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.connector_buf, self.extmark_ns, 0, -1)
-
-  -- Clear namespace for line number virtual text
-  self.linenum_ns = self.linenum_ns or vim.api.nvim_create_namespace("DiffBanditLineNums" .. self.id)
-  vim.api.nvim_buf_clear_namespace(self.left_num_buf, self.linenum_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.connector_buf, self.linenum_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.linenum_ns, 0, -1)
-
-  render_empty_source_notice(self.left_buf, self.extmark_ns, self.left)
-  render_empty_source_notice(self.right_buf, self.extmark_ns, self.right)
-
-  -- Apply highlights to left and right buffers (pane-wide backgrounds)
-  for _, meta in ipairs(self.view.line_meta) do
-    local left_hl = highlight_for_left(meta)
-    local right_hl = highlight_for_right(meta)
-    local final_left_hl = left_hl
-    local final_right_hl = right_hl
-
-    if meta.filler_left and meta.kind ~= "context" then
-      final_left_hl = "DiffBanditPlaceholder"
-    end
-
-    if meta.filler_right and meta.kind ~= "context" then
-      final_right_hl = "DiffBanditPlaceholder"
-    end
-
-    -- IMPORTANT: do NOT apply a full-line background on change lines.
-    -- Range extmarks below own those rows so intra-line emphasis can override
-    -- the base change background on both panes.
-    local skip_left_line_hl = (meta.kind == "change" and not meta.filler_left)
-    if final_left_hl and meta.left_index and not skip_left_line_hl then
-      local left_row = meta.left_index - 1
-      vim.api.nvim_buf_set_extmark(self.left_buf, self.extmark_ns, left_row, 0, {
-        line_hl_group = final_left_hl,
-        hl_mode = "combine",
-      })
-    end
-    local skip_right_line_hl = (meta.kind == "change" and not meta.filler_right)
-    local skip_right_context_hl = self.suppress_right_context_highlights == true and meta.kind == "context"
-    if final_right_hl and meta.right_index and not skip_right_line_hl and not skip_right_context_hl then
-      local right_row = meta.right_index - 1
-      vim.api.nvim_buf_set_extmark(self.right_buf, self.extmark_ns, right_row, 0, {
-        line_hl_group = final_right_hl,
-        hl_mode = "combine",
-      })
-    end
-  end
-
-  -- Apply connector backgrounds and number-pane styling on the same compact
-  -- rows as their owner buffers.
-  local ctx_hl = "DiffBanditConnectorContext"
-
-  for row = 0, connector_height - 1 do
-    vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, ctx_hl, row, 0, -1)
-  end
-
-  local function add_origin_core_underline(origin_row, row, meta)
-    if meta.origin == "add" then
-      if row < 0 or row >= connector_height then
-        return
-      end
-      vim.api.nvim_buf_set_extmark(self.left_num_buf, self.linenum_ns, row, self:left_triangle_col(), {
-        virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
-        virt_text_pos = "overlay",
-      })
-      local right_index_at_row = right_topline + ((row + 1) - left_topline)
-      if add_origin_row_has_transition[origin_row]
-          and right_index_at_row >= 1
-          and right_index_at_row <= #right_lines then
-        vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, right_index_at_row - 1, self:right_triangle_col(), {
-          virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
-          virt_text_pos = "overlay",
-        })
-      end
-    end
-  end
-
-  for _, meta in ipairs(self.view.line_meta) do
-    if meta.left_index then
-      local row = meta.left_index - 1
-
-      local left_num_hl
-      if meta.origin == "add" and not embedded_add_origin_left_indexes[meta.left_index] then
-        left_num_hl = "DiffBanditLineNumberLeftUnderline"
-      elseif meta.kind == "delete" then
-        left_num_hl = "DiffBanditLineNumberLeftDelete"
-      elseif change_number_left_indexes[meta.left_index] then
-        left_num_hl = "DiffBanditLineNumberLeftChange"
-      else
-        left_num_hl = "DiffBanditLineNumberLeft"
-      end
-
-      vim.api.nvim_buf_add_highlight(self.left_num_buf, self.linenum_ns, left_num_hl, row,
-        self:left_number_text_start_col(), self:left_number_text_end_col())
-      if meta.kind == "delete" then
-        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", row,
-          self:left_number_text_start_col(), self:left_number_text_end_col())
-      elseif change_number_left_indexes[meta.left_index] then
-        local start_col = solid_change_number_left_indexes[meta.left_index] and 0 or self:left_number_text_start_col()
-        local end_col = solid_change_number_left_indexes[meta.left_index] and -1 or self:left_number_text_end_col()
-        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorChange", row, start_col, end_col)
-      end
-      if not embedded_add_origin_left_indexes[meta.left_index] then
-        add_origin_core_underline(meta.left_index, row, meta)
-      end
-    end
-
-    if meta.right_index then
-      local row = meta.right_index - 1
-
-      local is_delete_origin = meta.right_line and delete_origin_right_lines[meta.right_line] ~= nil
-      local right_num_hl
-      if is_delete_origin then
-        right_num_hl = "DiffBanditLineNumberRightUnderline"
-      elseif change_number_right_indexes[meta.right_index] then
-        right_num_hl = "DiffBanditLineNumberRightChange"
-      elseif meta.kind == "add" then
-        right_num_hl = "DiffBanditLineNumberRightAdd"
-      else
-        right_num_hl = "DiffBanditLineNumberRight"
-      end
-
-      if is_delete_origin then
-        vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, row, self:right_triangle_col(), {
-          virt_text = { { " ", "DiffBanditDeleteRightSeparatorConnector" } },
-          virt_text_pos = "overlay",
-        })
-      end
-
-      vim.api.nvim_buf_add_highlight(self.right_num_buf, self.linenum_ns, right_num_hl, row,
-        self:right_number_text_start_col(), self:right_number_text_end_col())
-      if change_number_right_indexes[meta.right_index] then
-        local start_col = solid_change_number_right_indexes[meta.right_index] and 0 or self:right_number_text_start_col()
-        local end_col = solid_change_number_right_indexes[meta.right_index] and -1 or self:right_number_text_end_col()
-        vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorChange", row, start_col, end_col)
-      elseif meta.kind == "add" then
-        vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", row,
-          self:right_number_text_start_col(), self:right_number_text_end_col())
-      end
-    end
-  end
-
-  -- Apply route-owned backgrounds. Add/delete fill now belongs to the
-  -- sidecar number panes; the connector core is reserved for routes.
-  for _, p in ipairs(paths) do
-    if p.kind == "add" and not p.embedded_in_change then
-      for right_index = p.target_start_index or p.display_start_row, p.target_end_index or p.display_end_row do
-        vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", right_index - 1,
-          self:right_number_text_start_col(), self:right_number_text_end_col())
-      end
-    elseif p.kind == "delete" then
-      for left_index = p.target_start_index or p.display_start_row, p.target_end_index or p.display_end_row do
-        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", left_index - 1,
-          self:left_number_text_start_col(), self:left_number_text_end_col())
-      end
-    end
-  end
-  for _, p in ipairs(route_paths) do
-    if p.kind == "change" and p.viewport_solid_start and p.viewport_solid_end then
-      for row = p.viewport_solid_start, p.viewport_solid_end do
-        if row >= 1 and row <= connector_height then
-          vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, "DiffBanditConnectorChange", row - 1, 0, -1)
-        end
-      end
-    end
-  end
-
-  -- Apply change/add-specific highlighting with intra-line spans
-  self.changed_spans_cache = self.changed_spans_cache or {}
-  for meta_idx, meta in ipairs(self.view.line_meta) do
-    local is_change = meta.kind == "change" and meta.left_index and meta.right_index
-    local not_filler = not meta.filler_left and not meta.filler_right
-    if is_change and not_filler then
-      local left_line = self.left.lines and self.left.lines[meta.left_line] or nil
-      local right_line = self.right.lines and self.right.lines[meta.right_line] or nil
-      if left_line and right_line then
-        local spans = self.changed_spans_cache[meta_idx]
-        if not spans then
-          spans = diff_mod.changed_spans(left_line, right_line)
-          self.changed_spans_cache[meta_idx] = spans
-        end
-        local row_l = meta.left_index - 1
-        local row_r = meta.right_index - 1
-
-        pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, row_l, 0, {
-          hl_group = "DiffBanditChangeLeft",
-          end_row = row_l,
-          end_col = #left_line,
-          hl_mode = "combine",
-          priority = 2500,
-        })
-        pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, row_l, #left_line, {
-          hl_group = "DiffBanditChangeLeft",
-          end_row = row_l + 1,
-          end_col = 0,
-          hl_eol = true,
-          hl_mode = "combine",
-          priority = 2500,
-        })
-        for _, sp in ipairs(spans.left or {}) do
-          local s, e = sp[1] - 1, sp[2]
-          pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, row_l, s, {
-            end_row = row_l,
-            end_col = e,
-            hl_group = "DiffBanditChangeEmphasis",
-            hl_mode = "combine",
-            priority = 8000,
-          })
-        end
-
-        local right_line_len = spans.right_len or #right_line
-        local has_change = spans.right_changes and #spans.right_changes > 0
-
-        do
-          -- Change (blue) part followed by added suffix (green)
-          local add_start = spans.add_start and (spans.add_start - 1) or right_line_len
-          add_start = math.max(0, math.min(add_start, right_line_len))
-
-          local blue_end = math.min(add_start, right_line_len)
-          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
-            end_row = row_r,
-            end_col = right_line_len,
-            hl_group = "DiffBanditChangeRight",
-            hl_mode = "combine",
-            priority = 2500,
-          })
-          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, right_line_len, {
-            end_row = row_r + 1,
-            end_col = 0,
-            hl_group = "DiffBanditChangeRight",
-            hl_eol = true,
-            hl_mode = "combine",
-            priority = 2500,
-          })
-          if has_change then
-            -- Word emphasis only within the blue change span
-            local emph_hl = "DiffBanditChangeEmphasis"
-            for _, sp in ipairs(spans.right_changes or {}) do
-              local s = sp[1] - 1
-              local e = math.min(sp[2], blue_end)
-              if s < e then
-                pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, s, {
-                  end_row = row_r,
-                  end_col = e,
-                  hl_group = emph_hl,
-                  hl_mode = right_text_hl_mode,
-                  priority = 8000,
-                })
-              end
-            end
-          end
-
-          -- Added suffix (green): from add_start to end-of-line, extend to window edge
-          if spans.add_start and add_start < right_line_len then
-            local add_hl = "DiffBanditAdd"
-            pcall(vim.api.nvim_buf_add_highlight, self.right_buf, self.ns, add_hl, row_r, add_start, right_line_len)
-            pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, right_line_len, {
-              end_row = row_r + 1,
-              end_col = 0,
-              hl_group = "DiffBanditAdd",
-              hl_eol = true,
-              hl_mode = "combine",
-              priority = 3000,
-            })
-          end
-        end
-      end
-    elseif meta.kind == "add" and meta.right_index and not meta.filler_right then
-      local row_r = meta.right_index - 1
-      local line_content = self.right.lines and self.right.lines[meta.right_line] or ""
-      local line_len = #line_content
-      local is_embedded_terminal = embedded_add_terminal_right_indexes[meta.right_index] == true
-      if is_embedded_terminal then
-        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
-          line_hl_group = "DiffBanditChangeRight",
-          hl_mode = "combine",
-          priority = 2400,
-        })
-        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
-          end_row = row_r,
-          end_col = line_len,
-          hl_group = "DiffBanditAdd",
-          hl_mode = right_text_hl_mode,
-          priority = 7000,
-        })
-        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, line_len, {
-          end_row = row_r + 1,
-          end_col = 0,
-          hl_group = "DiffBanditChangeRight",
-          hl_eol = true,
-          hl_mode = "combine",
-          priority = 6500,
-        })
-        local win_width = vim.api.nvim_win_get_width(self.right_win)
-        local text_width = vim.fn.strdisplaywidth(line_content)
-        local padding_len = math.max(0, win_width - text_width)
-        if padding_len > 0 then
-          pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, line_len, {
-            virt_text = { { string.rep(" ", padding_len), "DiffBanditChangeRight" } },
-            virt_text_pos = "inline",
-            priority = 6500,
-          })
-        end
-      else
-        -- Ensure added right-only lines are fully green, overriding any stray change spans.
-        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
-          end_row = row_r,
-          end_col = -1,
-          hl_group = "DiffBanditAdd",
-          hl_eol = true,
-          hl_mode = right_text_hl_mode,
-          priority = 7000,
-        })
-      end
-    end
-  end
-
-  -- Apply separator lines on ORIGIN row using native underline attributes.
-  for _, meta in ipairs(self.view.line_meta) do
-    if meta.origin == "add" and not embedded_add_origin_left_indexes[meta.left_index] then
-      -- Left buffer: underline on ORIGIN row
-      if meta.left_index then
-        local origin_row = meta.left_index - 1
-        local line_content = vim.api.nvim_buf_get_lines(self.left_buf, origin_row, origin_row + 1, false)[1] or ""
-        local text_len = #line_content
-
-        -- Native underline on text portion
-        if text_len > 0 then
-          pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, origin_row, 0, {
-            end_col = text_len,
-            hl_group = "DiffBanditAddLeftSeparator",  -- underline=true, sp=add_bg
-            hl_mode = "combine",
-            priority = 100,
-          })
-        end
-
-        local win_width = vim.api.nvim_win_get_width(self.left_win)
-        local text_width = vim.fn.strdisplaywidth(line_content)
-        local padding_len = math.max(0, win_width - text_width)
-        if padding_len > 0 then
-          pcall(vim.api.nvim_buf_set_extmark, self.left_buf, self.extmark_ns, origin_row, 0, {
-            virt_text = { { string.rep(" ", padding_len), "DiffBanditAddLeftSeparator" } },
-            virt_text_win_col = text_width,
-            priority = 100,
-          })
-        end
-      end
-      -- Connector underline is handled in the line numbers rendering (combined_virt)
-    end
-  end
-
-  -- Render delete origin underlines in right buffer using delete_origin_right_lines map
-  -- This ensures underlines appear at the correct right line numbers
-  for right_line_num, _ in pairs(delete_origin_right_lines) do
-    -- Right buffer row is right_line_num - 1 (0-indexed)
-    local origin_row = right_line_num - 1
-    if origin_row >= 0 and origin_row < #right_lines then
-      local line_content = vim.api.nvim_buf_get_lines(self.right_buf, origin_row, origin_row + 1, false)[1] or ""
-      local text_len = #line_content
-
-      -- Native underline on text portion
-      if text_len > 0 then
-        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, 0, {
-          end_col = text_len,
-          hl_group = "DiffBanditDeleteRightSeparator",  -- underline=true, sp=delete_bg
-          hl_mode = right_text_hl_mode,
-          priority = 150,  -- Higher priority to override any existing highlights
-        })
-      end
-
-      local win_width = vim.api.nvim_win_get_width(self.right_win)
-      local text_width = vim.fn.strdisplaywidth(line_content)
-      local padding_len = math.max(0, win_width - text_width)
-      if padding_len > 0 then
-        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, origin_row, 0, {
-          virt_text = { { string.rep(" ", padding_len), "DiffBanditDeleteRightSeparator" } },
-          virt_text_win_col = text_width,
-          priority = 150,
-        })
-      end
-    end
-  end
-
-  if self.current_chunk > 0 then
-    local chunk = self.view.chunks[self.current_chunk]
-    if chunk then
-      self:highlight_active_chunk(chunk)
-    end
-  end
-
-  -- Render planned connector routes. Each planned route is limited to one
-  -- source horizontal, one vertical rail, and one destination horizontal.
-  vim.api.nvim_buf_clear_namespace(self.left_num_buf, self.path_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.connector_buf, self.path_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.path_ns, 0, -1)
-
-  local function render_core_underline(row, start_col, end_col, hl_group)
-    if row < 1 or row > connector_height or end_col < start_col then
-      return
-    end
-    start_col = math.max(0, start_col)
-    end_col = math.min(self.connector_core_width - 1, end_col)
-    if self.mirror_connector_sides then
-      start_col, end_col = self.connector_core_width - 1 - end_col, self.connector_core_width - 1 - start_col
-    end
-    if end_col < start_col then
-      return
-    end
-    vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, start_col, {
-      virt_text = { { string.rep(" ", end_col - start_col + 1), hl_group } },
-      virt_text_pos = "overlay",
-    })
-  end
-
-  local function render_core_vertical(row, col, hl_group)
-    if row < 1 or row > connector_height or col < 0 or col >= self.connector_core_width then
-      return
-    end
-    if self.mirror_connector_sides then
-      col = self.connector_core_width - 1 - col
-    end
-    vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, col, {
-      virt_text = { { "│", hl_group } },
-      virt_text_pos = "overlay",
-    })
-  end
-
-  local function render_change_wedge(side, row, glyph)
-    if row < 1 or row > connector_height then
-      return
-    end
-    glyph = self:display_glyph(glyph)
-    if side == "left" then
-      local left_index = row
-      if left_index and left_index >= 1 and left_index <= #left_lines then
-        vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, left_index - 1, self:left_triangle_col(), {
-          virt_text = { { glyph, "DiffBanditConnectorExpansionChange" } },
-          virt_text_pos = "overlay",
-        })
-      end
-    else
-      local right_index = right_topline + (row - left_topline)
-      if right_index >= 1 and right_index <= #right_lines then
-        vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, right_index - 1, self:right_triangle_col(), {
-          virt_text = { { glyph, "DiffBanditConnectorExpansionChange" } },
-          virt_text_pos = "overlay",
-        })
-      end
-    end
-  end
-
-  for _, p in ipairs(route_paths) do
-    if p.kind == "change" and p.viewport_change_edges then
-      for _, edge in ipairs(p.viewport_change_edges) do
-        render_change_wedge(edge.side, edge.row, edge.glyph)
-      end
-    end
-    if p.kind == "change" and p.viewport_change_links then
-      for _, link in ipairs(p.viewport_change_links) do
-        if not link.overflow_hidden and link.from_visible then
-          render_change_wedge(link.from_side, link.from_row, link.from_glyph)
-        end
-        if not link.overflow_hidden and link.to_visible then
-          render_change_wedge(link.to_side, link.to_row, link.to_glyph)
-        end
-
-      end
-    end
-  end
-
-  for _, p in ipairs(route_paths) do
-    if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change and not p.overflow_hidden then
-      local expansion_hl
-      if p.kind == "add" then
-        expansion_hl = "DiffBanditConnectorExpansionAdd"
-        if (p.triangle_display_row or p.display_start_row) == p.origin_display_row
-            or p.connect_tail_on_triangle_row then
-          expansion_hl = "DiffBanditConnectorExpansionAddUnderline"
-        end
-      else
-        expansion_hl = "DiffBanditConnectorExpansionDelete"
-      end
-
-      local glyph = p.triangle_glyph or ((p.kind == "add") and "◥" or "◤")
-      glyph = self:display_glyph(glyph)
-      if not p.hide_triangle then
-        if p.kind == "add" and p.target_start_index then
-          vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, p.target_start_index - 1, self:right_triangle_col(), {
-            virt_text = { { glyph, expansion_hl } },
-            virt_text_pos = "overlay",
-          })
-        elseif p.kind == "delete" and p.target_start_index then
-          vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, p.target_start_index - 1, self:left_triangle_col(), {
-            virt_text = { { glyph, expansion_hl } },
-            virt_text_pos = "overlay",
-          })
-        end
-      end
-    end
-  end
-
-  for _, planned_route in ipairs(route_plan.routes or {}) do
-    for _, segment in ipairs(planned_route.segments or {}) do
-      if segment.type == "horizontal" then
-        render_core_underline(segment.row, segment.start_col, segment.end_col, segment.kind)
-      elseif segment.type == "vertical" then
-        for row = segment.start_row, segment.end_row do
-          render_core_vertical(row, segment.col, segment.kind)
-        end
-      end
-    end
-  end
-
-  self:render_status_headers()
-  self:render_overviews()
+  session_render.render(self)
 end
 
 function Session:clear_active_chunk()
@@ -3119,7 +1260,7 @@ function Session:goto_queue_file(index, chunk_position, opts)
   local step = index >= current and 1 or -1
   local sources, resolved_index, err = self:load_queue_sources(index, step)
   if not sources then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.INFO)
+    nvim.notify_info(err)
     self:reset_pending_file_boundary()
     return false
   end
@@ -3128,7 +1269,7 @@ function Session:goto_queue_file(index, chunk_position, opts)
   local focused_win = opts.preserve_focus and vim.api.nvim_get_current_win() or nil
   local ok, replace_err = self:replace_sources(sources, { chunk_position = chunk_position })
   if not ok then
-    vim.notify("DiffBandit: " .. replace_err, vim.log.levels.ERROR)
+    nvim.notify_error(replace_err)
     return false
   end
   if self.panel and not opts.skip_panel_render then
@@ -3151,7 +1292,7 @@ function Session:open_merge_file(index, opts)
   local Merge = require("diffbandit.merge")
   local data, err = Merge.load(queue.root, entry.path, self.config)
   if not data then
-    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(err))
     return false
   end
   queue.index = index
@@ -3166,7 +1307,7 @@ function Session:open_merge_file(index, opts)
     panel_amend = self.panel and self.panel.amend == true,
   })
   if not session then
-    vim.notify("DiffBandit: " .. tostring(start_err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(start_err))
     return false
   end
   if opts.navigate_change == "prev" then
@@ -3185,7 +1326,7 @@ end
 
 function Session:goto_next_file()
   if not self.file_queue then
-    vim.notify("DiffBandit: no changed file queue configured", vim.log.levels.INFO)
+    nvim.notify_info("no changed file queue configured")
     return
   end
   self:reset_pending_file_boundary()
@@ -3194,7 +1335,7 @@ end
 
 function Session:goto_prev_file()
   if not self.file_queue then
-    vim.notify("DiffBandit: no changed file queue configured", vim.log.levels.INFO)
+    nvim.notify_info("no changed file queue configured")
     return
   end
   self:reset_pending_file_boundary()
@@ -3241,11 +1382,11 @@ function Session:refresh_git_queue(preferred_path, refresh_opts)
 end
 
 function Session:set_amend_mode(enabled)
-  return panel_host.set_amend_mode(self, enabled)
+  return amend_mode.set_amend_mode(self, enabled)
 end
 
 function Session:clear_amend_mode()
-  panel_host.clear_amend_mode(self)
+  amend_mode.clear_amend_mode(self)
 end
 
 function Session:ensure_panel_buffers()
@@ -3279,18 +1420,15 @@ end
 function Session:show_commit_panel(opts)
   opts = opts or {}
   if not self.file_queue or self.file_queue.kind ~= "git" then
-    vim.notify("DiffBandit: commit panel is only available for Git diff sessions", vim.log.levels.INFO)
+    nvim.notify_info("commit panel is only available for Git diff sessions")
     return false
   end
   self:ensure_panel_buffers()
-  if self.panel.visible
-      and self.panel.nav_win and vim.api.nvim_win_is_valid(self.panel.nav_win)
-      and self.panel.commit_win and vim.api.nvim_win_is_valid(self.panel.commit_win) then
+  if panel_mod.is_open(self) then
     panel_mod.focus_nav(self)
     return true
   end
 
-  local panel_config = (((self.config or {}).git or {}).panel or {})
   local anchor = self.left_win
     or self.right_win
     or self.left_header_win
@@ -3299,37 +1437,7 @@ function Session:show_commit_panel(opts)
     return false
   end
 
-  local nav_win = vim.api.nvim_open_win(self.panel.nav_buf, false, {
-    split = "left",
-    win = anchor,
-    width = panel_config.width or 42,
-  })
-  local commit_win = vim.api.nvim_open_win(self.panel.commit_buf, false, {
-    split = "below",
-    win = nav_win,
-    height = panel_config.commit_height or 10,
-  })
-  self.panel.nav_win = nav_win
-  self.panel.commit_win = commit_win
-  self.panel.visible = true
-
-  local split_winhl = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit"
-  local panel_winhl = split_winhl .. ",Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,CursorLine:DiffBanditCursorLine"
-  for _, win in ipairs({ nav_win, commit_win }) do
-    set_window_options(win, {
-      number = false,
-      relativenumber = false,
-      list = false,
-      cursorline = true,
-      wrap = false,
-      signcolumn = "no",
-      foldcolumn = "0",
-      winfixwidth = true,
-      winhl = panel_winhl,
-    })
-    set_window_width(win, panel_config.width or 42)
-  end
-  set_window_height(commit_win, panel_config.commit_height or 10)
+  panel_mod.open_windows(self, anchor)
   if opts.select_current_file then
     panel_mod.attach(self, {
       initial_selection = self.file_queue_index or self.file_queue.index or 1,
@@ -3345,7 +1453,7 @@ end
 
 function Session:focus_commit_panel_for_current_file()
   if not self.file_queue or self.file_queue.kind ~= "git" then
-    vim.notify("DiffBandit: commit panel is only available for Git diff sessions", vim.log.levels.INFO)
+    nvim.notify_info("commit panel is only available for Git diff sessions")
     return false
   end
   local index = self.file_queue_index or self.file_queue.index or 1
@@ -3392,7 +1500,7 @@ function Session:confirm_file_boundary(direction)
   if target < 1 or target > count then
     self:reset_pending_file_boundary()
     local label = direction == "next" and "last" or "first"
-    vim.notify("DiffBandit: already at " .. label .. " changed file", vim.log.levels.INFO)
+    nvim.notify_info("already at " .. label .. " changed file")
     return true
   end
 
@@ -3409,9 +1517,9 @@ function Session:confirm_file_boundary(direction)
   }
 
   if direction == "next" then
-    vim.notify("DiffBandit: end of this file; press ]c again for next changed file", vim.log.levels.INFO)
+    nvim.notify_info("end of this file; press ]c again for next changed file")
   else
-    vim.notify("DiffBandit: start of this file; press [c again for previous changed file", vim.log.levels.INFO)
+    nvim.notify_info("start of this file; press [c again for previous changed file")
   end
   return true
 end
@@ -3425,10 +1533,10 @@ function Session:prompt_next_file()
       if type(navigation.on_request_next_file) == "function" then
         local ok, err = pcall(navigation.on_request_next_file, self)
         if not ok then
-          vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
+          nvim.notify_error(err)
         end
       else
-        vim.notify("DiffBandit: no next file handler configured", vim.log.levels.INFO)
+        nvim.notify_info("no next file handler configured")
       end
     end
   end)
@@ -3456,7 +1564,7 @@ function Session:goto_prev_chunk()
     if self:confirm_file_boundary("prev") then
       return
     end
-    vim.notify("DiffBandit: already at first change", vim.log.levels.INFO)
+    nvim.notify_info("already at first change")
     return
   end
   self:goto_chunk(self.current_chunk - 1)
@@ -3464,7 +1572,7 @@ end
 
 local function notify_action_result(ok, err)
   if not ok and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.INFO)
+    nvim.notify_info(err)
   end
   return ok, err
 end
@@ -3476,32 +1584,19 @@ function Session:after_git_action(ok)
   end
 end
 
-function Session:toggle_stage_hunk()
-  self:after_git_action(notify_action_result(actions.toggle_stage(self)))
-end
-
-function Session:stage_hunk()
-  self:after_git_action(notify_action_result(actions.stage(self)))
-end
-
-function Session:unstage_hunk()
-  self:after_git_action(notify_action_result(actions.unstage(self)))
-end
-
-function Session:discard_hunk()
-  self:after_git_action(notify_action_result(actions.discard(self)))
-end
-
-function Session:apply_left_hunk()
-  self:after_git_action(notify_action_result(actions.apply_left(self)))
-end
-
-function Session:apply_right_hunk()
-  self:after_git_action(notify_action_result(actions.apply_right(self)))
-end
-
-function Session:undo_action()
-  self:after_git_action(notify_action_result(actions.undo(self)))
+-- Each wrapper runs the action, notifies on failure, and refreshes the panel queue.
+for method, action in pairs({
+  toggle_stage_hunk = "toggle_stage",
+  stage_hunk = "stage",
+  unstage_hunk = "unstage",
+  discard_hunk = "discard",
+  apply_left_hunk = "apply_left",
+  apply_right_hunk = "apply_right",
+  undo_action = "undo",
+}) do
+  Session[method] = function(self)
+    self:after_git_action(notify_action_result(actions[action](self)))
+  end
 end
 
 local function buffer_has_undo(bufnr)

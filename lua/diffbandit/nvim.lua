@@ -1,5 +1,21 @@
 local M = {}
 
+local function notify(msg, level, prefix)
+  vim.notify((prefix or "DiffBandit") .. ": " .. msg, level)
+end
+
+function M.notify_error(msg, prefix)
+  notify(msg, vim.log.levels.ERROR, prefix)
+end
+
+function M.notify_info(msg, prefix)
+  notify(msg, vim.log.levels.INFO, prefix)
+end
+
+function M.notify_warn(msg, prefix)
+  notify(msg, vim.log.levels.WARN, prefix)
+end
+
 function M.set_buffer_options(buf, opts)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return

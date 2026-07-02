@@ -1,3 +1,4 @@
+local nvim = require("diffbandit.nvim")
 local M = {}
 
 function M.load_sources(host, index, step)
@@ -13,7 +14,7 @@ function M.load_sources(host, index, step)
     if loaded and loaded.left and loaded.right then
       return { left = loaded.left, right = loaded.right }, current, nil
     end
-    vim.notify("DiffBandit: skipping " .. tostring(err or "unreadable git file"), vim.log.levels.WARN)
+    nvim.notify_warn("skipping " .. tostring(err or "unreadable git file"))
     current = current + step
   end
 

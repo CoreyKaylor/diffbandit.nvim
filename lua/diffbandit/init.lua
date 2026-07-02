@@ -1,9 +1,9 @@
+local nvim = require("diffbandit.nvim")
 local state = require("diffbandit.state")
 local diff_mod = require("diffbandit.diff")
 local Session = require("diffbandit.session")
 local highlights = require("diffbandit.highlights")
 local git_mod = require("diffbandit.git")
-local hex = require("diffbandit.hex")
 local source_mod = require("diffbandit.source")
 local text = require("diffbandit.text")
 local document = require("diffbandit.document")
@@ -11,38 +11,37 @@ local CommitPanel = require("diffbandit.commit_panel")
 local Merge = require("diffbandit.merge")
 local Folder = require("diffbandit.folder")
 local git_workflows = require("diffbandit.git_workflows")
+local queue_host = require("diffbandit.queue_host")
+local config_mod = require("diffbandit.config")
 
 local M = {}
 
-local highlights_ready = false
-local theme_augroup = nil
-
 local function configure_theme_refresh(config)
-  if theme_augroup then
-    pcall(vim.api.nvim_del_augroup_by_id, theme_augroup)
-    theme_augroup = nil
+  if state.theme_augroup then
+    pcall(vim.api.nvim_del_augroup_by_id, state.theme_augroup)
+    state.theme_augroup = nil
   end
 
-  local theme = (((config or {}).ui or {}).theme or {})
+  local theme = config_mod.section(config, "ui", "theme")
   if theme.auto_refresh == false then
     return
   end
 
-  theme_augroup = vim.api.nvim_create_augroup("DiffBanditTheme", { clear = true })
+  state.theme_augroup = vim.api.nvim_create_augroup("DiffBanditTheme", { clear = true })
   vim.api.nvim_create_autocmd("ColorScheme", {
-    group = theme_augroup,
+    group = state.theme_augroup,
     callback = function()
       highlights.apply(state.get_config())
-      highlights_ready = true
+      state.highlights_ready = true
     end,
   })
 end
 
 local function ensure_highlights(config)
-  if not highlights_ready then
+  if not state.highlights_ready then
     highlights.apply(config or state.get_config())
     configure_theme_refresh(config or state.get_config())
-    highlights_ready = true
+    state.highlights_ready = true
   end
 end
 
@@ -50,94 +49,8 @@ function M.setup(opts)
   local config = state.set_config(opts)
   highlights.apply(config)
   configure_theme_refresh(config)
-  highlights_ready = true
+  state.highlights_ready = true
   return config
-end
-
-local function read_file_raw(path)
-  local uv = vim.uv or vim.loop
-  local stat = uv.fs_stat(path)
-  if not stat then
-    return nil, string.format("Unable to read file: %s", path)
-  end
-  local fd, open_err = uv.fs_open(path, "r", 438)
-  if not fd then
-    return nil, tostring(open_err or ("Unable to open file: " .. path))
-  end
-  local data, read_err = uv.fs_read(fd, stat.size, 0)
-  uv.fs_close(fd)
-  if data == nil then
-    return nil, tostring(read_err or ("Unable to read file: " .. path))
-  end
-  return data, nil
-end
-
-local function source_from_hex_file(path, label, text, config)
-  local dump = hex.dump(text or "", ((config or {}).ui or {}).hex or {})
-  return {
-    path = path,
-    label = label or path,
-    lines = dump.lines,
-    text = dump.text,
-    filetype = "diffbandit-hex",
-    display_numbers = dump.display_numbers,
-    display_number_width = dump.display_number_width,
-    binary_hex = true,
-    hex_total_bytes = dump.total_bytes,
-    hex_visible_bytes = dump.visible_bytes,
-    hex_truncated = dump.truncated,
-  }
-end
-
-local source_from_text = source_mod.from_text
-
-local function make_source_from_file(path, label, config)
-  local raw, raw_err = read_file_raw(path)
-  if not raw then
-    return nil, raw_err
-  end
-  local hex_config = ((config or {}).ui or {}).hex or {}
-  if hex.is_binary(raw) then
-    if hex_config.enabled ~= false then
-      return source_from_hex_file(path, label, raw, config)
-    end
-    return {
-      path = path,
-      label = label or path,
-      lines = { "[DiffBandit: binary file hidden]" },
-      text = "[DiffBandit: binary file hidden]\n",
-      filetype = nil,
-      binary_hidden = true,
-    }
-  end
-
-  local lines, text, err = diff_mod.read_file(path)
-  if not lines then
-    return nil, err
-  end
-
-  return {
-    path = path,
-    label = label or path,
-    lines = lines,
-    text = text,
-    filetype = source_mod.detect_filetype(path),
-  }
-end
-
-local function make_source_from_buffer(bufnr, label)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local value = text.to_text(lines)
-  local path = vim.api.nvim_buf_get_name(bufnr)
-  local filetype = vim.api.nvim_get_option_value("filetype", { buf = bufnr })
-
-  return {
-    path = path ~= "" and path or nil,
-    label = label or path or string.format("buffer:%d", bufnr),
-    lines = lines,
-    text = value,
-    filetype = filetype ~= "" and filetype or source_mod.detect_filetype(path),
-  }
 end
 
 local function start_session(left_source, right_source, opts)
@@ -162,35 +75,29 @@ end
 local function call_current_session(method)
   local session = current_session()
   if not session then
-    vim.notify("DiffBandit: no active DiffBandit session", vim.log.levels.INFO)
+    nvim.notify_info("no active DiffBandit session")
     return nil
   end
   if type(session[method]) ~= "function" then
-    vim.notify("DiffBandit: unsupported action " .. method, vim.log.levels.ERROR)
+    nvim.notify_error("unsupported action " .. method)
     return nil
   end
   return session[method](session)
 end
 
 local function load_queue_entry(queue, start_index, step)
-  local index = start_index
-  local count = #(queue.entries or {})
-  while index >= 1 and index <= count do
-    local loaded, err = queue.load(index)
-    if loaded and loaded.left and loaded.right then
-      queue.index = index
-      return loaded, nil
-    end
-    vim.notify("DiffBandit: skipping " .. tostring(err or "unreadable git file"), vim.log.levels.WARN)
-    index = index + step
+  local sources, index, err = queue_host.load_sources({ file_queue = queue }, start_index, step)
+  if not sources then
+    return nil, err
   end
-  return nil, "no readable changed file"
+  queue.index = index
+  return sources, nil
 end
 
 function M.files(left_path, right_path, opts)
   opts = opts or {}
   local config = state.get_config()
-  local left_source, left_err = make_source_from_file(left_path, opts.left_label, config)
+  local left_source, left_err = source_mod.from_file(left_path, opts.left_label, config)
   if not left_source then
     return nil, left_err
   end
@@ -198,7 +105,7 @@ function M.files(left_path, right_path, opts)
   local right_source, right_err = document.source_from_file_or_buffer(right_path, opts.right_label, {
     editable = { target = "file" },
   }, function()
-    return make_source_from_file(right_path, opts.right_label, config)
+    return source_mod.from_file(right_path, opts.right_label, config)
   end)
   if not right_source then
     return nil, right_err
@@ -209,8 +116,8 @@ end
 
 function M.buffers(bufnr_a, bufnr_b, opts)
   opts = opts or {}
-  local left_source = make_source_from_buffer(bufnr_a, opts.left_label)
-  local right_source = make_source_from_buffer(bufnr_b, opts.right_label)
+  local left_source = source_mod.from_buffer(bufnr_a, opts.left_label)
+  local right_source = source_mod.from_buffer(bufnr_b, opts.right_label)
   right_source.editable = {
     target = "buffer",
     bufnr = bufnr_b,
@@ -327,7 +234,7 @@ function M.git_compare_branches(opts)
     git_workflows.select_branch(root, "DiffBandit compare target", function(target)
       local session, err = M.git_compare(base, target, opts)
       if not session and err then
-        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+        nvim.notify_error(tostring(err))
       end
     end)
   end)
@@ -342,7 +249,7 @@ function M.git_log(opts)
     open_commit = function(rev, open_opts)
       local session, err = M.git_commit(rev, vim.tbl_extend("force", {}, opts, open_opts or {}))
       if not session and err then
-        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+        nvim.notify_error(tostring(err))
       end
     end,
   })
@@ -357,9 +264,9 @@ function M.git_checkout(branch, opts)
   local function checkout(selected)
     local ok, err = git_mod.checkout_branch(root, selected, opts)
     if ok then
-      vim.notify("DiffBandit: checked out " .. tostring(selected), vim.log.levels.INFO)
+      nvim.notify_info("checked out " .. tostring(selected))
     else
-      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+      nvim.notify_error(tostring(err))
     end
     return ok, err
   end
@@ -382,7 +289,7 @@ function M.git_menu(opts)
     changes = function(action_opts)
       local panel, err = M.commit_panel(action_opts)
       if not panel and err then
-        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+        nvim.notify_error(tostring(err))
       end
     end,
     compare = function(action_opts)
@@ -391,7 +298,7 @@ function M.git_menu(opts)
     log = function(action_opts)
       local browser, err = M.git_log(action_opts)
       if not browser and err then
-        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+        nvim.notify_error(tostring(err))
       end
     end,
     file_log = function(action_opts)
@@ -400,7 +307,7 @@ function M.git_menu(opts)
       action_opts.pathspecs = rel and rel ~= "" and { rel } or {}
       local browser, err = M.git_log(action_opts)
       if not browser and err then
-        vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+        nvim.notify_error(tostring(err))
       end
     end,
     checkout = function(action_opts)
@@ -441,9 +348,9 @@ local function start_folder_file_diff(folder_session, row, context)
   local left_source
   local right_source
   if row.left then
-    left_source = make_source_from_file(row.left.path, row.rel, config)
+    left_source = source_mod.from_file(row.left.path, row.rel, config)
   else
-    left_source = source_from_text("", row.rel, row.rel .. " (missing left)", {
+    left_source = source_mod.from_text("", row.rel, row.rel .. " (missing left)", {
       empty_reason = "missing from left folder",
     })
   end
@@ -451,9 +358,9 @@ local function start_folder_file_diff(folder_session, row, context)
     return nil, "unable to read left file"
   end
   if row.right then
-    right_source = make_source_from_file(row.right.path, row.rel, config)
+    right_source = source_mod.from_file(row.right.path, row.rel, config)
   else
-    right_source = source_from_text("", row.rel, row.rel .. " (missing right)", {
+    right_source = source_mod.from_text("", row.rel, row.rel .. " (missing right)", {
       empty_reason = "missing from right folder",
     })
   end
@@ -469,7 +376,7 @@ local function start_folder_file_diff(folder_session, row, context)
     },
   })
   if not session then
-    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(err))
     return nil, err
   end
   return session, nil

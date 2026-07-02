@@ -1,10 +1,11 @@
+local config_mod = require("diffbandit.config")
 local M = {}
 
 local ABSOLUTE_MIN_WIDTH = 3
 local DEFAULT_MAX_WIDTH = 24
 
 local function ui_config(config)
-  return (config or {}).ui or {}
+  return config_mod.section(config, "ui")
 end
 
 function M.minimum(config)

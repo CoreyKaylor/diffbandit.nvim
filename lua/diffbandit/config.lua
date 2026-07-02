@@ -159,6 +159,16 @@ function M.defaults()
   return vim.deepcopy(defaults)
 end
 
+-- Walk nested config keys, tolerating nil tables along the way:
+-- config.section(cfg, "ui", "status") == (((cfg or {}).ui or {}).status or {})
+function M.section(cfg, ...)
+  local node = cfg
+  for _, key in ipairs({ ... }) do
+    node = (node or {})[key]
+  end
+  return node or {}
+end
+
 function M.apply(user)
   if not user then
     return M.defaults()

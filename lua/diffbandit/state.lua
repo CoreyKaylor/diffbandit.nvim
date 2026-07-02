@@ -5,6 +5,10 @@ local State = {
   sessions = {},
   panels = {},
   _session_seq = 0,
+  -- Highlight bootstrap state owned by init.lua: whether highlight groups
+  -- have been applied, and the ColorScheme-refresh augroup id.
+  highlights_ready = false,
+  theme_augroup = nil,
 }
 
 function State.set_config(user)

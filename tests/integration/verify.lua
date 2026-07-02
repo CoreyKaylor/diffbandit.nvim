@@ -874,6 +874,17 @@ local function contains_any_glyph(lines, labels, glyphs)
 end
 
 local function plain_fragment_requirements(errors, lines)
+  -- Like require_plain_fragment but with a Lua pattern, so expectations can
+  -- stay agnostic to the computed connector core width (%s+ runs).
+  local function require_pattern_fragment(pattern, description)
+    for _, line in ipairs(lines) do
+      if strip_ansi(line):find(pattern) then
+        return
+      end
+    end
+    table.insert(errors, description)
+  end
+
   local function require_plain_fragment(fragment, description)
     for _, line in ipairs(lines) do
       if strip_ansi(line):find(fragment, 1, true) then
@@ -892,7 +903,7 @@ local function plain_fragment_requirements(errors, lines)
     end
   end
 
-  return require_plain_fragment, forbid_plain_fragment
+  return require_plain_fragment, forbid_plain_fragment, require_pattern_fragment
 end
 
 local function verify_git(lines, ansi_lines, phase)
@@ -1067,7 +1078,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add context 18", 1, true) then
         first_content = first_content or stripped
-      elseif first_content and stripped:find("│    │            │    │", 1, true) then
+      elseif first_content and stripped:find("│%s+│%s+│%s+│") then
         saw_blank_padding = true
       end
     end
@@ -1315,7 +1326,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
       if stripped:find("Added scroll A 50", 1, true) then
-        if stripped:find("│            │◢53", 1, true) then
+        if stripped:find("│%s+│◢53") then
           found_tail_terminal = true
         end
         if row_has_internal_connector_pipe(stripped) then
@@ -1355,7 +1366,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
       if stripped:find("Added scroll A 50", 1, true) then
-        if stripped:find("│            │◢53", 1, true) then
+        if stripped:find("│%s+│◢53") then
           found_tail_terminal = true
         end
         if row_has_internal_connector_pipe(stripped) then
@@ -1418,7 +1429,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
           and row_has_internal_connector_pipe(stripped) then
         found_a_origin_rail = true
       elseif stripped:find("Added scroll B 06", 1, true) then
-        if stripped:find("│            │◢63", 1, true) then
+        if stripped:find("│%s+│◢63") then
           found_b_tail_terminal = true
         end
         if row_has_internal_connector_pipe(stripped) then
@@ -2520,7 +2531,7 @@ end
 
 local function verify_scroll_changes(lines, ansi_lines, phase)
   local errors = {}
-  local require_plain_fragment = plain_fragment_requirements(errors, lines)
+  local require_plain_fragment, _, require_pattern_fragment = plain_fragment_requirements(errors, lines)
   local function require_solid_change_connector(label)
     if not ansi_lines then
       table.insert(errors, "ANSI capture missing; cannot verify solid change connector row")
@@ -2582,7 +2593,7 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
     table.insert(errors, "Left-pane change scroll should leave right pane stationary at the top context")
   end
   if phase == "right-diverged" then
-    require_plain_fragment("│  3 │            │◢7",
+    require_pattern_fragment("│  3 │%s+│◢7",
       "Expected right-diverged change route to dock the upper transition on the right number pane")
     local _, rail_line = find_plain_line(lines, { "Scroll change context 04", "│  4 │" })
     if not rail_line or not has_internal_connector_pipe(rail_line) then
@@ -2597,17 +2608,17 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
     if not rail_line or not has_internal_connector_pipe(rail_line) then
       table.insert(errors, "Expected left-diverged change route to draw a connector rail between shifted regions")
     end
-    require_plain_fragment("│  9 │            │◥5",
+    require_pattern_fragment("│  9 │%s+│◥5",
       "Expected left-diverged change route to dock the lower transition on the right number pane")
   elseif phase == "both-diverged" then
-    require_plain_fragment("│  4 │            │◢6",
+    require_pattern_fragment("│  4 │%s+│◢6",
       "Expected both-diverged change route to dock the upper right transition beside the overlap")
-    require_plain_fragment("│  5 │            │ 7",
+    require_pattern_fragment("│  5 │%s+│ 7",
       "Expected both-diverged change overlap row to remain solid without route lines")
     require_solid_change_connector("Old routed change A")
-    require_plain_fragment("│  6◤│            │ 8",
+    require_pattern_fragment("│  6◤│%s+│ 8",
       "Expected both-diverged change route to dock the lower left transition beside the overlap")
-    require_plain_fragment("│  7 │            │ 9",
+    require_pattern_fragment("│  7 │%s+│ 9",
       "Expected both-diverged change continuation to stay clear after the lower wedge row")
   end
 

@@ -1,4 +1,11 @@
 local diffbandit = require("diffbandit")
+local nvim = require("diffbandit.nvim")
+
+local function report(result, err)
+  if not result and err then
+    nvim.notify_error(err)
+  end
+end
 
 local function parse_git_args(args, defaults)
   local opts = vim.tbl_extend("force", {}, defaults or {})
@@ -85,17 +92,14 @@ end
 vim.api.nvim_create_user_command("DiffBandit", function(opts)
   local args = opts.fargs
   if #args < 2 then
-    vim.notify("DiffBandit: provide two file paths", vim.log.levels.ERROR)
+    nvim.notify_error("provide two file paths")
     return
   end
 
   local left = vim.fn.expand(args[1])
   local right = vim.fn.expand(args[2])
 
-  local session, err = diffbandit.files(left, right)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.files(left, right))
 end, {
   nargs = "+",
   complete = "file",
@@ -105,25 +109,22 @@ end, {
 vim.api.nvim_create_user_command("DiffBanditBuffers", function(opts)
   local args = opts.fargs
   if #args < 2 then
-    vim.notify("DiffBanditBuffers: provide two buffer numbers", vim.log.levels.ERROR)
+    nvim.notify_error("provide two buffer numbers", "DiffBanditBuffers")
     return
   end
 
   local bufnr_a = tonumber(args[1])
   local bufnr_b = tonumber(args[2])
   if not bufnr_a or not vim.api.nvim_buf_is_valid(bufnr_a) then
-    vim.notify("DiffBanditBuffers: invalid first buffer", vim.log.levels.ERROR)
+    nvim.notify_error("invalid first buffer", "DiffBanditBuffers")
     return
   end
   if not bufnr_b or not vim.api.nvim_buf_is_valid(bufnr_b) then
-    vim.notify("DiffBanditBuffers: invalid second buffer", vim.log.levels.ERROR)
+    nvim.notify_error("invalid second buffer", "DiffBanditBuffers")
     return
   end
 
-  local session, err = diffbandit.buffers(bufnr_a, bufnr_b)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.buffers(bufnr_a, bufnr_b))
 end, {
   nargs = "+",
   complete = function()
@@ -140,10 +141,7 @@ end, {
 
 vim.api.nvim_create_user_command("DiffBanditGit", function(opts)
   local git_opts = parse_git_args(opts.fargs, {})
-  local session, err = diffbandit.git(git_opts)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.git(git_opts))
 end, {
   nargs = "*",
   complete = "file",
@@ -157,10 +155,7 @@ vim.api.nvim_create_user_command("DiffBanditGitCurrent", function(opts)
     path = git_opts.pathspecs[1]
     git_opts.pathspecs = {}
   end
-  local session, err = diffbandit.git_file(path, git_opts)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.git_file(path, git_opts))
 end, {
   nargs = "*",
   complete = "file",
@@ -169,10 +164,7 @@ end, {
 
 vim.api.nvim_create_user_command("DiffBanditCommitPanel", function(opts)
   local git_opts = parse_git_args(opts.fargs, {})
-  local session, err = diffbandit.commit_panel(git_opts)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.commit_panel(git_opts))
 end, {
   nargs = "*",
   complete = "file",
@@ -181,10 +173,7 @@ end, {
 
 vim.api.nvim_create_user_command("DiffBanditGitMenu", function(opts)
   local git_opts = parse_git_args(opts.fargs, {})
-  local ok, err = diffbandit.git_menu(git_opts)
-  if not ok and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.git_menu(git_opts))
 end, {
   nargs = "*",
   complete = "file",
@@ -193,10 +182,7 @@ end, {
 
 vim.api.nvim_create_user_command("DiffBanditGitLog", function(opts)
   local log_opts = parse_log_args(opts.fargs)
-  local browser, err = diffbandit.git_log(log_opts)
-  if not browser and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.git_log(log_opts))
 end, {
   nargs = "*",
   complete = "file",
@@ -206,13 +192,10 @@ end, {
 vim.api.nvim_create_user_command("DiffBanditGitCommit", function(opts)
   local rev = opts.fargs[1]
   if not rev or rev == "" then
-    vim.notify("DiffBanditGitCommit: provide a revision", vim.log.levels.ERROR)
+    nvim.notify_error("provide a revision", "DiffBanditGitCommit")
     return
   end
-  local session, err = diffbandit.git_commit(rev)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.git_commit(rev))
 end, {
   nargs = 1,
   desc = "Open a read-only DiffBandit review for a commit",
@@ -221,26 +204,17 @@ end, {
 vim.api.nvim_create_user_command("DiffBanditGitCompare", function(opts)
   local base, target, compare_opts = parse_compare_args(opts.fargs)
   if not base or not target then
-    local ok, err = diffbandit.git_compare_branches(compare_opts)
-    if not ok and err then
-      vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-    end
+    report(diffbandit.git_compare_branches(compare_opts))
     return
   end
-  local session, err = diffbandit.git_compare(base, target, compare_opts)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.git_compare(base, target, compare_opts))
 end, {
   nargs = "*",
   desc = "Open a read-only DiffBandit comparison between two refs",
 })
 
 vim.api.nvim_create_user_command("DiffBanditGitCheckout", function(opts)
-  local ok, err = diffbandit.git_checkout(opts.fargs[1])
-  if not ok and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.git_checkout(opts.fargs[1]))
 end, {
   nargs = "?",
   desc = "Checkout a Git branch with DiffBandit safeguards",
@@ -248,10 +222,7 @@ end, {
 
 vim.api.nvim_create_user_command("DiffBanditMerge", function(opts)
   local path = opts.fargs[1]
-  local session, err = diffbandit.merge(path)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.merge(path))
 end, {
   nargs = "?",
   complete = "file",
@@ -261,60 +232,32 @@ end, {
 vim.api.nvim_create_user_command("DiffBanditFolderDiff", function(opts)
   local args = opts.fargs
   if #args < 2 then
-    vim.notify("DiffBanditFolderDiff: provide two folder paths", vim.log.levels.ERROR)
+    nvim.notify_error("provide two folder paths", "DiffBanditFolderDiff")
     return
   end
 
   local left = vim.fn.expand(args[1])
   local right = vim.fn.expand(args[2])
-  local session, err = diffbandit.folder_diff(left, right)
-  if not session and err then
-    vim.notify("DiffBandit: " .. err, vim.log.levels.ERROR)
-  end
+  report(diffbandit.folder_diff(left, right))
 end, {
   nargs = "+",
   complete = "dir",
   desc = "Open DiffBandit folder diff view",
 })
 
-vim.api.nvim_create_user_command("DiffBanditToggleStageHunk", function()
-  diffbandit.toggle_stage_hunk()
-end, {
-  desc = "Toggle staged state for the current DiffBandit Git hunk",
-})
+local hunk_commands = {
+  { "DiffBanditToggleStageHunk", "toggle_stage_hunk", "Toggle staged state for the current DiffBandit Git hunk" },
+  { "DiffBanditStageHunk", "stage_hunk", "Stage the current DiffBandit Git hunk" },
+  { "DiffBanditUnstageHunk", "unstage_hunk", "Unstage the current DiffBandit Git hunk" },
+  { "DiffBanditDiscardHunk", "discard_hunk", "Discard the current DiffBandit Git hunk" },
+  { "DiffBanditApplyLeftHunk", "apply_left_hunk", "Apply the left DiffBandit hunk side to the right target" },
+  { "DiffBanditApplyRightHunk", "apply_right_hunk", "Apply the right DiffBandit hunk side to the left target" },
+  { "DiffBanditUndo", "undo", "Undo the last DiffBandit action for the current file" },
+}
 
-vim.api.nvim_create_user_command("DiffBanditStageHunk", function()
-  diffbandit.stage_hunk()
-end, {
-  desc = "Stage the current DiffBandit Git hunk",
-})
-
-vim.api.nvim_create_user_command("DiffBanditUnstageHunk", function()
-  diffbandit.unstage_hunk()
-end, {
-  desc = "Unstage the current DiffBandit Git hunk",
-})
-
-vim.api.nvim_create_user_command("DiffBanditDiscardHunk", function()
-  diffbandit.discard_hunk()
-end, {
-  desc = "Discard the current DiffBandit Git hunk",
-})
-
-vim.api.nvim_create_user_command("DiffBanditApplyLeftHunk", function()
-  diffbandit.apply_left_hunk()
-end, {
-  desc = "Apply the left DiffBandit hunk side to the right target",
-})
-
-vim.api.nvim_create_user_command("DiffBanditApplyRightHunk", function()
-  diffbandit.apply_right_hunk()
-end, {
-  desc = "Apply the right DiffBandit hunk side to the left target",
-})
-
-vim.api.nvim_create_user_command("DiffBanditUndo", function()
-  diffbandit.undo()
-end, {
-  desc = "Undo the last DiffBandit action for the current file",
-})
+for _, command in ipairs(hunk_commands) do
+  local name, method, desc = command[1], command[2], command[3]
+  vim.api.nvim_create_user_command(name, function()
+    diffbandit[method]()
+  end, { desc = desc })
+end

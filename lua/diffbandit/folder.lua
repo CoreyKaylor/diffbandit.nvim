@@ -3,6 +3,8 @@ local folder_model = require("diffbandit.folder_model")
 local nvim = require("diffbandit.nvim")
 local process = require("diffbandit.process")
 local ui = require("diffbandit.ui")
+local layout = require("diffbandit.layout")
+local config_mod = require("diffbandit.config")
 
 local Folder = {}
 Folder.__index = Folder
@@ -56,41 +58,8 @@ local function normalize_root(path)
   return expanded, nil
 end
 
-local function join_path(root, rel)
-  if not rel or rel == "" then
-    return root
-  end
-  return root .. "/" .. rel
-end
-
-local function path_depth(rel)
-  if not rel or rel == "" then
-    return 0
-  end
-  local depth = 0
-  for _ in rel:gmatch("/") do
-    depth = depth + 1
-  end
-  return depth
-end
-
-local function basename(rel)
-  if not rel or rel == "" then
-    return ""
-  end
-  return rel:match("([^/]+)$") or rel
-end
-
-local function parent_rel(rel)
-  if not rel or rel == "" then
-    return nil
-  end
-  local parent = rel:match("^(.*)/[^/]+$")
-  if parent == "" then
-    return nil
-  end
-  return parent
-end
+local parent_rel = folder_model.parent_rel
+local is_difference_status = folder_model.is_difference_status
 
 local function path_has_ancestor(rel, predicate)
   local parent = parent_rel(rel)
@@ -158,216 +127,8 @@ local function cache_key(meta)
   }, "\0")
 end
 
-local function should_skip(rel, opts)
-  local filters = opts or {}
-  local includes = filters.include or {}
-  local excludes = filters.exclude or {}
-  for _, pattern in ipairs(excludes) do
-    if pattern ~= "" and rel:find(pattern) then
-      return true
-    end
-  end
-  if #includes == 0 then
-    return false
-  end
-  for _, pattern in ipairs(includes) do
-    if pattern ~= "" and rel:find(pattern) then
-      return false
-    end
-  end
-  return true
-end
-
-local function scan_tree(root, opts)
-  local entries = {}
-
-  local function scan_dir(rel)
-    local dir = join_path(root, rel)
-    local handle, err = uv.fs_scandir(dir)
-    if not handle then
-      if rel ~= "" then
-        entries[rel] = {
-          rel = rel,
-          path = dir,
-          kind = "directory",
-          error = tostring(err or "unable to scan directory"),
-          stat = uv.fs_lstat(dir) or uv.fs_stat(dir),
-        }
-      end
-      return
-    end
-
-    while true do
-      local name, typ = uv.fs_scandir_next(handle)
-      if not name then
-        break
-      end
-      local child_rel = rel == "" and name or (rel .. "/" .. name)
-      if not should_skip(child_rel, opts) then
-        local full = join_path(root, child_rel)
-        local stat = uv.fs_lstat(full)
-        local kind = stat and stat.type or typ or "unknown"
-        local link_target
-        if kind == "link" then
-          link_target = uv.fs_readlink(full)
-        end
-        local stat_error = nil
-        if not stat then
-          stat_error = "unable to stat path"
-        end
-        entries[child_rel] = {
-          rel = child_rel,
-          path = full,
-          kind = kind,
-          stat = stat,
-          link_target = link_target,
-          error = stat_error,
-        }
-        if kind == "directory" then
-          scan_dir(child_rel)
-        end
-      end
-    end
-  end
-
-  scan_dir("")
-  return entries
-end
-
-local function compare_direct(left, right)
-  if left and left.error then
-    return "error"
-  end
-  if right and right.error then
-    return "error"
-  end
-  if left and not right then
-    return "left_only"
-  end
-  if right and not left then
-    return "right_only"
-  end
-  if not left and not right then
-    return "same"
-  end
-  if left.kind ~= right.kind then
-    return "type_mismatch"
-  end
-  if left.kind == "directory" then
-    return "same"
-  end
-  if left.kind == "link" then
-    return left.link_target == right.link_target and "same" or "different"
-  end
-  if left.kind ~= "file" then
-    return "same"
-  end
-  if (left.stat and left.stat.size) ~= (right.stat and right.stat.size) then
-    return "different"
-  end
-  return "pending"
-end
-
-local function sort_rows(rows)
-  table.sort(rows, function(a, b)
-    if a.rel == b.rel then
-      return false
-    end
-    local a_parts = vim.split(a.rel, "/", { plain = true })
-    local b_parts = vim.split(b.rel, "/", { plain = true })
-    local count = math.min(#a_parts, #b_parts)
-    for i = 1, count do
-      if a_parts[i] ~= b_parts[i] then
-        return a_parts[i] < b_parts[i]
-      end
-    end
-    return #a_parts < #b_parts
-  end)
-end
-
-local function build_rows(left_entries, right_entries)
-  local seen = {}
-  for rel in pairs(left_entries or {}) do
-    seen[rel] = true
-  end
-  for rel in pairs(right_entries or {}) do
-    seen[rel] = true
-  end
-
-  local rows = {}
-  local by_rel = {}
-  for rel in pairs(seen) do
-    local left = left_entries[rel]
-    local right = right_entries[rel]
-    local kind = (left and left.kind) or (right and right.kind) or "unknown"
-    local row = {
-      rel = rel,
-      name = basename(rel),
-      depth = path_depth(rel),
-      parent = parent_rel(rel),
-      left = left,
-      right = right,
-      kind = kind,
-      direct_status = compare_direct(left, right),
-      status = compare_direct(left, right),
-      diff_count = 0,
-      pending_count = 0,
-      child_count = 0,
-    }
-    rows[#rows + 1] = row
-    by_rel[rel] = row
-  end
-  sort_rows(rows)
-  local children_by_parent = {}
-  for _, row in ipairs(rows) do
-    local parent_key = row.parent or ""
-    children_by_parent[parent_key] = children_by_parent[parent_key] or {}
-    children_by_parent[parent_key][#children_by_parent[parent_key] + 1] = row
-    if row.parent and by_rel[row.parent] then
-      by_rel[row.parent].child_count = by_rel[row.parent].child_count + 1
-    end
-  end
-  for _, children in pairs(children_by_parent) do
-    for index, child in ipairs(children) do
-      child.sibling_last = index == #children
-    end
-  end
-  return rows, by_rel
-end
-
-local function is_difference_status(status)
-  return folder_model.is_difference_status(status)
-end
-
-local function recompute_aggregate(rows, by_rel)
-  for _, row in ipairs(rows or {}) do
-    row.status = row.direct_status
-    row.diff_count = is_difference_status(row.status) and 1 or 0
-    row.pending_count = row.status == "pending" and 1 or 0
-  end
-
-  for i = #(rows or {}), 1, -1 do
-    local row = rows[i]
-    local parent = row.parent and by_rel[row.parent]
-    if parent then
-      parent.diff_count = parent.diff_count + (row.diff_count or 0)
-      parent.pending_count = parent.pending_count + (row.pending_count or 0)
-    end
-  end
-
-  for _, row in ipairs(rows or {}) do
-    if row.kind == "directory" and row.direct_status == "same" then
-      if (row.diff_count or 0) > 0 then
-        row.status = "different"
-      elseif (row.pending_count or 0) > 0 then
-        row.status = "pending"
-      end
-    end
-  end
-end
-
 local function detect_backend(config)
-  local compare = (((config or {}).folder or {}).compare or {})
+  local compare = config_mod.section(config, "folder", "compare")
   local requested = compare.backend or "auto"
   local function executable(name)
     return vim.fn.executable(name) == 1
@@ -459,11 +220,11 @@ local function row_matches_filter(row, filter)
 end
 
 local function compare_config(self)
-  return (((self.config or {}).folder or {}).compare or {})
+  return config_mod.section(self.config, "folder", "compare")
 end
 
 local function folder_config(self)
-  return ((self.config or {}).folder or {})
+  return config_mod.section(self.config, "folder")
 end
 
 local function is_dir_row(row)
@@ -471,17 +232,7 @@ local function is_dir_row(row)
 end
 
 local function create_buffer(name)
-  local buf = vim.api.nvim_create_buf(false, true)
-  if name then
-    pcall(vim.api.nvim_buf_set_name, buf, name)
-  end
-  set_buffer_options(buf, {
-    buftype = "nofile",
-    swapfile = false,
-    modifiable = false,
-    bufhidden = "wipe",
-  })
-  return buf
+  return nvim.make_buffer(name, nil, { modifiable = false })
 end
 
 local function tree_prefix(row, by_rel)
@@ -652,20 +403,7 @@ function Folder:open_layout()
 
   local left_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(left_win, self.left_buf)
-  local ok_gutter, gutter_win = pcall(vim.api.nvim_open_win, self.gutter_buf, false, {
-    split = "right",
-    win = left_win,
-    width = self.gutter_width,
-    focusable = false,
-    mouse = false,
-  })
-  if not ok_gutter then
-    gutter_win = vim.api.nvim_open_win(self.gutter_buf, false, {
-      split = "right",
-      win = left_win,
-      width = self.gutter_width,
-    })
-  end
+  local gutter_win = layout.open_unfocusable_win(self.gutter_buf, left_win, { width = self.gutter_width })
   local right_win = vim.api.nvim_open_win(self.right_buf, false, {
     split = "right",
     win = gutter_win,
@@ -676,32 +414,10 @@ function Folder:open_layout()
   self.right_win = right_win
   self.last_tree_win = left_win
 
-  local split_winhl = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit"
-  local source_winhl = split_winhl .. ",CursorLine:DiffBanditCursorLine"
-  local gutter_winhl = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
-    .. split_winhl .. ",CursorLine:DiffBanditCursorLine"
   for _, win in ipairs({ left_win, right_win }) do
-    set_window_options(win, {
-      number = false,
-      relativenumber = false,
-      cursorline = true,
-      wrap = false,
-      signcolumn = "no",
-      foldcolumn = "0",
-      winhl = source_winhl,
-    })
+    set_window_options(win, layout.win_opts.source(nil, { foldcolumn = "0" }))
   end
-  set_window_options(gutter_win, {
-    number = false,
-    relativenumber = false,
-    list = false,
-    cursorline = false,
-    wrap = false,
-    signcolumn = "no",
-    foldcolumn = "0",
-    winfixwidth = true,
-    winhl = gutter_winhl,
-  })
+  set_window_options(gutter_win, layout.win_opts.gutter())
   set_window_width(gutter_win, self.gutter_width)
   self:resize_layout()
   vim.api.nvim_set_current_win(left_win)
@@ -747,9 +463,9 @@ function Folder:refresh()
   self.active_jobs = 0
   self.pending_batches = {}
   local filters = folder_config(self).filters or {}
-  self.left_entries = scan_tree(self.left_root, filters)
-  self.right_entries = scan_tree(self.right_root, filters)
-  self.rows, self.rows_by_rel = build_rows(self.left_entries, self.right_entries)
+  self.left_entries = folder_model.scan_tree(self.left_root, filters)
+  self.right_entries = folder_model.scan_tree(self.right_root, filters)
+  self.rows, self.rows_by_rel = folder_model.build_rows(self.left_entries, self.right_entries)
   for _, row in ipairs(self.rows or {}) do
     if row.kind == "directory" and self.expanded[row.rel] == nil then
       self.expanded[row.rel] = true
@@ -757,7 +473,7 @@ function Folder:refresh()
     row.expanded = self.expanded[row.rel] ~= false
   end
   self:apply_cached_comparisons()
-  recompute_aggregate(self.rows, self.rows_by_rel)
+  folder_model.recompute_aggregate(self.rows, self.rows_by_rel)
   self:build_visible_rows()
   self:render()
   self:schedule_compare_jobs()
@@ -912,7 +628,7 @@ function Folder:request_render()
     if self.disposed then
       return
     end
-    recompute_aggregate(self.rows, self.rows_by_rel)
+    folder_model.recompute_aggregate(self.rows, self.rows_by_rel)
     self:build_visible_rows()
     self:render()
   end, math.max(0, delay))
@@ -1035,7 +751,7 @@ function Folder:goto_diff(step)
     end
     index = index + step
   end
-  vim.notify("DiffBandit: no " .. (step > 0 and "next" or "previous") .. " folder difference", vim.log.levels.INFO)
+  nvim.notify_info("no " .. (step > 0 and "next" or "previous") .. " folder difference")
   return false
 end
 
@@ -1391,9 +1107,9 @@ function Folder:close()
 end
 
 Folder._private = {
-  scan_tree = scan_tree,
-  build_rows = build_rows,
-  recompute_aggregate = recompute_aggregate,
+  scan_tree = folder_model.scan_tree,
+  build_rows = folder_model.build_rows,
+  recompute_aggregate = folder_model.recompute_aggregate,
   detect_backend = detect_backend,
   parse_md5sum_z = parse_md5sum_z,
   parse_digest_lines = parse_digest_lines,

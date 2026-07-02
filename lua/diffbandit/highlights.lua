@@ -280,23 +280,13 @@ local function apply_diff_variants(config)
   })
 
   -- Separator line highlights for connector buffer (use fg for overlay)
-  apply_group("DiffBanditAddLeftSeparatorConnector", {
-    fg = add_bg,
-    underline = true,
-    sp = add_bg,
-  })
-
-  apply_group("DiffBanditDeleteRightSeparatorConnector", {
-    fg = delete_bg,
-    underline = true,
-    sp = delete_bg,
-  })
-
-  apply_group("DiffBanditChangeSeparatorConnector", {
-    fg = change_bg,
-    underline = true,
-    sp = change_bg,
-  })
+  for name, color in pairs({ AddLeft = add_bg, DeleteRight = delete_bg, Change = change_bg }) do
+    apply_group("DiffBandit" .. name .. "SeparatorConnector", {
+      fg = color,
+      underline = true,
+      sp = color,
+    })
+  end
 
   -- Filler/placeholder highlights
   apply_group("DiffBanditGap", {
@@ -315,50 +305,23 @@ local function apply_diff_variants(config)
     italic = true,
   })
 
-  -- Connector backgrounds (full-line) - these will be applied to entire connector lines
-  apply_group("DiffBanditConnectorAdd", {
-    bg = add_bg,
-    fg = connector_fg,
-  })
+  -- Per-diff-kind connector and overview groups:
+  -- full-line connector backgrounds, stroke colors for connector routing
+  -- (background colors reused as fg for visual continuity), expansion
+  -- glyphs (◥/◤ triangles bridging underline to colored region), and
+  -- overview marks (fg matches bg so the minimap reads as solid blocks)
+  for kind, color in pairs({ Add = add_bg, Delete = delete_bg, Change = change_bg }) do
+    apply_group("DiffBanditConnector" .. kind, { bg = color, fg = connector_fg })
+    apply_group("DiffBanditConnector" .. kind .. "Line", { fg = color, bold = true })
+    apply_group("DiffBanditConnectorExpansion" .. kind, { fg = color, bg = normal_bg, bold = true })
+    apply_group("DiffBanditOverview" .. kind, { bg = color, fg = color })
+  end
 
-  apply_group("DiffBanditConnectorDelete", {
-    bg = delete_bg,
-    fg = connector_fg,
-  })
-
-  apply_group("DiffBanditConnectorChange", {
-    bg = change_bg,
-    fg = connector_fg,
-  })
-
-  -- Stroke colors for connector routing (use background colors for visual continuity with diff regions)
-  apply_group("DiffBanditConnectorAddLine", { fg = add_bg, bold = true })
-  apply_group("DiffBanditConnectorDeleteLine", { fg = delete_bg, bold = true })
-  apply_group("DiffBanditConnectorChangeLine", { fg = change_bg, bold = true })
-
-  -- Expansion glyphs: foreground matches the background color for seamless visual bridging
-  -- The ◥/◤ triangles appear with fg color matching the add/delete background, creating
-  -- a visual connection from the underline to the colored background region
-  apply_group("DiffBanditConnectorExpansionAdd", {
-    fg = add_bg,
-    bg = normal_bg,
-    bold = true,
-  })
   apply_group("DiffBanditConnectorExpansionAddUnderline", {
     fg = add_bg,
     bg = normal_bg,
     underline = true,
     sp = add_bg,
-    bold = true,
-  })
-  apply_group("DiffBanditConnectorExpansionDelete", {
-    fg = delete_bg,
-    bg = normal_bg,
-    bold = true,
-  })
-  apply_group("DiffBanditConnectorExpansionChange", {
-    fg = change_bg,
-    bg = normal_bg,
     bold = true,
   })
 
@@ -371,18 +334,6 @@ local function apply_diff_variants(config)
     bg = normal_bg,
     fg = normal_bg,
   })
-  apply_group("DiffBanditOverviewAdd", {
-    bg = add_bg,
-    fg = add_bg,
-  })
-  apply_group("DiffBanditOverviewDelete", {
-    bg = delete_bg,
-    fg = delete_bg,
-  })
-  apply_group("DiffBanditOverviewChange", {
-    bg = change_bg,
-    fg = change_bg,
-  })
   apply_group("DiffBanditOverviewCursor", {
     fg = normal_fg,
     underline = true,
@@ -391,39 +342,15 @@ local function apply_diff_variants(config)
   })
 
   -- Variants for line numbers with diff backgrounds (for visual text overlay)
-  apply_group("DiffBanditLineNumberRightAdd", {
-    fg = get_foreground_color("LineNr", "#808080"),
-    bg = add_bg,
-  })
+  local line_number_fg = get_foreground_color("LineNr", "#808080")
+  for name, color in pairs({ RightAdd = add_bg, LeftDelete = delete_bg, LeftChange = change_bg, RightChange = change_bg }) do
+    apply_group("DiffBanditLineNumber" .. name, { fg = line_number_fg, bg = color })
+  end
 
-  apply_group("DiffBanditLineNumberLeftDelete", {
-    fg = get_foreground_color("LineNr", "#808080"),
-    bg = delete_bg,
-  })
-
-  apply_group("DiffBanditLineNumberLeftChange", {
-    fg = get_foreground_color("LineNr", "#808080"),
-    bg = change_bg,
-  })
-
-  apply_group("DiffBanditLineNumberRightChange", {
-    fg = get_foreground_color("LineNr", "#808080"),
-    bg = change_bg,
-  })
-
-  -- Underlined variant for origin rows (additions - left pane)
-  apply_group("DiffBanditLineNumberLeftUnderline", {
-    fg = get_foreground_color("LineNr", "#808080"),
-    underline = true,
-    sp = add_bg,
-  })
-
-  -- Underlined variant for origin rows (deletions - right pane)
-  apply_group("DiffBanditLineNumberRightUnderline", {
-    fg = get_foreground_color("LineNr", "#808080"),
-    underline = true,
-    sp = delete_bg,
-  })
+  -- Underlined variants for origin rows (Left: additions, Right: deletions)
+  for name, color in pairs({ LeftUnderline = add_bg, RightUnderline = delete_bg }) do
+    apply_group("DiffBanditLineNumber" .. name, { fg = line_number_fg, underline = true, sp = color })
+  end
 
   apply_theme_overrides(theme)
 end

@@ -2,6 +2,8 @@ local diff_pair = require("diffbandit.diff_pair")
 local git = require("diffbandit.git")
 local merge_model = require("diffbandit.merge_model")
 local nvim = require("diffbandit.nvim")
+local keymaps = require("diffbandit.keymaps")
+local layout = require("diffbandit.layout")
 local document = require("diffbandit.document")
 local pair_renderer = require("diffbandit.pair_renderer")
 local panel_mod = require("diffbandit.panel")
@@ -11,6 +13,7 @@ local state = require("diffbandit.state")
 local text = require("diffbandit.text")
 local ui = require("diffbandit.ui")
 local connector_width = require("diffbandit.connector_width")
+local config_mod = require("diffbandit.config")
 
 local Merge = {}
 Merge.__index = Merge
@@ -114,7 +117,7 @@ function Merge.start(data, config, opts)
   self.panel_message_lines = opts.panel_message_lines
   self.panel_amend = opts.panel_amend == true
   self.disposed = false
-  self.status_enabled = (((self.config or {}).ui or {}).status or {}).enabled ~= false
+  self.status_enabled = config_mod.section(self.config, "ui", "status").enabled ~= false
   self.merge_context = git.merge_context(self.root)
   self.connector_width = connector_width.minimum(self.config)
 
@@ -141,7 +144,7 @@ function Merge.start(data, config, opts)
     self.result_editable.initial_changedtick = vim.api.nvim_buf_get_changedtick(self.result_buf)
   else
     if result_err then
-      vim.notify("DiffBandit: " .. tostring(result_err), vim.log.levels.WARN)
+      nvim.notify_warn(tostring(result_err))
     end
     self.result_editable = nil
     self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, self.result_lines, {
@@ -222,21 +225,7 @@ function Merge.start(data, config, opts)
   })
 
   local function open_gutter(buf, anchor_win, width)
-    local ok, win = pcall(vim.api.nvim_open_win, buf, false, {
-      split = "right",
-      win = anchor_win,
-      width = width,
-      focusable = false,
-      mouse = false,
-    })
-    if ok then
-      return win
-    end
-    return vim.api.nvim_open_win(buf, false, {
-      split = "right",
-      win = anchor_win,
-      width = width,
-    })
+    return layout.open_unfocusable_win(buf, anchor_win, { width = width })
   end
 
   local num_width = math.max(3, ui.digits_of(math.max(#self.local_lines, #self.result_lines, #self.remote_lines)))
@@ -255,7 +244,7 @@ function Merge.start(data, config, opts)
     document.ensure_language_features(self.result_buf, ft)
   end
   if self.panel_enabled then
-    local panel_config = (((self.config or {}).git or {}).panel or {})
+    local panel_config = config_mod.section(self.config, "git", "panel")
     self.panel.commit_win = vim.api.nvim_open_win(self.panel.commit_buf, false, {
       split = "below",
       win = self.panel.nav_win,
@@ -303,25 +292,13 @@ function Merge.start_for_path(path, opts, config)
 end
 
 function Merge:configure_windows()
-  local split_winhl = "WinSeparator:DiffBanditSplit,VertSplit:DiffBanditSplit"
-  local winhl = split_winhl .. ",CursorLine:DiffBanditCursorLine"
-  local gutter_winhl = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
-    .. split_winhl .. ",CursorLine:DiffBanditCursorLine"
-  local status_winhl = "Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,"
-    .. "StatusLine:DiffBanditStatusLine,StatusLineNC:DiffBanditStatusLine,"
-    .. split_winhl .. ",CursorLine:DiffBanditStatus"
   for _, win in ipairs({ self.local_win, self.result_win, self.remote_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
       local is_result = win == self.result_win
-      set_win_options(win, {
-        number = false,
-        relativenumber = false,
+      set_win_options(win, layout.win_opts.source(nil, {
         signcolumn = is_result and "auto" or "no",
         foldcolumn = "0",
-        wrap = false,
-        cursorline = true,
-        winhl = winhl,
-      })
+      }))
     end
   end
   for _, win in ipairs({
@@ -333,33 +310,12 @@ function Merge:configure_windows()
     self.remote_num_win,
   }) do
     if win and vim.api.nvim_win_is_valid(win) then
-      set_win_options(win, {
-        number = false,
-        relativenumber = false,
-        list = false,
-        signcolumn = "no",
-        foldcolumn = "0",
-        wrap = false,
-        cursorline = false,
-        winfixwidth = true,
-        winhl = gutter_winhl,
-      })
+      set_win_options(win, layout.win_opts.gutter())
     end
   end
   for _, win in ipairs({ self.local_header_win, self.result_header_win, self.remote_header_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
-      set_win_options(win, {
-        number = false,
-        relativenumber = false,
-        list = false,
-        signcolumn = "no",
-        foldcolumn = "0",
-        wrap = false,
-        cursorline = false,
-        winfixheight = true,
-        statusline = " ",
-        winhl = status_winhl,
-      })
+      set_win_options(win, layout.win_opts.header())
       set_win_height(win, 1)
     end
   end
@@ -370,7 +326,7 @@ function Merge:configure_windows()
   set_win_width(self.result_remote_connector_win, self.connector_width or connector_width.minimum(self.config))
   set_win_width(self.remote_num_win, (self.number_width or 3) + 1)
   local content_width = math.max(15, math.floor((vim.o.columns
-    - ((self.panel and (((self.config.git or {}).panel or {}).width or 42)) or 0)
+    - ((self.panel and (config_mod.section(self.config, "git", "panel").width or 42)) or 0)
     - (((self.number_width or 3) + 1) * 4)
     - ((self.connector_width or connector_width.minimum(self.config)) * 2)) / 3))
   set_win_width(self.local_win, content_width)
@@ -389,22 +345,10 @@ function Merge:configure_windows()
     end
   end
   if self.panel then
-    local panel_config = (((self.config or {}).git or {}).panel or {})
-    local panel_winhl = "WinSeparator:DiffBanditSplit,VertSplit:DiffBanditSplit,"
-      .. "Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,CursorLine:DiffBanditCursorLine"
+    local panel_config = config_mod.section(self.config, "git", "panel")
     for _, win in ipairs({ self.panel.nav_win, self.panel.commit_win }) do
       if win and vim.api.nvim_win_is_valid(win) then
-        set_win_options(win, {
-          number = false,
-          relativenumber = false,
-          list = false,
-          signcolumn = "no",
-          foldcolumn = "0",
-          wrap = false,
-          cursorline = true,
-          winfixwidth = true,
-          winhl = panel_winhl,
-        })
+        set_win_options(win, layout.win_opts.panel())
         set_win_width(win, panel_config.width or 42)
       end
     end
@@ -520,7 +464,7 @@ function Merge:request_render()
     self.render_timer:close()
     self.render_timer = nil
   end
-  local delay = tonumber(((self.config or {}).ui or {}).scroll_debounce_ms) or 16
+  local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
   local timer = vim.uv and vim.uv.new_timer() or vim.loop.new_timer()
   self.render_timer = timer
   timer:start(delay, 0, function()
@@ -562,70 +506,17 @@ function Merge:set_result_buffer_lines(lines)
   end
 end
 
-local function keymap_backup_key(mode, buf, lhs)
-  return table.concat({ tostring(mode), tostring(buf), tostring(lhs) }, "\31")
-end
-
-local function existing_buffer_keymap(mode, buf, lhs)
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
-    return nil
-  end
-  for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
-    if map.lhs == lhs then
-      return map
-    end
-  end
-  return nil
-end
-
 function Merge:set_buffer_keymap(mode, buf, lhs, rhs, opts)
-  if not (buf and vim.api.nvim_buf_is_valid(buf) and lhs and lhs ~= "") then
-    return
-  end
-  self.keymap_backups = self.keymap_backups or {}
-  local key = keymap_backup_key(mode, buf, lhs)
-  if self.keymap_backups[key] == nil then
-    self.keymap_backups[key] = {
-      mode = mode,
-      buf = buf,
-      lhs = lhs,
-      previous = existing_buffer_keymap(mode, buf, lhs) or false,
-    }
-  end
-  vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", opts or {}, { buffer = buf }))
+  keymaps.set(self, mode, buf, lhs, rhs, opts)
 end
 
 function Merge:clear_keymaps()
-  if not self.keymap_backups then
-    return
-  end
-  for _, backup in pairs(self.keymap_backups) do
-    local buf = backup.buf
-    if buf and vim.api.nvim_buf_is_valid(buf) then
-      pcall(vim.keymap.del, backup.mode, backup.lhs, { buffer = buf })
-      local previous = backup.previous
-      if previous and previous ~= false then
-        local rhs = previous.callback or previous.rhs
-        if rhs and rhs ~= "" then
-          pcall(vim.keymap.set, backup.mode, backup.lhs, rhs, {
-            buffer = buf,
-            noremap = previous.noremap == 1,
-            silent = previous.silent == 1,
-            expr = previous.expr == 1,
-            nowait = previous.nowait == 1,
-            script = previous.script == 1,
-            desc = previous.desc,
-          })
-        end
-      end
-    end
-  end
-  self.keymap_backups = nil
+  keymaps.clear(self)
 end
 
 function Merge:setup_keymaps()
-  local keys = ((self.config or {}).merge or {}).keys or {}
-  local document_keys = (((self.config or {}).navigation or {}).document_keys) or {}
+  local keys = config_mod.section(self.config, "merge", "keys")
+  local document_keys = config_mod.section(self.config, "navigation", "document_keys")
   local function map(buf, lhs, rhs)
     self:set_buffer_keymap("n", buf, lhs, rhs, { nowait = true, noremap = true, silent = true })
   end
@@ -652,7 +543,7 @@ function Merge:status_text()
   else
     conflict_text = string.format("%d conflicts", #self.conflicts)
   end
-  if self.line_ending_warning and (((self.config or {}).merge or {}).line_endings or {}).warn ~= false then
+  if self.line_ending_warning and config_mod.section(self.config, "merge", "line_endings").warn ~= false then
     conflict_text = conflict_text .. "  " .. self.line_ending_warning
   end
   return conflict_text
@@ -908,7 +799,7 @@ function Merge:render(opts)
   local left_pair, left_err = diff_pair.build(self.local_lines, self.result_lines, self.config)
   local right_pair, right_err = diff_pair.build(self.remote_lines, self.result_lines, self.config)
   if not left_pair or not right_pair then
-    vim.notify("DiffBandit: " .. tostring(left_err or right_err or "unable to render merge"), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(left_err or right_err or "unable to render merge"))
     return
   end
   self.local_result_pair = left_pair
@@ -1001,7 +892,7 @@ end
 
 function Merge:goto_conflict(index)
   if #self.conflicts == 0 then
-    vim.notify("DiffBandit: no merge conflicts in this file", vim.log.levels.INFO)
+    nvim.notify_info("no merge conflicts in this file")
     return false
   end
   index = math.max(1, math.min(index, #self.conflicts))
@@ -1319,7 +1210,7 @@ function Merge:goto_pair_hunk_by_direction(direction)
     if #self.conflicts > 0 then
       return direction > 0 and self:goto_next_conflict() or self:goto_prev_conflict()
     end
-    vim.notify("DiffBandit: no merge changes in this file", vim.log.levels.INFO)
+    nvim.notify_info("no merge changes in this file")
     return false
   end
 
@@ -1395,7 +1286,7 @@ function Merge:open_merge_file(index, opts)
   end
   local data, err = Merge.load(queue.root, entry.path, self.config)
   if not data then
-    vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(err))
     return false
   end
   queue_host.set_index(self, index)
@@ -1436,7 +1327,7 @@ function Merge:open_merge_file(index, opts)
       vim.api.nvim_win_set_buf(self.result_win, self.result_buf)
     end
   elseif result_err then
-    vim.notify("DiffBandit: " .. tostring(result_err), vim.log.levels.WARN)
+    nvim.notify_warn(tostring(result_err))
     self.result_editable = nil
   else
     self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, {}, {
@@ -1503,7 +1394,7 @@ function Merge:goto_queue_file(index, chunk_position, opts)
   end
   local loaded, err = queue.load(index)
   if not loaded then
-    vim.notify("DiffBandit: " .. tostring(err or "unable to load changed file"), vim.log.levels.INFO)
+    nvim.notify_info(tostring(err or "unable to load changed file"))
     return false
   end
   queue_host.set_index(self, index)
@@ -1517,7 +1408,7 @@ function Merge:goto_queue_file(index, chunk_position, opts)
     panel_amend = self.panel and self.panel.amend == true,
   })
   if not session then
-    vim.notify("DiffBandit: " .. tostring(start_err or "unable to open changed file"), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(start_err or "unable to open changed file"))
     return false
   end
   state.register(session)
@@ -1646,7 +1537,7 @@ function Merge:accept(side)
   end
 
   if self.current_conflict <= 0 then
-    vim.notify("DiffBandit: no active conflict", vim.log.levels.INFO)
+    nvim.notify_info("no active conflict")
     return false
   end
   local region = self.conflicts[self.current_conflict]
@@ -1673,7 +1564,7 @@ function Merge:apply_non_conflicting()
     lines = text.replace_range(lines, item.base_start, item.base_count, item.replacement)
   end
   self:set_result_buffer_lines(lines)
-  vim.notify("DiffBandit: applied non-conflicting changes", vim.log.levels.INFO)
+  nvim.notify_info("applied non-conflicting changes")
   self:render()
   return true
 end
@@ -1682,33 +1573,33 @@ function Merge:resolve()
   if self.delete_result then
     local ok, write_err = git.write_worktree(self.root, self.path, nil, false)
     if not ok then
-      vim.notify("DiffBandit: " .. tostring(write_err), vim.log.levels.ERROR)
+      nvim.notify_error(tostring(write_err))
       return false
     end
     local _, add_err = git.git_output(self.root, { "add", "-A", "--", self.path })
     if add_err then
-      vim.notify("DiffBandit: " .. tostring(add_err), vim.log.levels.ERROR)
+      nvim.notify_error(tostring(add_err))
       return false
     end
     pcall(vim.api.nvim_set_option_value, "modified", false, { buf = self.result_buf })
     self:refresh_git_queue(self.path)
-    vim.notify("DiffBandit: resolved " .. tostring(self.path), vim.log.levels.INFO)
+    nvim.notify_info("resolved " .. tostring(self.path))
     return true
   end
   local value = text.to_text(logical_buffer_lines(self.result_buf))
   local ok, write_err = git.write_worktree(self.root, self.path, value, false)
   if not ok then
-    vim.notify("DiffBandit: " .. tostring(write_err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(write_err))
     return false
   end
   local _, add_err = git.git_output(self.root, { "add", "--", self.path })
   if add_err then
-    vim.notify("DiffBandit: " .. tostring(add_err), vim.log.levels.ERROR)
+    nvim.notify_error(tostring(add_err))
     return false
   end
   pcall(vim.api.nvim_set_option_value, "modified", false, { buf = self.result_buf })
   self:refresh_git_queue(self.path)
-  vim.notify("DiffBandit: resolved " .. tostring(self.path), vim.log.levels.INFO)
+  nvim.notify_info("resolved " .. tostring(self.path))
   return true
 end
 

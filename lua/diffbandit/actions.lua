@@ -1,3 +1,4 @@
+local nvim = require("diffbandit.nvim")
 local git_mod = require("diffbandit.git")
 local diff_mod = require("diffbandit.diff")
 local source_mod = require("diffbandit.source")
@@ -433,7 +434,7 @@ function M.refresh(session, preferred_chunk)
     if session.right and session.right.editable and sources.right and sources.right.git_target == "worktree" then
       sources.right.editable = vim.tbl_extend("force", {}, session.right.editable)
     end
-    vim.notify("DiffBandit: no remaining changes in " .. ctx.path, vim.log.levels.INFO)
+    nvim.notify_info("no remaining changes in " .. ctx.path)
   end
 
   session.file_queue = ctx.queue

@@ -1,3 +1,7 @@
+-- Amend-mode toggling shared by the panel hosts (diff session and
+-- standalone commit panel): seeds the commit message from the last commit
+-- and reloads the file queue against the amend base.
+local nvim = require("diffbandit.nvim")
 local git = require("diffbandit.git")
 local panel_mod = require("diffbandit.panel")
 local queue_host = require("diffbandit.queue_host")
@@ -19,7 +23,7 @@ function M.set_amend_mode(host, enabled)
   if enabled then
     local base, err = git.amend_base(host.file_queue.root)
     if not base then
-      vim.notify("DiffBandit: " .. tostring(err), vim.log.levels.INFO)
+      nvim.notify_info(tostring(err))
       return false, err
     end
     if not host.normal_queue_opts then

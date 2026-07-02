@@ -1,5 +1,6 @@
 local Session = require("diffbandit.session")
 local connector_width = require("diffbandit.connector_width")
+local config_mod = require("diffbandit.config")
 
 local M = {}
 
@@ -24,7 +25,7 @@ function M.from_pair(owner, id_suffix, pair, left_source, right_source, buffers,
     pending_file_boundary = nil,
     left_number_width = number_width,
     right_number_width = number_width,
-    right_number_padding = ((owner.config or {}).ui or {}).right_number_padding or 2,
+    right_number_padding = config_mod.section(owner.config, "ui").right_number_padding or 2,
     stage_marker_width = 0,
     left_stage_marker_width = 0,
     right_stage_marker_width = 0,
