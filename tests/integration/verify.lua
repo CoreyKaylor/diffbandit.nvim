@@ -2355,8 +2355,8 @@ local function verify_dense_mixed(lines, ansi_lines, phase)
     end
   end
 
-  local minimum_width = 12
-  local maximum_width = 24
+  local minimum_width = 3
+  local maximum_width = 14
   for _, line in ipairs(lines) do
     local stripped = strip_ansi(line)
     if stripped:find("Dense ", 1, true) or stripped:find("Added dense", 1, true) then

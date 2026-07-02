@@ -8,7 +8,8 @@ local defaults = {
     result_type = "indices",
   },
   ui = {
-    connector_width = 12,
+    connector_width = 3,
+    connector_max_width = 24,
     right_number_padding = 2,
     scroll_debounce_ms = 16,
     split_blend = 0.3,

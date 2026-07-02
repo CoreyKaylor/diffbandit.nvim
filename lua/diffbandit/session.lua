@@ -11,6 +11,7 @@ local overview = require("diffbandit.overview")
 local panel_host = require("diffbandit.panel_host")
 local queue_host = require("diffbandit.queue_host")
 local ui = require("diffbandit.ui")
+local connector_width = require("diffbandit.connector_width")
 
 local Session = {}
 Session.__index = Session
@@ -145,14 +146,7 @@ local function build_view_for_sources(sources, config)
 end
 
 local function connector_core_base_width(view, config)
-  local width = math.max(config.ui.connector_width or 0, 0)
-  for _, text in ipairs(view.connectors) do
-    local display_width = vim.fn.strdisplaywidth(text)
-    if display_width > width then
-      width = display_width
-    end
-  end
-  return width
+  return connector_width.base(view, config)
 end
 
 function Session:invalidate_render_caches()
@@ -2238,92 +2232,46 @@ local function sorted_keys(set)
   return keys
 end
 
-local function add_topline_candidate(candidates, index, height, line_count)
-  if not index then
-    return
-  end
-  local max_topline = math.max(1, line_count)
-  for screen_row = 1, height do
-    local topline = index - screen_row + 1
-    if topline >= 1 and topline <= max_topline then
-      candidates[topline] = true
-    end
-  end
-end
-
-local function connector_width_cache_key(session)
-  local left = session.left or {}
-  local right = session.right or {}
-  return table.concat({
-    left.label or left.path or "",
-    right.label or right.path or "",
-    tostring(#(left.lines or {})),
-    tostring(#(right.lines or {})),
-    tostring(#(session.view.chunks or {})),
-    tostring(#(session.view.line_meta or {})),
-  }, "\0")
-end
-
 function Session:precompute_connector_core_width()
-  local cache_key = connector_width_cache_key(self)
-  local cached = self.connector_width_cache and self.connector_width_cache[cache_key]
-  if cached then
-    if cached > self.connector_core_width then
-      self.connector_core_width = cached
-      self.gutter_width = cached
-      self:resize_layout()
+  local minimum_width = connector_width.base(self.view, self.config)
+  local pressure_events = {}
+  local function add_pressure_range(start_row, end_row)
+    if not start_row or not end_row then
+      return
     end
-    return cached
+    start_row = math.floor(start_row)
+    end_row = math.floor(end_row)
+    if end_row < start_row then
+      start_row, end_row = end_row, start_row
+    end
+    pressure_events[start_row] = (pressure_events[start_row] or 0) + 1
+    pressure_events[end_row + 1] = (pressure_events[end_row + 1] or 0) - 1
   end
 
-  local paths = self:base_paths()
-  local minimum_width = self.connector_core_width
-  local required_core = minimum_width
-
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
-  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
-  local padding = self:get_scroll_padding()
-  local left_line_count = math.max(1, #self.view.left + padding)
-  local right_line_count = math.max(1, #self.view.right + padding)
-  local left_candidates = { [1] = true, [left_line_count] = true }
-  local right_candidates = { [1] = true, [right_line_count] = true }
-
-  for _, p in ipairs(paths) do
-    if p.kind == "add" then
-      add_topline_candidate(left_candidates, p.origin_left_index or p.origin_display_row, left_height, left_line_count)
-      add_topline_candidate(right_candidates, p.target_start_index or p.display_start_row, right_height, right_line_count)
-      add_topline_candidate(right_candidates, p.target_end_index or p.display_end_row, right_height, right_line_count)
-    elseif p.kind == "delete" then
-      add_topline_candidate(left_candidates, p.target_start_index or p.display_start_row, left_height, left_line_count)
-      add_topline_candidate(left_candidates, p.target_end_index or p.display_end_row, left_height, left_line_count)
-      add_topline_candidate(right_candidates, p.origin_right_index or p.origin_display_row, right_height, right_line_count)
-    elseif p.kind == "change" then
-      add_topline_candidate(left_candidates, p.start_left_index or p.display_start_row, left_height, left_line_count)
-      add_topline_candidate(left_candidates, p.end_left_index or p.display_end_row, left_height, left_line_count)
-      add_topline_candidate(right_candidates, p.start_right_index or p.display_start_row, right_height, right_line_count)
-      add_topline_candidate(right_candidates, p.end_right_index or p.display_end_row, right_height, right_line_count)
-    end
-  end
-
-  local left_toplines = sorted_keys(left_candidates)
-  local right_toplines = sorted_keys(right_candidates)
-  local max_combinations = tonumber(((self.config.ui or {}).max_connector_precompute_combinations)) or 400
-  local combinations = #left_toplines * #right_toplines
-  if combinations > max_combinations then
-    required_core = paths_mod.required_connector_core_width(math.min(8, #paths), required_core)
-  else
-    for _, left_topline in ipairs(left_toplines) do
-      for _, right_topline in ipairs(right_toplines) do
-        local projected = self:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
-        required_core = paths_mod.required_connector_core_width(paths_mod.max_lane(projected), required_core)
+  for _, path in ipairs(self:base_paths()) do
+    if path.kind == "add" or path.kind == "delete" then
+      if not path.embedded_in_change then
+        add_pressure_range(path.origin_display_row, path.triangle_display_row or path.display_start_row)
       end
+    elseif path.kind == "change" and path.offset then
+      local start_row = math.min(path.start_left_index or path.display_start_row or 0,
+        path.start_right_index or path.display_start_row or 0)
+      local end_row = math.max(path.end_left_index or path.display_end_row or start_row,
+        path.end_right_index or path.display_end_row or start_row)
+      add_pressure_range(start_row, end_row)
     end
   end
 
-  self.connector_width_cache = self.connector_width_cache or {}
-  self.connector_width_cache[cache_key] = required_core
-
-  if required_core > self.connector_core_width then
+  local rows = sorted_keys(pressure_events)
+  local active = 0
+  local max_pressure = 0
+  for _, row in ipairs(rows) do
+    active = active + pressure_events[row]
+    max_pressure = math.max(max_pressure, active)
+  end
+  local required_core = math.max(minimum_width, minimum_width + (max_pressure * 2))
+  required_core = math.min(connector_width.maximum(self.config), required_core)
+  if required_core ~= self.connector_core_width then
     self.connector_core_width = required_core
     self.gutter_width = required_core
     self:resize_layout()

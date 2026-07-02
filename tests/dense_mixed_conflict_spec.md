@@ -17,10 +17,10 @@ The diff includes:
 
 ## Required Behavior
 
-- The connector core width is calculated before first render from potential projected lane pressure.
-- The default connector width remains `12` for one-, two-, and three-lane projections.
+- The connector core width is calculated once before first render from document-level route pressure.
+- The default connector width is a compact three-column minimum and remains static while connector routes move.
 - Spacer lanes are reserved between overlapping same-direction change/delete routes so adjacent routes do not visually touch.
-- A seven-lane projected conflict expands the connector core to `22` and does not resize while scrolling.
+- Dense projected conflicts must be routed inside the fixed connector core without resizing while scrolling.
 - Connector rail visibility is capped at eight competing vertical routes; larger conflicts prune the farthest offscreen continuation routes before widening beyond the eight-route width.
 - Add, delete, and change routes share collision detection. No route may overlap or touch another route in the connector core.
 - Lane reuse is allowed only after a route no longer overlaps the candidate route's occupied range.

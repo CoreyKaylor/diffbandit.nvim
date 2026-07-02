@@ -167,6 +167,7 @@ function _G.DiffBanditTestWriteEditableState(path, requested)
     "modified=" .. tostring(vim.api.nvim_get_option_value("modified", { buf = bufnr })),
     "cursor_col=" .. tostring(cursor[2] or 0),
     "undo_seq=" .. tostring(ok_tree and tree and tree.seq_cur or ""),
+    "connector_width=" .. tostring(session.connector_core_width or session.connector_width or ""),
     "lsp_clients=" .. table.concat(clients, ","),
     "diagnostics=" .. tostring(#vim.diagnostic.get(bufnr)),
   }, path)
@@ -212,13 +213,14 @@ function _G.DiffBanditTestWriteState(path)
   local left_cursor = vim.api.nvim_win_get_cursor(session.left_win)[1]
   local right_cursor = vim.api.nvim_win_get_cursor(session.right_win)[1]
   local state = string.format(
-    "focus=%s left_top=%d right_top=%d left_cursor=%d right_cursor=%d chunk=%d",
+    "focus=%s left_top=%d right_top=%d left_cursor=%d right_cursor=%d chunk=%d connector_width=%d",
     focused_side(session),
     topline_for(session.left_win),
     topline_for(session.right_win),
     left_cursor,
     right_cursor,
-    session.current_chunk or -1
+    session.current_chunk or -1,
+    session.connector_core_width or session.connector_width or -1
   )
   vim.fn.writefile({ state }, path)
 end
@@ -327,6 +329,7 @@ function _G.DiffBanditTestWriteGitState(path)
     string.format("status_left=%s", session.status_lines and session.status_lines.left or ""),
     string.format("status_center=%s", session.status_lines and session.status_lines.center or ""),
     string.format("status_right=%s", session.status_lines and session.status_lines.right or ""),
+    string.format("connector_width=%s", tostring(session.connector_core_width or session.connector_width or "")),
   }
   vim.fn.writefile(lines, path)
 end

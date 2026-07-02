@@ -1,13 +1,10 @@
 local Session = require("diffbandit.session")
+local connector_width = require("diffbandit.connector_width")
 
 local M = {}
 
 local function connector_base_width(pair, config)
-  local width = math.max((((config or {}).ui or {}).connector_width or 0), 0)
-  for _, value in ipairs(((pair or {}).view or {}).connectors or {}) do
-    width = math.max(width, vim.fn.strdisplaywidth(value))
-  end
-  return math.max(1, width)
+  return connector_width.base((pair or {}).view, config)
 end
 
 function M.from_pair(owner, id_suffix, pair, left_source, right_source, buffers, windows, opts)

@@ -10,6 +10,7 @@ local source_mod = require("diffbandit.source")
 local state = require("diffbandit.state")
 local text = require("diffbandit.text")
 local ui = require("diffbandit.ui")
+local connector_width = require("diffbandit.connector_width")
 
 local Merge = {}
 Merge.__index = Merge
@@ -115,7 +116,7 @@ function Merge.start(data, config, opts)
   self.disposed = false
   self.status_enabled = (((self.config or {}).ui or {}).status or {}).enabled ~= false
   self.merge_context = git.merge_context(self.root)
-  self.connector_width = math.max((((self.config or {}).ui or {}).connector_width or 12), 1)
+  self.connector_width = connector_width.minimum(self.config)
 
   local ft = source_mod.detect_filetype(self.path)
   local result_path = git.abs_path(self.root, self.path)
@@ -363,22 +364,24 @@ function Merge:configure_windows()
     end
   end
   set_win_width(self.local_num_win, (self.number_width or 3) + 1)
-  set_win_width(self.local_result_connector_win, self.connector_width or 12)
+  set_win_width(self.local_result_connector_win, self.connector_width or connector_width.minimum(self.config))
   set_win_width(self.result_left_num_win, (self.number_width or 3) + 1)
   set_win_width(self.result_right_num_win, (self.number_width or 3) + 1)
-  set_win_width(self.result_remote_connector_win, self.connector_width or 12)
+  set_win_width(self.result_remote_connector_win, self.connector_width or connector_width.minimum(self.config))
   set_win_width(self.remote_num_win, (self.number_width or 3) + 1)
   local content_width = math.max(15, math.floor((vim.o.columns
     - ((self.panel and (((self.config.git or {}).panel or {}).width or 42)) or 0)
     - (((self.number_width or 3) + 1) * 4)
-    - ((self.connector_width or 12) * 2)) / 3))
+    - ((self.connector_width or connector_width.minimum(self.config)) * 2)) / 3))
   set_win_width(self.local_win, content_width)
   set_win_width(self.result_win, content_width)
   set_win_width(self.remote_win, content_width)
   if self.status_enabled then
     set_win_width(self.local_header_win, content_width)
-    set_win_width(self.result_header_win, content_width + (((self.number_width or 3) + 1) * 2) + (self.connector_width or 12))
-    set_win_width(self.remote_header_win, content_width + ((self.number_width or 3) + 1) + (self.connector_width or 12))
+    set_win_width(self.result_header_win,
+      content_width + (((self.number_width or 3) + 1) * 2) + (self.connector_width or connector_width.minimum(self.config)))
+    set_win_width(self.remote_header_win,
+      content_width + ((self.number_width or 3) + 1) + (self.connector_width or connector_width.minimum(self.config)))
   end
   for _, win in ipairs({ self.local_win, self.result_win, self.remote_win }) do
     if win and vim.api.nvim_win_is_valid(win) then

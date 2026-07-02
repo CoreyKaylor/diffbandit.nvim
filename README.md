@@ -455,7 +455,10 @@ require("diffbandit").setup({
     },
   },
   ui = {
-    connector_width = 12,
+    -- Minimum connector core width. DiffBandit chooses a static
+    -- document width up front and keeps it fixed while routes move.
+    connector_width = 3,
+    connector_max_width = 24,
     scroll_debounce_ms = 16,
     split_blend = 0.3,
     overview = {

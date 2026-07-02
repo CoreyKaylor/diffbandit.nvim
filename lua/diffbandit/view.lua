@@ -1,8 +1,10 @@
+local connector_width = require("diffbandit.connector_width")
+
 local M = {}
 
 function M.build(left_lines, right_lines, hunks, config)
-  local connector_width = config.ui.connector_width or 3
-  local blank_connector = string.rep(" ", connector_width)
+  local connector_core_width = connector_width.minimum(config)
+  local blank_connector = string.rep(" ", connector_core_width)
 
   local left_view, right_view, connector_view, line_meta = {}, {}, {}, {}
   local chunks = {}

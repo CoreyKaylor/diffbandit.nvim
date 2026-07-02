@@ -2,6 +2,7 @@ local diff = require("diffbandit.diff")
 local text = require("diffbandit.text")
 local ui = require("diffbandit.ui")
 local view_builder = require("diffbandit.view")
+local connector_width = require("diffbandit.connector_width")
 
 local M = {}
 
@@ -23,7 +24,7 @@ function M.build(left_lines, right_lines, config)
       left = ui.digits_of(#(left_lines or {})),
       right = ui.digits_of(#(right_lines or {})),
     },
-    connector_width = math.max((((config or {}).ui or {}).connector_width or 0), 1),
+    connector_width = connector_width.minimum(config),
   }, nil
 end
 

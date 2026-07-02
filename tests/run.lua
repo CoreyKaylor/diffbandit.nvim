@@ -85,6 +85,8 @@ assert_eq(config.git.panel.keys.file_actions, "a",
 assert_eq(config.git.panel.keys.commit, nil, "Commit panel should commit through :w by default")
 assert_eq(config.ui.overview.enabled, true, "Overview gutter should be enabled by default")
 assert_eq(config.ui.overview.width, 1, "Overview gutter should default to one column")
+assert_eq(config.ui.connector_width, 3, "Connector core should default to a compact minimum width")
+assert_eq(config.ui.connector_max_width, 24, "Connector core widening should default to a bounded maximum")
 assert_eq(config.ui.scroll_debounce_ms, 16, "Viewport scroll rerenders should debounce by default")
 assert_eq(config.merge.result_initial_content, "base", "Merge result should initialize from the base by default")
 assert_eq(config.merge.keys.accept_local, ">>", "Merge accept-local key should default to >>")
@@ -1758,12 +1760,14 @@ do
   local projected = fake_session:project_paths_for_toplines(paths, 1, 49, 14, 14)
   local max_lane = paths_mod.max_lane(projected)
   assert_eq(max_lane, 7, "Dense mixed conflict viewport should reserve seven physical lanes")
-  assert_eq(paths_mod.required_connector_core_width(max_lane, 12), 22,
-    "Seven-lane conflict should expand connector core width from 12 to 22")
-  assert_eq(paths_mod.required_connector_core_width(3, 12), 12,
-    "Three-lane routes should still fit the default connector width")
-  assert_eq(paths_mod.required_connector_core_width(1, 12), 12,
-    "Single-lane routes should keep the default connector width")
+  local required_width, required_plan = paths_mod.required_connector_core_width_for_paths(projected, 3, 24, {
+    viewport_topline = 1,
+    viewport_height = 14,
+    max_route_backtrack_steps = 500,
+  })
+  assert_eq(required_width, 14,
+    "Seven-lane dense conflict should use the smallest solvable compact connector width")
+  assert_eq(required_plan.success, true, "Seven-lane dense conflict should remain collision-free")
 
   local active_bars = paths_mod.compute_active_bars(projected)
   local function row_has_bar(row, kind, lane, origin)
@@ -1842,20 +1846,72 @@ do
   local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
   local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
   local projections = {
-    { 1, 1, "dense initial" },
-    { 1, 38, "dense pre-conflict" },
-    { 1, 46, "dense four-route conflict" },
-    { 1, 49, "dense lower-route entering" },
-    { 1, 53, "dense post-conflict" },
-    { 8, 46, "dense lane reuse" },
+    { 1, 1, 4, "dense initial" },
+    { 1, 38, 10, "dense pre-conflict" },
+    { 1, 46, 14, "dense four-route conflict" },
+    { 1, 49, 14, "dense lower-route entering" },
+    { 1, 53, 14, "dense post-conflict" },
+    { 8, 46, 5, "dense lane reuse" },
   }
 
   for _, projection in ipairs(projections) do
     local projected = fake_session:project_paths_for_toplines(paths, projection[1], projection[2], 14, 14)
-    local width, plan = paths_mod.required_connector_core_width_for_paths(projected, 12, 24)
-    assert_eq(width <= 24, true, projection[3] .. " should not require an excessive connector width")
-    assert_clean_plan(plan, projection[3])
+    local width, plan = paths_mod.required_connector_core_width_for_paths(projected, 3, 24, {
+      viewport_topline = projection[1],
+      viewport_height = 14,
+      max_route_backtrack_steps = 500,
+    })
+    assert_eq(width, projection[3], projection[4] .. " should use its compact planned connector width")
+    assert_clean_plan(plan, projection[4])
   end
+
+  local function route_segment_counts(plan)
+    local counts = { horizontal = 0, vertical = 0 }
+    for _, route in ipairs(plan.routes or {}) do
+      for _, segment in ipairs(route.segments or {}) do
+        counts[segment.type] = (counts[segment.type] or 0) + 1
+      end
+    end
+    return counts
+  end
+
+  local one_vertical = {
+    {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 1,
+      triangle_display_row = 4,
+      route_group = {},
+    },
+  }
+  local one_width, one_plan = paths_mod.required_connector_core_width_for_paths(one_vertical, 3, 24)
+  local one_counts = route_segment_counts(one_plan)
+  assert_eq(one_width, 3, "Single vertical route should keep the compact three-column minimum")
+  assert_eq(one_counts.horizontal, 2, "Single vertical route should retain both endpoint horizontals")
+  assert_eq(one_counts.vertical, 1, "Single vertical route should retain one interior rail")
+
+  local two_vertical = {
+    {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 1,
+      triangle_display_row = 4,
+      route_group = {},
+    },
+    {
+      kind = "delete",
+      origin_side = "right",
+      target_side = "left",
+      origin_display_row = 4,
+      triangle_display_row = 1,
+      route_group = {},
+    },
+  }
+  local two_width, two_plan = paths_mod.required_connector_core_width_for_paths(two_vertical, 3, 24)
+  assert_eq(two_width, 5, "Competing vertical routes should widen only enough to avoid collisions")
+  assert_clean_plan(two_plan, "two compact vertical routes")
 
   local upward = {
     {
@@ -1932,7 +1988,7 @@ do
   assert_eq(overflow[1].overflow_hidden == true, false,
     "Overflow planner should keep the nearest visible route")
 
-  assert_eq(paths_mod.required_connector_core_width(99, 12), 24,
+  assert_eq(paths_mod.required_connector_core_width(99, 3), 24,
     "Connector width should cap at the eight-route width")
 end
 
