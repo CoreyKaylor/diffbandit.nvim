@@ -316,7 +316,15 @@ Default merge keys:
 | `gb` | Accept both sides, local then remote |
 | `gA` | Apply non-conflicting changes from both sides |
 | `]s` | Snap the other two panes to the cursor line |
+| `gzp` | Toggle the commit panel |
+| `gzh` | Toggle the left (local) pane |
+| `gzl` | Toggle the right (remote) pane |
+| `gza` | Show all hidden panes and the panel |
 | `:w` in the result pane | Write the result and mark the file resolved with `git add` |
+
+Hiding panes gives the remaining panes the reclaimed width — useful for
+focusing on the editable result when screen space is tight. The center result
+pane is always visible.
 
 DiffBandit warns when conflict stages have mixed line endings, but it does not
 normalize them automatically.
@@ -424,6 +432,10 @@ require("diffbandit").setup({
       apply_non_conflicting = "gA",
       focus_panel = "C",
       snap = "]s",
+      toggle_panel = "gzp",
+      toggle_local = "gzh",
+      toggle_remote = "gzl",
+      show_all = "gza",
       close = "q",
     },
   },

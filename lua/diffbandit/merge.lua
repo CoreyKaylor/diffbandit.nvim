@@ -118,6 +118,10 @@ function Merge.start(data, config, opts)
   self.panel_message_lines = opts.panel_message_lines
   self.panel_amend = opts.panel_amend == true
   self.disposed = false
+  -- Visibility toggles for focus mode ("local" is a Lua keyword, hence _pane
+  -- suffixes). The result pane is never hideable; panel visibility is also
+  -- mirrored in self.panel.visible by panel_mod.
+  self.hidden = { panel = false, local_pane = false, remote_pane = false }
   self.status_enabled = config_mod.section(self.config, "ui", "status").enabled ~= false
   self.merge_context = git.merge_context(self.root)
   self.connector_width = connector_width.minimum(self.config)
@@ -130,7 +134,15 @@ function Merge.start(data, config, opts)
       path = document.normalize_path(result_path) or result_path,
     }
   end
-  self.local_buf = make_buffer(source_label(self.path, "local"), self.local_lines, { modifiable = false, filetype = ft })
+  -- Pane, gutter, and header buffers must survive their windows: visibility
+  -- toggles close windows without ending the session, so bufhidden="wipe"
+  -- (the make_buffer default) would destroy buffers the session still owns.
+  -- Merge:close deletes them explicitly.
+  self.local_buf = make_buffer(source_label(self.path, "local"), self.local_lines, {
+    modifiable = false,
+    filetype = ft,
+    bufhidden = "hide",
+  })
   local result_buf, result_err
   if self.result_editable then
     result_buf, result_err = document.acquire_buffer(self.result_editable)
@@ -154,16 +166,23 @@ function Merge.start(data, config, opts)
       filetype = ft,
     })
   end
-  self.remote_buf = make_buffer(source_label(self.path, "remote"), self.remote_lines, { modifiable = false, filetype = ft })
-  self.local_num_buf = make_buffer(nil, {}, { modifiable = false })
-  self.local_result_connector_buf = make_buffer(nil, {}, { modifiable = false })
-  self.result_left_num_buf = make_buffer(nil, {}, { modifiable = false })
-  self.result_right_num_buf = make_buffer(nil, {}, { modifiable = false })
-  self.result_remote_connector_buf = make_buffer(nil, {}, { modifiable = false })
-  self.remote_num_buf = make_buffer(nil, {}, { modifiable = false })
-  self.local_header_buf = self.status_enabled and make_buffer(nil, {}, { modifiable = false }) or nil
-  self.result_header_buf = self.status_enabled and make_buffer(nil, {}, { modifiable = false }) or nil
-  self.remote_header_buf = self.status_enabled and make_buffer(nil, {}, { modifiable = false }) or nil
+  self.remote_buf = make_buffer(source_label(self.path, "remote"), self.remote_lines, {
+    modifiable = false,
+    filetype = ft,
+    bufhidden = "hide",
+  })
+  local function make_gutter_buffer()
+    return make_buffer(nil, {}, { modifiable = false, bufhidden = "hide" })
+  end
+  self.local_num_buf = make_gutter_buffer()
+  self.local_result_connector_buf = make_gutter_buffer()
+  self.result_left_num_buf = make_gutter_buffer()
+  self.result_right_num_buf = make_gutter_buffer()
+  self.result_remote_connector_buf = make_gutter_buffer()
+  self.remote_num_buf = make_gutter_buffer()
+  self.local_header_buf = self.status_enabled and make_gutter_buffer() or nil
+  self.result_header_buf = self.status_enabled and make_gutter_buffer() or nil
+  self.remote_header_buf = self.status_enabled and make_gutter_buffer() or nil
 
   vim.cmd("tabnew")
   self.tabpage = vim.api.nvim_get_current_tabpage()
@@ -320,25 +339,35 @@ function Merge:configure_windows()
       set_win_height(win, 1)
     end
   end
-  set_win_width(self.local_num_win, (self.number_width or 3) + 1)
-  set_win_width(self.local_result_connector_win, self.connector_width or connector_width.minimum(self.config))
-  set_win_width(self.result_left_num_win, (self.number_width or 3) + 1)
-  set_win_width(self.result_right_num_win, (self.number_width or 3) + 1)
-  set_win_width(self.result_remote_connector_win, self.connector_width or connector_width.minimum(self.config))
-  set_win_width(self.remote_num_win, (self.number_width or 3) + 1)
+  local num_pane_width = (self.number_width or 3) + 1
+  local core_width = self.connector_width or connector_width.minimum(self.config)
+  set_win_width(self.local_num_win, num_pane_width)
+  set_win_width(self.local_result_connector_win, core_width)
+  set_win_width(self.result_left_num_win, num_pane_width)
+  set_win_width(self.result_right_num_win, num_pane_width)
+  set_win_width(self.result_remote_connector_win, core_width)
+  set_win_width(self.remote_num_win, num_pane_width)
+  -- Divide the columns budget among the visible content panes only; each
+  -- hidden side takes its two number panes and connector with it, and the
+  -- panel width only counts while the panel windows are actually open.
+  local hidden = self.hidden or {}
+  local local_visible = not hidden.local_pane
+  local remote_visible = not hidden.remote_pane
+  local visible_panes = 1 + (local_visible and 1 or 0) + (remote_visible and 1 or 0)
+  local side_gutter_width = (num_pane_width * 2) + core_width
   local content_width = math.max(15, math.floor((vim.o.columns
-    - ((self.panel and (config_mod.section(self.config, "git", "panel").width or 42)) or 0)
-    - (((self.number_width or 3) + 1) * 4)
-    - ((self.connector_width or connector_width.minimum(self.config)) * 2)) / 3))
+    - (panel_mod.is_open(self) and (config_mod.section(self.config, "git", "panel").width or 42) or 0)
+    - (local_visible and side_gutter_width or 0)
+    - (remote_visible and side_gutter_width or 0)) / visible_panes))
   set_win_width(self.local_win, content_width)
   set_win_width(self.result_win, content_width)
   set_win_width(self.remote_win, content_width)
   if self.status_enabled then
     set_win_width(self.local_header_win, content_width)
     set_win_width(self.result_header_win,
-      content_width + (((self.number_width or 3) + 1) * 2) + (self.connector_width or connector_width.minimum(self.config)))
+      content_width + (local_visible and ((num_pane_width * 2) + core_width) or 0))
     set_win_width(self.remote_header_win,
-      content_width + ((self.number_width or 3) + 1) + (self.connector_width or connector_width.minimum(self.config)))
+      content_width + (remote_visible and (num_pane_width + core_width) or 0))
   end
   for _, win in ipairs({ self.local_win, self.result_win, self.remote_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
@@ -524,6 +553,189 @@ function Merge:sync_gutter_viewports()
   self.syncing_scroll = false
 end
 
+-- Visibility toggles: hiding closes a pane's window group (content window,
+-- header, and the gutters owned by its diff pair) while every buffer, both
+-- diff-pair models, and the session survive; showing recreates the splits in
+-- the same order Merge.start uses. The result pane is never hideable.
+local pane_window_fields = {
+  local_pane = {
+    "local_header_win",
+    "local_win",
+    "local_num_win",
+    "local_result_connector_win",
+    "result_left_num_win",
+  },
+  remote_pane = {
+    "remote_header_win",
+    "remote_win",
+    "remote_num_win",
+    "result_remote_connector_win",
+    "result_right_num_win",
+  },
+}
+
+function Merge:focus_result_if_current_in(wins)
+  local current = vim.api.nvim_get_current_win()
+  for _, win in ipairs(wins) do
+    if win == current then
+      if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
+        vim.api.nvim_set_current_win(self.result_win)
+      end
+      return
+    end
+  end
+end
+
+function Merge:hide_pane(side)
+  local key = side .. "_pane"
+  if self.hidden[key] then
+    return
+  end
+  local fields = pane_window_fields[key]
+  local group = {}
+  for _, field in ipairs(fields) do
+    group[#group + 1] = self[field]
+  end
+  self:focus_result_if_current_in(group)
+  if self.last_content_win == self[side .. "_win"] then
+    self.last_content_win = self.result_win
+  end
+  -- The hidden side's renderer will not run again until the pane is shown;
+  -- clear its highlights out of the shared result buffer so they don't go
+  -- stale against future result edits.
+  local session_field = side == "local" and "local_result_session" or "result_remote_session"
+  local renderer = self[session_field]
+  if renderer and self.result_buf and vim.api.nvim_buf_is_valid(self.result_buf) then
+    for _, ns in ipairs({ renderer.ns, renderer.active_ns, renderer.path_ns }) do
+      pcall(vim.api.nvim_buf_clear_namespace, self.result_buf, ns, 0, -1)
+    end
+  end
+  self[session_field] = nil
+  for _, field in ipairs(fields) do
+    local win = self[field]
+    if win and vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+    self[field] = nil
+  end
+  self.hidden[key] = true
+  self:configure_windows()
+  self:render({ force_pair_rebuild = true })
+end
+
+function Merge:show_pane(side)
+  local key = side .. "_pane"
+  if not self.hidden[key] then
+    return
+  end
+  if not (self.result_win and vim.api.nvim_win_is_valid(self.result_win)) then
+    return
+  end
+  local num_pane_width = (self.number_width or 3) + 1
+  local core_width = self.connector_width or connector_width.minimum(self.config)
+  local function open_gutter(buf, anchor_win, width)
+    return layout.open_unfocusable_win(buf, anchor_win, { width = width })
+  end
+  if side == "local" then
+    self.local_win = vim.api.nvim_open_win(self.local_buf, false, {
+      split = "left",
+      win = self.result_win,
+    })
+    if self.status_enabled and self.result_header_win and vim.api.nvim_win_is_valid(self.result_header_win) then
+      self.local_header_win = vim.api.nvim_open_win(self.local_header_buf, false, {
+        split = "left",
+        win = self.result_header_win,
+      })
+    end
+    self.local_num_win = open_gutter(self.local_num_buf, self.local_win, num_pane_width)
+    self.local_result_connector_win = open_gutter(self.local_result_connector_buf, self.local_num_win, core_width)
+    self.result_left_num_win = open_gutter(self.result_left_num_buf, self.local_result_connector_win, num_pane_width)
+  else
+    self.result_right_num_win = open_gutter(self.result_right_num_buf, self.result_win, num_pane_width)
+    self.result_remote_connector_win = open_gutter(self.result_remote_connector_buf, self.result_right_num_win, core_width)
+    self.remote_num_win = open_gutter(self.remote_num_buf, self.result_remote_connector_win, num_pane_width)
+    self.remote_win = vim.api.nvim_open_win(self.remote_buf, false, {
+      split = "right",
+      win = self.remote_num_win,
+    })
+    if self.status_enabled and self.result_header_win and vim.api.nvim_win_is_valid(self.result_header_win) then
+      self.remote_header_win = vim.api.nvim_open_win(self.remote_header_buf, false, {
+        split = "right",
+        win = self.result_header_win,
+      })
+    end
+  end
+  self.hidden[key] = false
+  self:configure_windows()
+  self:render({ force_pair_rebuild = true })
+  self:sync_gutter_viewports()
+end
+
+function Merge:toggle_pane(side)
+  if self.hidden[side .. "_pane"] then
+    self:show_pane(side)
+  else
+    self:hide_pane(side)
+  end
+end
+
+function Merge:open_panel_windows()
+  local panel_config = config_mod.section(self.config, "git", "panel")
+  local width = panel_config.width or 42
+  local height = panel_config.commit_height or 10
+  -- The panel column spans the full tab height (including the header row),
+  -- like at startup — split at the tabpage root, not inside a content row.
+  local nav_win
+  vim.api.nvim_win_call(self.result_win, function()
+    vim.cmd("noautocmd topleft vertical split")
+    nav_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(nav_win, self.panel.nav_buf)
+  end)
+  local commit_win = vim.api.nvim_open_win(self.panel.commit_buf, false, {
+    split = "below",
+    win = nav_win,
+    height = height,
+  })
+  self.panel.nav_win = nav_win
+  self.panel.commit_win = commit_win
+  self.panel.visible = true
+  for _, win in ipairs({ nav_win, commit_win }) do
+    set_win_options(win, layout.win_opts.panel())
+    set_win_width(win, width)
+  end
+  set_win_height(commit_win, height)
+end
+
+function Merge:toggle_panel_visibility()
+  if not (self.panel_enabled and self.panel) then
+    nvim.notify_info("no commit panel in this merge session")
+    return
+  end
+  if panel_mod.is_open(self) then
+    self:focus_result_if_current_in({ self.panel.nav_win, self.panel.commit_win })
+    panel_mod.close(self)
+    self.hidden.panel = true
+  else
+    self:open_panel_windows()
+    self.hidden.panel = false
+    panel_mod.render(self, self.file_queue_index)
+  end
+  self:configure_windows()
+  self:render({ force_viewport = true })
+end
+
+function Merge:show_all()
+  if self.panel_enabled and self.panel and not panel_mod.is_open(self) then
+    self:toggle_panel_visibility()
+  end
+  if self.hidden.local_pane then
+    self:show_pane("local")
+  end
+  if self.hidden.remote_pane then
+    self:show_pane("remote")
+  end
+end
+
 function Merge:request_render()
   local previous = self.render_timer
   self.render_timer = nil
@@ -567,6 +779,11 @@ function Merge:render_view_key(result_tick)
     tostring(get_win_height(self.result_win)),
     tostring(get_win_height(self.remote_win)),
     tostring(self.connector_width or 0),
+    -- Hidden windows report width/topline as 0/1, which can collide with a
+    -- narrow visible layout — key visibility explicitly.
+    tostring((self.hidden or {}).local_pane or false),
+    tostring((self.hidden or {}).remote_pane or false),
+    tostring(panel_mod.is_open(self)),
   }, ":")
 end
 
@@ -605,6 +822,21 @@ function Merge:setup_keymaps()
     map(buf, document_keys.bottom, function() self:goto_document_edge("bottom") end)
     map(buf, keys.snap, function() self:snap_to_cursor() end)
     map(buf, keys.close, function() self:close() end)
+  end
+  -- Visibility toggles also work from the panel buffers, so the panel can be
+  -- hidden while focused in it and panes re-shown from anywhere.
+  local toggle_bufs = { self.local_buf, self.result_buf, self.remote_buf }
+  if self.panel then
+    toggle_bufs[#toggle_bufs + 1] = self.panel.nav_buf
+    toggle_bufs[#toggle_bufs + 1] = self.panel.commit_buf
+  end
+  for _, buf in ipairs(toggle_bufs) do
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+      map(buf, keys.toggle_panel, function() self:toggle_panel_visibility() end)
+      map(buf, keys.toggle_local, function() self:toggle_pane("local") end)
+      map(buf, keys.toggle_remote, function() self:toggle_pane("remote") end)
+      map(buf, keys.show_all, function() self:show_all() end)
+    end
   end
 end
 
@@ -652,12 +884,15 @@ function Merge:render_headers()
   if not self.status_enabled then
     return
   end
-  if not (self.local_header_win and self.result_header_win and self.remote_header_win) then
-    return
+  -- Hidden panes take their header window with them; render whichever
+  -- headers still have a live window.
+  local function header_width(win)
+    return win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win) or nil
   end
-  if not (vim.api.nvim_win_is_valid(self.local_header_win)
-      and vim.api.nvim_win_is_valid(self.result_header_win)
-      and vim.api.nvim_win_is_valid(self.remote_header_win)) then
+  local local_width = header_width(self.local_header_win)
+  local result_width = header_width(self.result_header_win)
+  local remote_width = header_width(self.remote_header_win)
+  if not (local_width or result_width or remote_width) then
     return
   end
   local lines = self:build_status_lines()
@@ -666,15 +901,21 @@ function Merge:render_headers()
     center = lines.result,
     right = lines.remote,
   }
-  ui.set_header_line(self.local_header_buf, self.header_ns, lines.left, vim.api.nvim_win_get_width(self.local_header_win))
-  ui.set_header_line_with_right(
-    self.result_header_buf,
-    self.header_ns,
-    lines.result,
-    lines.result_action,
-    vim.api.nvim_win_get_width(self.result_header_win)
-  )
-  ui.set_header_line(self.remote_header_buf, self.header_ns, lines.remote, vim.api.nvim_win_get_width(self.remote_header_win))
+  if local_width then
+    ui.set_header_line(self.local_header_buf, self.header_ns, lines.left, local_width)
+  end
+  if result_width then
+    ui.set_header_line_with_right(
+      self.result_header_buf,
+      self.header_ns,
+      lines.result,
+      lines.result_action,
+      result_width
+    )
+  end
+  if remote_width then
+    ui.set_header_line(self.remote_header_buf, self.header_ns, lines.remote, remote_width)
+  end
 end
 
 local function clear_range_hl(buf, ns, start_row, count)
@@ -743,6 +984,11 @@ end
 
 function Merge:render_zero_range_delete_overlay(row, sides)
   sides = sides or {}
+  local hidden = self.hidden or {}
+  sides = {
+    left = sides.left and not hidden.local_pane or false,
+    right = sides.right and not hidden.remote_pane or false,
+  }
   row = math.max(0, row or 0)
   local number_pane_width = math.max(1, (self.number_width or 3) + 1)
   local connector_width = math.max(1, self.connector_width or 1)
@@ -863,9 +1109,13 @@ function Merge:render(opts)
   -- Ticks alone cannot key reuse: switching merge files replaces the result
   -- buffer, and a fresh buffer's changedtick easily collides with the
   -- recorded one while the pair sessions still hold the deleted buffer.
+  -- A hidden side keeps its pair model but has no renderer session; only
+  -- visible sides need one for the fast path.
+  local local_visible = not (self.hidden or {}).local_pane
+  local remote_visible = not (self.hidden or {}).remote_pane
   local can_reuse_pairs = not opts.force_pair_rebuild
-    and self.local_result_session
-    and self.result_remote_session
+    and (not local_visible or self.local_result_session)
+    and (not remote_visible or self.result_remote_session)
     and self.local_result_pair
     and self.result_remote_pair
     and self.rendered_result_buf == self.result_buf
@@ -924,7 +1174,7 @@ function Merge:render(opts)
     git_relpath = self.path,
   })
 
-  local local_result = pair_renderer.from_pair(self, "LocalResult", left_pair, local_source, result_source_left, {
+  local local_result = local_visible and pair_renderer.from_pair(self, "LocalResult", left_pair, local_source, result_source_left, {
     left = self.local_buf,
     left_num = self.local_num_buf,
     connector = self.local_result_connector_buf,
@@ -940,9 +1190,9 @@ function Merge:render(opts)
     preserve_right_buffer_lines = true,
     suppress_right_context_highlights = true,
     shared_result_right = true,
-  })
+  }) or nil
 
-  local result_remote = pair_renderer.from_pair(self, "RemoteResult", right_pair, remote_source, result_source_right, {
+  local result_remote = remote_visible and pair_renderer.from_pair(self, "RemoteResult", right_pair, remote_source, result_source_right, {
     left = self.remote_buf,
     left_num = self.remote_num_buf,
     connector = self.result_remote_connector_buf,
@@ -959,17 +1209,29 @@ function Merge:render(opts)
     suppress_right_context_highlights = true,
     shared_result_right = true,
     mirror_connector_sides = true,
-  })
+  }) or nil
 
   self.local_result_session = local_result
   self.result_remote_session = result_remote
-  self.connector_width = math.max(local_result.connector_core_width, result_remote.connector_core_width)
-  local_result.connector_core_width = self.connector_width
-  result_remote.connector_core_width = self.connector_width
+  self.connector_width = math.max(
+    local_result and local_result.connector_core_width or 0,
+    result_remote and result_remote.connector_core_width or 0,
+    connector_width.minimum(self.config)
+  )
+  if local_result then
+    local_result.connector_core_width = self.connector_width
+  end
+  if result_remote then
+    result_remote.connector_core_width = self.connector_width
+  end
   self:configure_windows()
 
-  result_remote:render()
-  local_result:render()
+  if result_remote then
+    result_remote:render()
+  end
+  if local_result then
+    local_result:render()
+  end
   pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = self.result_buf })
 
   self:render_merge_overlays()
@@ -1778,6 +2040,11 @@ function Merge:resolve()
 end
 
 function Merge:focus_commit_panel_for_current_file()
+  -- A hidden inline panel is re-shown in place rather than spawning a second,
+  -- standalone commit panel.
+  if self.panel_enabled and self.panel and not panel_mod.is_open(self) then
+    self:toggle_panel_visibility()
+  end
   if self.panel
       and self.panel.visible
       and self.panel.nav_win
@@ -1811,6 +2078,32 @@ function Merge:close(from_autocmd)
   if not from_autocmd and self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
     pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
     pcall(vim.cmd, "tabclose")
+  end
+  -- Session buffers use bufhidden="hide" so visibility toggles can close
+  -- windows without wiping them; delete explicitly (after the tab is gone so
+  -- deletion never cascades into window closes) to avoid leaking buffers.
+  local session_buffers = {}
+  for _, buf in pairs({
+    self.local_buf,
+    self.remote_buf,
+    self.local_num_buf,
+    self.local_result_connector_buf,
+    self.result_left_num_buf,
+    self.result_right_num_buf,
+    self.result_remote_connector_buf,
+    self.remote_num_buf,
+    self.local_header_buf,
+    self.result_header_buf,
+    self.remote_header_buf,
+    self.panel and self.panel.nav_buf or nil,
+    self.panel and self.panel.commit_buf or nil,
+  }) do
+    session_buffers[#session_buffers + 1] = buf
+  end
+  for _, buf in ipairs(session_buffers) do
+    if vim.api.nvim_buf_is_valid(buf) then
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
   end
 end
 
