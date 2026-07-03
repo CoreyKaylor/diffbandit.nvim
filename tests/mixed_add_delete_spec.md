@@ -28,38 +28,35 @@ Verify a single file can contain **changes**, **deletions**, and **additions** s
   - The triangle cell is a transition cell, not part of the delete background fill.
 - Right side: native delete underline on the origin line immediately before the deletion. It must reach the right edge of the gutter and start after the triangle/rail cell in the connector area.
 
-### Change + trailing additions: `Original text here` → `Modified…` + `Added line 1/2`
+### Change + adjacent additions: `Original text here` → `Modified…` + `Added line 1/2`
+Linematch splits this region into two chunks: a 1↔1 change (`Original text here` →
+`Modified text here with extra content`) and a zero-context adjacent add chunk
+(`Added line 1/2`). Chunks are the staging unit, so their backgrounds and routes
+never fuse.
 - Left replacement line: change background (blue), with the changed token `Original` emphasized by a darker change background.
 - Right replacement line:
   - `Modified` is emphasized with darker change background.
   - `text here` keeps the lighter change background.
   - `with extra content` uses add background because it is appended text.
-- Added-only lines: their text uses add background (green), while the surrounding mixed route can remain in the change envelope.
+- Added-only lines: full add background (green) across the text and to the end of the row, including their right line numbers — they are an independent add chunk, not part of a change envelope.
 - Gutter:
-  - One blue mixed change/add envelope covers the replacement row and adjacent added-only rows.
-  - Top/bottom blue wedge glyphs approximate IntelliJ's softened route edge.
-  - Wedges render in the leftmost cell of the right number pane (`◢7`, `◥9` in this fixture). They must not float in the connector core.
-  - Wedge orientation is part of the route shape. Scrolled-through middle rows must not invent synthetic wedges; wedges appear only when the real envelope edge row is visible.
-  - Blue route background begins after the top wedge, not before it.
-  - The right line numbers inside the mixed envelope participate in the blue route background.
-  - No separate green add triangle or add-origin underline is rendered for the embedded added-only rows.
-- Terminal embedded add row:
-  - `Added line 2` uses add background through the end of the text.
-  - The cells after the text return to the mixed change envelope background, matching IntelliJ's return from green added text to blue route fill.
+  - The change chunk routes on its own; the add chunk draws its own route with its origin wedge in the left number pane (`8◤` in this fixture).
+  - Wedges render in the leftmost cell of the right number pane (`◢7` for the change target, `◢8`/`◥9` around the add band in this fixture). They must not float in the connector core.
+  - Wedge orientation is part of the route shape. Scrolled-through middle rows must not invent synthetic wedges; wedges appear only when the real connection rows are visible.
+  - The change and add routes stay visually separate; they may share an edge cell only where both genuinely dock on the same row and pane edge.
 
 ## Notes
 - Add/delete rows produced inside a `change` hunk still use true add/delete pane backgrounds.
-- Adjacent added-only rows inside a mixed replacement are embedded in the blue route envelope so the gutter does not imply a separate add hunk.
+- Embedded adds merge into a change band only within their own chunk (uneven change hunks that linematch bypasses). Adjacent added-only rows in a *separate* chunk always route independently, even with zero context between the chunks.
 - Chevrons/buttons from IntelliJ are intentionally out of scope for DiffBandit. Pull/apply actions belong to keybindings or commands.
 
 ## Integration Regression Checks
 
 The tmux integration verifier should protect these visual details:
 
-- Plain capture contains the delete triangle at `6◤` and the mixed top/bottom wedges.
+- Plain capture contains the delete triangle at `6◤` and the change/add wedges.
 - ANSI capture shows left changed-token emphasis for `Old` and `Original`.
 - ANSI capture shows right changed-token emphasis for `New` and `Modified`.
 - ANSI capture distinguishes the replacement tail (`text here`) from the appended suffix (`with extra content`).
-- ANSI capture shows `Added line 2` returning to the blue mixed envelope after the text.
-- ANSI capture shows no route background before the top mixed wedge and matching blue background after it.
-- Plain/ANSI capture shows mixed wedges in the right number pane, not centered in the connector core.
+- ANSI capture shows `Added line 2` keeping its add background after the text, distinct from the change background.
+- Plain/ANSI capture shows wedges in the number panes, not centered in the connector core.

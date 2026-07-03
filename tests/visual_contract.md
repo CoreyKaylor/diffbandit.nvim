@@ -41,10 +41,11 @@ This contract records the IntelliJ-inspired behavior that the focused specs and 
 
 ## Mixed Change/Add/Delete Hunks
 
-- A replacement followed by adjacent added-only rows is rendered as one mixed change/add envelope in the gutter, not as a separate add route.
+- Chunks are the staging unit: change bands and routes never fuse across chunk boundaries. A replacement followed by an adjacent added-only chunk renders as two independent routes, even with zero context between them.
+- Embedded added-only rows merge into a change band only when they belong to the same chunk (uneven change hunks that linematch bypasses); those rows keep add background on their text and return to the surrounding change band after it ends.
 - The replacement row keeps change background, while a truly appended suffix on the right can use add background for just the added suffix.
-- Embedded added-only rows keep add background on their text, then return to the surrounding change envelope after the added text ends.
-- Mixed envelope wedges soften the route edge and render in the leftmost cell of the right number pane. Background should begin after the top wedge, continue through the right line number, and return after the terminal added text.
+- Independent added-only chunks use full add background across text, trailing cells, and their right line numbers.
+- Wedges soften the route edge and render in the leftmost cell of a number pane, never floating in the connector core.
 - Deletions inside mixed views still use the compact deletion route: left-side delete background, left-docked delete triangle, right-origin underline, and no gutter overlap with neighboring blue routes.
 
 ## Scroll-Clipped Routes
@@ -57,7 +58,7 @@ Scroll behavior uses the compact visual row model shared by the connector, not r
 - Triangles and wedges are connection glyphs, not viewport-edge markers. They appear only when their real underline/origin/destination connection row is visible or immediately adjacent.
 - Scrolled-through middle rows show rails/background continuity without synthetic triangles or wedges at the viewport boundary.
 - Scroll clipping must not change the transition-cell rules: add background starts after the add transition cell, delete background stops before the delete transition cell, and unrelated gutter regions must still not touch.
-- Mixed change/add envelopes keep right-docked wedges only at the real envelope edge rows.
+- Routes keep right-docked wedges only on their real connection rows; adds hide their wedge when the origin scrolls offscreen.
 
 ## Future Spec Checklist
 

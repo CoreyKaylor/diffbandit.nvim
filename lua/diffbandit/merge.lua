@@ -775,11 +775,15 @@ function Merge:render(opts)
   opts = opts or {}
   local result_tick = self.result_buf and vim.api.nvim_buf_get_changedtick(self.result_buf) or 0
   local next_result_lines = logical_buffer_lines(self.result_buf)
+  -- Ticks alone cannot key reuse: switching merge files replaces the result
+  -- buffer, and a fresh buffer's changedtick easily collides with the
+  -- recorded one while the pair sessions still hold the deleted buffer.
   local can_reuse_pairs = not opts.force_pair_rebuild
     and self.local_result_session
     and self.result_remote_session
     and self.local_result_pair
     and self.result_remote_pair
+    and self.rendered_result_buf == self.result_buf
     and self.rendered_result_tick == result_tick
 
   if can_reuse_pairs then
@@ -883,6 +887,7 @@ function Merge:render(opts)
 
   self:render_merge_overlays()
   self.rendered_result_tick = result_tick
+  self.rendered_result_buf = self.result_buf
   self.rendered_view_key = self:render_view_key(result_tick)
   self:render_headers()
   return true
@@ -1306,7 +1311,8 @@ function Merge:open_merge_file(index, opts)
   self.merge_context = git.merge_context(self.root)
 
   local ft = source_mod.detect_filetype(self.path)
-  document.cleanup_created_buffer(self.result_editable, { discard_if_unchanged = true })
+  local old_result_editable = self.result_editable
+  local old_result_buf = self.result_buf
   self.result_editable = nil
   local result_path = git.abs_path(self.root, self.path)
   if can_use_real_result_buffer(result_path) then
@@ -1321,21 +1327,26 @@ function Merge:open_merge_file(index, opts)
   end
   if result_buf then
     self.result_buf = result_buf
-    if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
-      vim.api.nvim_win_set_buf(self.result_win, self.result_buf)
-    end
-  elseif result_err then
-    nvim.notify_warn(tostring(result_err))
-    self.result_editable = nil
   else
+    -- An acquire failure must still fall back to a scratch result buffer so
+    -- the session never keeps rendering into the previous file's buffer.
+    if result_err then
+      nvim.notify_warn(tostring(result_err))
+      self.result_editable = nil
+    end
     self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, {}, {
       buftype = "acwrite",
       modifiable = true,
       filetype = ft,
     })
-    if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
-      vim.api.nvim_win_set_buf(self.result_win, self.result_buf)
-    end
+  end
+  if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
+    vim.api.nvim_win_set_buf(self.result_win, self.result_buf)
+  end
+  -- Clean up only after the window shows the new buffer: deleting a buffer
+  -- that is still displayed closes its window.
+  if old_result_buf ~= self.result_buf then
+    document.cleanup_created_buffer(old_result_editable, { discard_if_unchanged = true })
   end
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.local_buf })
   vim.api.nvim_buf_set_lines(self.local_buf, 0, -1, false, self.local_lines)
@@ -1365,7 +1376,7 @@ function Merge:open_merge_file(index, opts)
   self:configure_windows()
   self:setup_autocmds()
   self:setup_keymaps()
-  self:render()
+  self:render({ force_pair_rebuild = true })
   if self.panel then
     panel_mod.render(self, index)
   end

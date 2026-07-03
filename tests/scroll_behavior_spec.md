@@ -57,10 +57,10 @@ Files:
 
 Expected behavior:
 
-- A changed row followed by added-only rows remains one mixed change/add envelope.
+- The changed row and the adjacent added-only block are separate chunks (linematch splits them): the change routes on its own and the add block routes independently with full add background, including its right line numbers behind a clear spacer cell.
 - Changed words retain darker change emphasis on both sides after scrolling.
-- Added-only text remains green, with cells after terminal added text returning to blue change envelope.
-- If the top or bottom mixed wedge scrolls out of view, middle mixed rows continue the route without a synthetic wedge.
+- Route wedges dock on the real connection rows (the add band straddles its origin row with `◢`/`◥` on adjacent rows); scrolled-through middle rows never invent synthetic wedges.
+- When the add origin scrolls offscreen, the add band shows background continuity only — adds hide their transition wedge.
 - Nearby deletion routes keep the compact left-docked delete behavior and must not touch the mixed route.
 
 ## Integration Capture Expectations

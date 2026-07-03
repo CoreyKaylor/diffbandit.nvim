@@ -746,6 +746,9 @@ local function underline_origin_row(self, buf, win, row, hl_group, hl_mode, prio
       priority = priority,
     })
   end
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return
+  end
   local win_width = vim.api.nvim_win_get_width(win)
   local text_width = vim.fn.strdisplaywidth(line_content)
   local padding_len = math.max(0, win_width - text_width)
