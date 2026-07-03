@@ -359,6 +359,7 @@ end
 function Merge:setup_autocmds()
   self.augroup = vim.api.nvim_create_augroup("DiffBanditMerge" .. tostring(self.id), { clear = true })
   self.last_content_win = self.result_win
+  self.syncing_scroll = false
   local function semantic_target_for_gutter(win, previous)
     if win == self.local_num_win
         or win == self.local_result_connector_win
@@ -448,6 +449,50 @@ function Merge:setup_autocmds()
       end
     end,
   })
+  -- LSP configs commonly install buffer-local diagnostic maps ([d/]d) from
+  -- LspAttach handlers; those fire after the merge claimed the real result
+  -- buffer and would shadow the document-navigation maps. Re-assert ours
+  -- after the handlers have run.
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = self.augroup,
+    callback = function(args)
+      if self.disposed then
+        return
+      end
+      if args.buf == self.local_buf or args.buf == self.result_buf or args.buf == self.remote_buf then
+        vim.schedule(function()
+          if not self.disposed then
+            keymaps.reassert(self, args.buf)
+          end
+        end)
+      end
+    end,
+  })
+  -- The three content panes scroll independently; DiffBandit owns gutter
+  -- synchronization (same contract as two-way sessions — no scrollbind).
+  vim.api.nvim_create_autocmd("WinScrolled", {
+    group = self.augroup,
+    callback = function(event)
+      if self.disposed or self.syncing_scroll then
+        return
+      end
+      -- WinScrolled delivers the scrolled window ID via <amatch>.
+      local win = tonumber(event.match)
+      if win ~= self.local_win
+          and win ~= self.result_win
+          and win ~= self.remote_win
+          and win ~= self.local_num_win
+          and win ~= self.local_result_connector_win
+          and win ~= self.result_left_num_win
+          and win ~= self.result_right_num_win
+          and win ~= self.result_remote_connector_win
+          and win ~= self.remote_num_win then
+        return
+      end
+      self:sync_gutter_viewports()
+      self:request_render()
+    end,
+  })
   vim.api.nvim_create_autocmd("TabClosed", {
     group = self.augroup,
     callback = function(args)
@@ -458,21 +503,48 @@ function Merge:setup_autocmds()
   })
 end
 
+-- Snap every number pane and connector window to its owning content pane's
+-- topline. The result pane owns both of its sidecar number panes; each
+-- connector follows its outer pane, matching set_viewports.
+function Merge:sync_gutter_viewports()
+  if self.disposed then
+    return
+  end
+  self.syncing_scroll = true
+  local local_topline = get_win_view_topline(self.local_win)
+  local result_topline = get_win_view_topline(self.result_win)
+  local remote_topline = get_win_view_topline(self.remote_win)
+  set_win_view_topline(self.local_num_win, local_topline)
+  set_win_view_topline(self.local_result_connector_win, local_topline)
+  set_win_view_topline(self.result_left_num_win, result_topline)
+  set_win_view_topline(self.result_right_num_win, result_topline)
+  set_win_view_topline(self.result_remote_connector_win, remote_topline)
+  set_win_view_topline(self.remote_num_win, remote_topline)
+  self.syncing_scroll = false
+end
+
 function Merge:request_render()
-  if self.render_timer then
-    self.render_timer:stop()
-    self.render_timer:close()
-    self.render_timer = nil
+  local previous = self.render_timer
+  self.render_timer = nil
+  if previous then
+    previous:stop()
+    if not previous:is_closing() then
+      previous:close()
+    end
   end
   local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
   local timer = vim.uv and vim.uv.new_timer() or vim.loop.new_timer()
   self.render_timer = timer
   timer:start(delay, 0, function()
     timer:stop()
-    timer:close()
+    if not timer:is_closing() then
+      timer:close()
+    end
     vim.schedule(function()
-      if not self.disposed then
+      if self.render_timer == timer then
         self.render_timer = nil
+      end
+      if not self.disposed then
         self:render()
       end
     end)
@@ -1653,7 +1725,9 @@ function Merge:close(from_autocmd)
   end
   if self.render_timer then
     self.render_timer:stop()
-    self.render_timer:close()
+    if not self.render_timer:is_closing() then
+      self.render_timer:close()
+    end
     self.render_timer = nil
   end
   document.cleanup_created_buffer(self.result_editable, { discard_if_unchanged = true })

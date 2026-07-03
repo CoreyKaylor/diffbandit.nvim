@@ -390,7 +390,8 @@ function Session:setup_autocmds()
       if self.syncing_scroll or self.rendering_viewport or self.disposed then
         return
       end
-      local win = tonumber(event.winid)
+      -- WinScrolled delivers the scrolled window ID via <amatch>.
+      local win = tonumber(event.match)
       if win == self.left_header_win
           or win == self.center_header_win
           or win == self.right_header_win
@@ -430,6 +431,26 @@ function Session:setup_autocmds()
       self.last_source_side = "right"
       self:sync_from_right()
       self:render_overviews()
+    end,
+  })
+
+  -- LSP configs commonly install buffer-local diagnostic maps ([d/]d) from
+  -- LspAttach handlers; those fire after this session claimed a real file
+  -- buffer and would shadow the document-navigation maps. Re-assert ours
+  -- after the handlers have run.
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = augroup,
+    callback = function(args)
+      if self.disposed then
+        return
+      end
+      if args.buf == self.left_buf or args.buf == self.right_buf then
+        vim.schedule(function()
+          if not self.disposed then
+            keymaps.reassert(self, args.buf)
+          end
+        end)
+      end
     end,
   })
 
