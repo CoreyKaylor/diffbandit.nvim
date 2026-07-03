@@ -11,6 +11,7 @@ This contract records the IntelliJ-inspired behavior that the focused specs and 
 - Triangle and wedge glyphs must be rendered in the relevant line-number pane and edge-docked to the connector side they connect with. They should not float in the middle of the connector core; middle-gutter space is reserved for rails, underlines, and lane separation.
 - Triangle orientation is path-directional, not fixed only by diff kind. The glyph must flip when the connector rail approaches from the opposite vertical direction so the rail/underline visually touches the triangle's point or open edge.
 - Adjacent or overlapping change regions must not touch in the gutter. When paths are close, lanes must stay compact and leave at least one clear transition cell between unrelated regions.
+- Route lines and rails crossing a solid connector band decorate it instead of cutting it: the band background continues underneath while the crossing route's underline/rail renders on top, so both stay visible on shared rows. The same rule covers number-pane spacer cells on delete-origin rows inside a change band — the band fills the whole pane width and the origin underline rides over it, so the corridor never shows a bare default cell between the core and the number text.
 - Native terminal underline is the required representation for separator spans. Diagrams may use `▁`, but implementation and integration tests should inspect ANSI underline (`SGR 4`) rather than literal underline characters.
 - ANSI captures are part of the spec. Plain captures verify glyph geometry and text placement; `capture-pane -e` verifies color backgrounds, underline spans, and token-level emphasis.
 - Optional overview gutters are independent one-column visual maps at the outer edges of the diff view. They summarize side-native changed rows proportionally across the source viewport height and must not affect source text, line-number panes, connector routing, or scroll synchronization.
@@ -47,6 +48,30 @@ This contract records the IntelliJ-inspired behavior that the focused specs and 
 - Independent added-only chunks use full add background across text, trailing cells, and their right line numbers.
 - Wedges soften the route edge and render in the leftmost cell of a number pane, never floating in the connector core.
 - Deletions inside mixed views still use the compact deletion route: left-side delete background, left-docked delete triangle, right-origin underline, and no gutter overlap with neighboring blue routes.
+
+## Three-Way Merge Result Pane
+
+The merge view renders two pair diffs (local→result and remote→result) into one
+shared center result buffer. Both pairs treat the result as their "new" side.
+
+- The result content pane prioritizes the change diff: when one pair reads a
+  result row as added while the other reads it as changed, the change band and
+  word-level emphasis win the content area. The add presentation stays in that
+  pair's own gutter — origin underline, wedges, and line numbers keep the add
+  color there.
+- Mechanically, shared-result add bands are range marks placed just below the
+  change band priority; add line highlights are forbidden in the result buffer
+  because line highlights beat range highlights regardless of priority.
+- On shared-result change rows, appended-suffix text uses change emphasis, not
+  add background — green marks never appear inside the result content pane.
+- The red `▔` zero-range overlay (plus the `◤`/`◥` gutter markers) is reserved
+  for an empty result document, where there is no content row it could hide.
+  Zero-range conflict regions inside a non-empty result rely on the pair
+  renderers' standard delete routes: wedges on the real outer rows and the
+  delete-origin underline on the result boundary row.
+- Side-only lines (content one branch has that the result lacks) keep the
+  delete-family presentation in their own pane and gutter; change rows must
+  never inherit red route glyphs from a neighboring zero-range region.
 
 ## Scroll-Clipped Routes
 

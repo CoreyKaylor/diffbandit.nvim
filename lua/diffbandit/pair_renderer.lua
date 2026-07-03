@@ -55,6 +55,7 @@ function M.from_pair(owner, id_suffix, pair, left_source, right_source, buffers,
     preserve_left_buffer_lines = opts.preserve_left_buffer_lines == true,
     preserve_right_buffer_lines = opts.preserve_right_buffer_lines == true,
     suppress_right_context_highlights = opts.suppress_right_context_highlights == true,
+    shared_result_right = opts.shared_result_right == true,
     mirror_connector_sides = opts.mirror_connector_sides == true,
   }, { __index = Session })
 

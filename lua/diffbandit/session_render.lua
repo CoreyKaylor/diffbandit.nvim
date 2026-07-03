@@ -447,6 +447,10 @@ local function render_pane_backgrounds(self, ctx)
       })
     end
     local skip_right_line_hl = (meta.kind == "change" and not meta.filler_right)
+      -- Shared merge result: line highlights beat range highlights regardless
+      -- of priority, so an add line_hl would override the other pair's change
+      -- band. Add rows there rely on the low-priority range mark instead.
+      or (self.shared_result_right and meta.kind == "add" and not meta.filler_right)
     local skip_right_context_hl = self.suppress_right_context_highlights == true and meta.kind == "context"
     if final_right_hl and meta.right_index and not skip_right_line_hl and not skip_right_context_hl then
       local right_row = meta.right_index - 1
@@ -475,6 +479,7 @@ local function render_connector_backgrounds(self, ctx)
       vim.api.nvim_buf_set_extmark(self.left_num_buf, self.linenum_ns, row, self:left_triangle_col(), {
         virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
         virt_text_pos = "overlay",
+        hl_mode = "combine",
       })
       local right_index_at_row = ctx.right_topline + ((row + 1) - ctx.left_topline)
       if ctx.add_origin_row_has_transition[origin_row]
@@ -483,6 +488,7 @@ local function render_connector_backgrounds(self, ctx)
         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, right_index_at_row - 1, self:right_triangle_col(), {
           virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
           virt_text_pos = "overlay",
+          hl_mode = "combine",
         })
       end
     end
@@ -534,17 +540,25 @@ local function render_connector_backgrounds(self, ctx)
       end
 
       if is_delete_origin then
+        -- "combine" keeps the number pane's own background (e.g. a change
+        -- band) under the underline spacer so the origin underline decorates
+        -- the row instead of punching a dark cell into it.
         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, row, self:right_triangle_col(), {
           virt_text = { { " ", "DiffBanditDeleteRightSeparatorConnector" } },
           virt_text_pos = "overlay",
+          hl_mode = "combine",
         })
       end
 
       vim.api.nvim_buf_add_highlight(self.right_num_buf, self.linenum_ns, right_num_hl, row,
         self:right_number_text_start_col(), self:right_number_text_end_col())
       if ctx.change_number_right_indexes[meta.right_index] then
-        local start_col = ctx.solid_change_number_right_indexes[meta.right_index] and 0 or self:right_number_text_start_col()
-        local end_col = ctx.solid_change_number_right_indexes[meta.right_index] and -1 or self:right_number_text_end_col()
+        -- Delete-origin rows inside a change band fill from the pane edge:
+        -- the underline spacer cell combines on top, so the band flows
+        -- through it instead of leaving a bare default cell in the corridor.
+        local full_fill = ctx.solid_change_number_right_indexes[meta.right_index] or is_delete_origin
+        local start_col = full_fill and 0 or self:right_number_text_start_col()
+        local end_col = full_fill and -1 or self:right_number_text_end_col()
         vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorChange", row, start_col, end_col)
       elseif meta.kind == "add" then
         vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", row,
@@ -669,16 +683,29 @@ local function render_intraline_spans(self, ctx)
 
           -- Added suffix (green): from add_start to end-of-line, extend to window edge
           if spans.add_start and add_start < right_line_len then
-            local add_hl = "DiffBanditAdd"
-            pcall(vim.api.nvim_buf_add_highlight, self.right_buf, self.ns, add_hl, row_r, add_start, right_line_len)
-            pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, right_line_len, {
-              end_row = row_r + 1,
-              end_col = 0,
-              hl_group = "DiffBanditAdd",
-              hl_eol = true,
-              hl_mode = "combine",
-              priority = 3000,
-            })
+            if self.shared_result_right then
+              -- The shared merge result pane reads as change + inner-change
+              -- emphasis: appended text is emphasized instead of add-colored
+              -- so green marks never fight the other pair's change diff.
+              pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, add_start, {
+                end_row = row_r,
+                end_col = right_line_len,
+                hl_group = "DiffBanditChangeEmphasis",
+                hl_mode = ctx.right_text_hl_mode,
+                priority = 8000,
+              })
+            else
+              local add_hl = "DiffBanditAdd"
+              pcall(vim.api.nvim_buf_add_highlight, self.right_buf, self.ns, add_hl, row_r, add_start, right_line_len)
+              pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, right_line_len, {
+                end_row = row_r + 1,
+                end_col = 0,
+                hl_group = "DiffBanditAdd",
+                hl_eol = true,
+                hl_mode = "combine",
+                priority = 3000,
+              })
+            end
           end
         end
       end
@@ -718,15 +745,19 @@ local function render_intraline_spans(self, ctx)
             priority = 6500,
           })
         end
-      else
-        -- Ensure added right-only lines are fully green, overriding any stray change spans.
+      elseif self.shared_result_right then
+        -- Plain add rows are normally painted by the base line highlight, but
+        -- in the shared merge result the add band must sit just below the
+        -- change band (2500) so the other pair's change diff plus inner
+        -- emphasis owns contested rows. That contest needs a range mark —
+        -- line highlights win over range highlights regardless of priority.
         pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
-          end_row = row_r,
-          end_col = -1,
+          end_row = row_r + 1,
+          end_col = 0,
           hl_group = "DiffBanditAdd",
           hl_eol = true,
           hl_mode = ctx.right_text_hl_mode,
-          priority = 7000,
+          priority = 2450,
         })
       end
     end
@@ -753,9 +784,12 @@ local function underline_origin_row(self, buf, win, row, hl_group, hl_mode, prio
   local text_width = vim.fn.strdisplaywidth(line_content)
   local padding_len = math.max(0, win_width - text_width)
   if padding_len > 0 then
+    -- "combine" keeps the row's own trailing background (e.g. a change band's
+    -- eol fill) underneath the underline padding instead of cutting it off.
     pcall(vim.api.nvim_buf_set_extmark, buf, self.extmark_ns, row, 0, {
       virt_text = { { string.rep(" ", padding_len), hl_group } },
       virt_text_win_col = text_width,
+      hl_mode = "combine",
       priority = priority,
     })
   end
@@ -800,9 +834,13 @@ local function render_route_glyphs(self, ctx)
     if end_col < start_col then
       return
     end
+    -- "combine" keeps whatever background the core row already carries (a
+    -- solid change band, most notably) underneath the underline run, so a
+    -- crossing route decorates the band instead of cutting a gap into it.
     vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, start_col, {
       virt_text = { { string.rep(" ", end_col - start_col + 1), hl_group } },
       virt_text_pos = "overlay",
+      hl_mode = "combine",
     })
   end
 
@@ -816,6 +854,7 @@ local function render_route_glyphs(self, ctx)
     vim.api.nvim_buf_set_extmark(self.connector_buf, self.path_ns, row - 1, col, {
       virt_text = { { "│", hl_group } },
       virt_text_pos = "overlay",
+      hl_mode = "combine",
     })
   end
 

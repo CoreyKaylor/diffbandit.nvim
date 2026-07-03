@@ -722,6 +722,14 @@ function Merge:render_zero_range_delete_overlay(row, sides)
 end
 
 function Merge:render_pair_zero_delete_overlays()
+  -- Only meaningful while the result document is empty. Once the result has
+  -- content, the pair renderers already mark zero-range deletes with their
+  -- standard delete routes (outer-row wedges plus the origin underline on the
+  -- result boundary row), and a full-width ▔ overlay would sit on top of — and
+  -- hide — a real result row.
+  if #(self.result_lines or {}) > 0 then
+    return
+  end
   for _, hunk in ipairs(((self.local_result_pair or {}).hunks) or {}) do
     if hunk.type == "delete" and hunk.right.count == 0 and hunk.left.count > 0 and hunk.left.start == 1 then
       self:render_zero_range_delete_overlay(anchor_row_for_zero_range(self.result_buf, hunk.right.start), {
@@ -760,7 +768,10 @@ function Merge:render_merge_overlays()
     local render_count = result_count_for_render(region, self.result_lines)
     if render_count > 0 then
       clear_range_hl(self.result_buf, self.active_ns, region.result_start, render_count)
-    else
+    elseif #(self.result_lines or {}) == 0 then
+      -- Zero-range regions inside a non-empty result are covered by the pair
+      -- renderers' delete routes; the ▔ overlay is reserved for the empty
+      -- result document, where there is no content row it could obscure.
       local row = anchor_row_for_zero_range(self.result_buf, region.result_start)
       self:render_zero_range_delete_overlay(row, {
         left = true,
@@ -854,6 +865,7 @@ function Merge:render(opts)
   }, {
     preserve_right_buffer_lines = true,
     suppress_right_context_highlights = true,
+    shared_result_right = true,
   })
 
   local result_remote = pair_renderer.from_pair(self, "RemoteResult", right_pair, remote_source, result_source_right, {
@@ -871,6 +883,7 @@ function Merge:render(opts)
   }, {
     preserve_right_buffer_lines = true,
     suppress_right_context_highlights = true,
+    shared_result_right = true,
     mirror_connector_sides = true,
   })
 
@@ -1348,6 +1361,10 @@ function Merge:open_merge_file(index, opts)
   if old_result_buf ~= self.result_buf then
     document.cleanup_created_buffer(old_result_editable, { discard_if_unchanged = true })
   end
+  -- The outer source buffers are reused across file switches; rename them so
+  -- window statuslines follow the newly opened file.
+  pcall(vim.api.nvim_buf_set_name, self.local_buf, source_label(self.path, "local"))
+  pcall(vim.api.nvim_buf_set_name, self.remote_buf, source_label(self.path, "remote"))
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.local_buf })
   vim.api.nvim_buf_set_lines(self.local_buf, 0, -1, false, self.local_lines)
   vim.api.nvim_set_option_value("modified", false, { buf = self.local_buf })

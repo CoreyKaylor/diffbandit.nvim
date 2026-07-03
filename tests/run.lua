@@ -3724,6 +3724,95 @@ if vim.fn.executable("git") == 1 then
   end
 
   do
+    -- Mid-document zero-range conflict: both sides insert different lines at
+    -- the same interior point, so the conflict region has zero result lines
+    -- while the result document itself is non-empty. The ▔ overlay is
+    -- reserved for the empty result document — here it would cover (and hide)
+    -- a real content row; the pair renderers' delete routes mark the spot.
+    local repo = make_git_repo()
+    write_repo_file(repo, "mid_add.txt", { "top", "alpha = 1", "bottom" })
+    commit_baseline(repo)
+    local main_branch = vim.trim(git_test_command({ "branch", "--show-current" }, repo))
+    git_test_command({ "checkout", "-b", "feature" }, repo)
+    write_repo_file(repo, "mid_add.txt", { "top", "alpha = 1", "remote extra", "bottom" })
+    git_test_command({ "commit", "-am", "remote mid insertion" }, repo)
+    git_test_command({ "checkout", main_branch }, repo)
+    write_repo_file(repo, "mid_add.txt", { "top", "alpha = 1", "local extra", "bottom" })
+    git_test_command({ "commit", "-am", "local mid insertion" }, repo)
+    local merge_code = git_status_command({ "merge", "feature" }, repo)
+    assert_eq(merge_code ~= 0, true, "Mid-document add/add fixture should conflict")
+    local session = assert((merge_mod.start(assert((merge_mod.load(repo, "mid_add.txt", config))), config, {})))
+    assert_eq(#session.result_lines > 0, true, "Mid-document conflict should keep a non-empty result document")
+    local function overlay_glyphs(buf)
+      local found = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, session.active_ns, 0, -1, { details = true })) do
+        local details = mark[4] or {}
+        local virt_text = details.virt_text and details.virt_text[1] and details.virt_text[1][1] or ""
+        if virt_text:find("▔", 1, true) or virt_text == "◤" or virt_text == "◥" then
+          found[#found + 1] = virt_text
+        end
+      end
+      return found
+    end
+    assert_eq(#overlay_glyphs(session.result_buf), 0,
+      "Non-empty result must not draw the zero-range ▔ overlay over a real content row")
+    assert_eq(#overlay_glyphs(session.local_num_buf), 0,
+      "Non-empty result must not draw the zero-range local gutter marker")
+    assert_eq(#overlay_glyphs(session.remote_num_buf), 0,
+      "Non-empty result must not draw the zero-range remote gutter marker")
+    pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.result_buf })
+    session:close()
+  end
+
+  do
+    -- Delete/modify conflict: the shared result content pane must prefer the
+    -- surviving side's change diff (band + inner emphasis) over the deleted
+    -- side's add band, which stays available below it as a range mark.
+    local repo = make_git_repo()
+    write_repo_file(repo, "delete_vs_edit.txt", { "shared header line", "shared body line" })
+    commit_baseline(repo)
+    local main_branch = vim.trim(git_test_command({ "branch", "--show-current" }, repo))
+    git_test_command({ "checkout", "-b", "incoming" }, repo)
+    write_repo_file(repo, "delete_vs_edit.txt", { "shared header line", "incoming body line" })
+    git_test_command({ "commit", "-am", "incoming edits file" }, repo)
+    git_test_command({ "checkout", main_branch }, repo)
+    git_test_command({ "rm", "delete_vs_edit.txt" }, repo)
+    git_test_command({ "commit", "-m", "local deletes file" }, repo)
+    local merge_code = git_status_command({ "merge", "incoming" }, repo)
+    assert_eq(merge_code ~= 0, true, "Delete-vs-edit fixture should conflict")
+    local session = assert((merge_mod.start(assert((merge_mod.load(repo, "delete_vs_edit.txt", config))), config, {})))
+    local local_add_range, local_add_line_hl, local_add_priority
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(session.result_buf,
+      session.local_result_session.extmark_ns, 0, -1, { details = true })) do
+      local details = mark[4] or {}
+      if details.hl_group == "DiffBanditAdd" then
+        local_add_range = true
+        local_add_priority = details.priority
+      end
+      if details.line_hl_group == "DiffBanditAdd" then
+        local_add_line_hl = true
+      end
+    end
+    assert_eq(local_add_range, true,
+      "Deleted-side pair should paint the shared result add band as a range mark")
+    assert_eq(local_add_line_hl or false, false,
+      "Deleted-side pair must not paint an add line highlight in the shared result (line highlights beat range priorities)")
+    local remote_change_priority
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(session.result_buf,
+      session.result_remote_session.extmark_ns, 0, -1, { details = true })) do
+      local details = mark[4] or {}
+      if details.hl_group == "DiffBanditChangeRight" then
+        remote_change_priority = details.priority
+      end
+    end
+    assert_eq(type(local_add_priority) == "number" and type(remote_change_priority) == "number"
+      and local_add_priority < remote_change_priority, true,
+      "Shared result change band must outrank the other pair's add band on contested rows")
+    pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.result_buf })
+    session:close()
+  end
+
+  do
     local repo = make_git_repo()
     git_test_command({ "commit", "--allow-empty", "-m", "baseline" }, repo)
     local main_branch = vim.trim(git_test_command({ "branch", "--show-current" }, repo))
