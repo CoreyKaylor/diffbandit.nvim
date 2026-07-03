@@ -12,7 +12,7 @@ The diff includes:
 - A top two-line change.
 - A nearby top deletion.
 - Two standalone insertion blocks.
-- A lower mixed change/add envelope.
+- A lower change with a zero-context adjacent add chunk that routes independently.
 - A lower deletion that can overlap the lower mixed route after scrolling.
 
 ## Required Behavior
@@ -22,7 +22,7 @@ The diff includes:
 - Spacer lanes are reserved between overlapping same-direction change/delete routes so adjacent routes do not visually touch.
 - Dense projected conflicts must be routed inside the fixed connector core without resizing while scrolling.
 - Connector rail visibility is capped at eight competing vertical routes; larger conflicts prune the farthest offscreen continuation routes before widening beyond the eight-route width.
-- Add, delete, and change routes share collision detection. No route may overlap or touch another route in the connector core.
+- Add, delete, and change routes share collision detection. No route may overlap or touch another route in the connector core, except that two routes whose endpoints genuinely dock on the same row and pane edge may stack on that edge cell (edge-docked endpoints cannot be separated by widening).
 - Lane reuse is allowed only after a route no longer overlaps the candidate route's occupied range.
 
 ## Protected Viewports

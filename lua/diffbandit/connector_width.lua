@@ -24,12 +24,13 @@ function M.maximum(config)
   return math.max(M.minimum(config), math.floor(width))
 end
 
+-- Base width for a view's connector pane. view.connectors only ever holds
+-- blank strings of exactly minimum width (view.build fills them; glyphs are
+-- extmark overlays, never buffer text), so this is minimum(config) today.
+-- The view parameter stays for API stability with callers and tests.
 function M.base(view, config)
-  local width = M.minimum(config)
-  for _, value in ipairs(((view or {}).connectors) or {}) do
-    width = math.max(width, vim.fn.strdisplaywidth(value))
-  end
-  return math.min(M.maximum(config), width)
+  local _ = view
+  return M.minimum(config)
 end
 
 return M

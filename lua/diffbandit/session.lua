@@ -103,7 +103,6 @@ local function assign_pane_metrics(self, sources, view)
   self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
   self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
   self.connector_core_width = connector_width.base(view, self.config)
-  self.gutter_width = self.connector_core_width
 end
 
 function Session.start(sources, config, opts)
@@ -1102,65 +1101,16 @@ function Session:project_paths_for_viewport(paths)
   return self:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
 end
 
-local function sorted_keys(set)
-  local keys = {}
-  for key, _ in pairs(set) do
-    keys[#keys + 1] = key
-  end
-  table.sort(keys)
-  return keys
-end
-
 function Session:precompute_connector_core_width()
-  local minimum_width = connector_width.base(self.view, self.config)
-  local pressure_events = {}
-  local function add_pressure_range(start_row, end_row)
-    if not start_row or not end_row then
-      return
-    end
-    start_row = math.floor(start_row)
-    end_row = math.floor(end_row)
-    if end_row < start_row then
-      start_row, end_row = end_row, start_row
-    end
-    pressure_events[start_row] = (pressure_events[start_row] or 0) + 1
-    pressure_events[end_row + 1] = (pressure_events[end_row + 1] or 0) - 1
-  end
-
-  for _, path in ipairs(self:base_paths()) do
-    if path.kind == "add" or path.kind == "delete" then
-      if not path.embedded_in_change then
-        add_pressure_range(path.origin_display_row, path.triangle_display_row or path.display_start_row)
-      end
-    elseif path.kind == "change" and path.offset then
-      local start_row = math.min(path.start_left_index or path.display_start_row or 0,
-        path.start_right_index or path.display_start_row or 0)
-      local end_row = math.max(path.end_left_index or path.display_end_row or start_row,
-        path.end_right_index or path.display_end_row or start_row)
-      add_pressure_range(start_row, end_row)
-    end
-  end
-
-  local rows = sorted_keys(pressure_events)
-  local active = 0
-  local max_pressure = 0
-  for _, row in ipairs(rows) do
-    active = active + pressure_events[row]
-    max_pressure = math.max(max_pressure, active)
-  end
-  -- Document-space pressure cannot see overlaps created by scrolling the
-  -- panes independently (a route whose origin scrolls off-screen stretches
-  -- its rail across rows it never touches in the aligned view). Reserve one
-  -- extra lane of slack whenever the document has any routed content so
-  -- those transient overlaps still plan without hiding routes.
-  if max_pressure > 0 then
-    max_pressure = max_pressure + 1
-  end
-  local required_core = math.max(minimum_width, minimum_width + (max_pressure * 2))
-  required_core = math.min(connector_width.maximum(self.config), required_core)
+  local viewport_rows = vim.api.nvim_win_is_valid(self.left_win)
+      and vim.api.nvim_win_get_height(self.left_win) or nil
+  local required_core = paths_mod.pressure_core_width(
+    self:base_paths(),
+    connector_width.base(self.view, self.config),
+    connector_width.maximum(self.config),
+    viewport_rows)
   if required_core ~= self.connector_core_width then
     self.connector_core_width = required_core
-    self.gutter_width = required_core
     self:resize_layout()
   end
 

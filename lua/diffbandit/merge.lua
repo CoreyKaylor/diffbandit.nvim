@@ -874,9 +874,7 @@ function Merge:render(opts)
   self.result_remote_session = result_remote
   self.connector_width = math.max(local_result.connector_core_width, result_remote.connector_core_width)
   local_result.connector_core_width = self.connector_width
-  local_result.gutter_width = self.connector_width
   result_remote.connector_core_width = self.connector_width
-  result_remote.gutter_width = self.connector_width
   self:configure_windows()
 
   result_remote:render()

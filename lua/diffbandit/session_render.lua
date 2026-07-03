@@ -6,6 +6,7 @@
 local nvim = require("diffbandit.nvim")
 local paths_mod = require("diffbandit.connector_routes")
 local diff_mod = require("diffbandit.diff")
+local connector_width = require("diffbandit.connector_width")
 
 local set_buffer_options = nvim.set_buffer_options
 local get_win_view_topline = nvim.get_win_view_topline
@@ -134,12 +135,32 @@ local function build_render_context(self)
   -- Compute connector routing lanes using extracted paths module
   local paths = self:base_paths()
   local route_paths = self:project_paths_for_viewport(paths)
-  local route_plan = paths_mod.plan_routes(route_paths, {
+  local plan_layout = {
     connector_core_width = self.connector_core_width,
     viewport_topline = left_topline,
     viewport_height = left_height,
     max_route_backtrack_steps = 500,
-  })
+    -- The navigated chunk's connector is the one the user is looking at;
+    -- overflow pruning hides it only when no other candidate remains.
+    active_chunk_index = (self.current_chunk or 0) > 0 and self.current_chunk or nil,
+  }
+  local route_plan = paths_mod.plan_routes(route_paths, plan_layout)
+  if not route_plan.success then
+    -- Wide cores can make the fixed-width search tree thrash on viewports
+    -- that a narrower working width solves immediately. Routes must not
+    -- disappear before the core is genuinely saturated, so retry as an
+    -- upward width search and stretch the edge-docked horizontals of the
+    -- narrower solution out to the real core edge. The gutter width itself
+    -- never changes here.
+    local solved_width, retry_plan = paths_mod.required_connector_core_width_for_paths(
+      route_paths,
+      connector_width.minimum(self.config),
+      self.connector_core_width,
+      plan_layout)
+    if retry_plan.success then
+      route_plan = paths_mod.stretch_plan_to_core(retry_plan, solved_width, self.connector_core_width)
+    end
+  end
 
   -- Compute underline data using extracted helper
   local underline_layout = {
@@ -231,7 +252,7 @@ local function build_render_context(self)
   local connector_lines = {}
   for i = 1, connector_height do
     -- Initialize with spaces for the full gutter width
-    connector_lines[i] = string.rep(" ", self.gutter_width)
+    connector_lines[i] = string.rep(" ", self.connector_core_width)
   end
 
   local right_stage_markers = {}

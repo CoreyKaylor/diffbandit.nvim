@@ -6,6 +6,26 @@ local M = {}
 local MAX_VISIBLE_CONNECTOR_ROUTES = 8
 M.MAX_VISIBLE_CONNECTOR_ROUTES = MAX_VISIBLE_CONNECTOR_ROUTES
 
+-- Overlap margin for lane assignment: routes whose occupied ranges merely
+-- touch (within one row) still take separate lanes. This buys visual
+-- separation between adjacent rails at the cost of lane inflation, which
+-- feeds gutter width and, in dense conflicts, the overflow cap.
+local LANE_COLLISION_MARGIN = 1
+
+-- Triangle glyphs by docking side. "below" means the wedge approaches its
+-- target from below (the target sits above the origin). Right-side wedges
+-- serve adds and right change endpoints; left-side wedges serve deletes and
+-- left change endpoints.
+local TRIANGLE = {
+  right = { above = "◥", below = "◢" },
+  left = { above = "◤", below = "◣" },
+}
+
+local function triangle_glyph(side, from_below)
+  local set = TRIANGLE[side]
+  return from_below and set.below or set.above
+end
+
 local function origin_row_for_path(p)
   return p.origin_display_row or p.top or p.display_start_row or p.start_row or 0
 end
@@ -14,10 +34,37 @@ local function triangle_row_for_path(p)
   return p.triangle_display_row or p.display_start_row or p.start_row or origin_row_for_path(p)
 end
 
+-- Visits every row a change path touches in the viewport projection: link
+-- endpoints, optionally their underline rows, and edge wedge rows. Filtering
+-- and folding stay with the caller (rows may be nil; none of the call sites
+-- are order-sensitive).
+--   opts.visible_only: only from/to endpoints whose side is visible
+--   opts.underlines:   also visit link.underline_row for visible endpoints
+local function visit_change_rows(path, opts, fn)
+  opts = opts or {}
+  for _, link in ipairs(path.viewport_change_links or {}) do
+    if not opts.visible_only or link.from_visible then
+      fn(link.from_row)
+      if opts.underlines then
+        fn(link.underline_row)
+      end
+    end
+    if not opts.visible_only or link.to_visible then
+      fn(link.to_row)
+      if opts.underlines then
+        fn(link.underline_row)
+      end
+    end
+  end
+  for _, edge in ipairs(path.viewport_change_edges or {}) do
+    fn(edge.row)
+  end
+end
+
 local function sort_row_for_path(p)
   if p.kind == "change" then
     local sort_row
-    local function include_row(row)
+    visit_change_rows(p, { visible_only = true }, function(row)
       if not row then
         return
       end
@@ -28,19 +75,7 @@ local function sort_row_for_path(p)
         return
       end
       sort_row = sort_row and math.min(sort_row, row) or row
-    end
-
-    for _, link in ipairs(p.viewport_change_links or {}) do
-      if link.from_visible then
-        include_row(link.from_row)
-      end
-      if link.to_visible then
-        include_row(link.to_row)
-      end
-    end
-    for _, edge in ipairs(p.viewport_change_edges or {}) do
-      include_row(edge.row)
-    end
+    end)
     if sort_row then
       return sort_row
     end
@@ -113,17 +148,11 @@ local function visible_endpoint_row_for_path(p)
 
   if p.kind == "change" then
     local row
-    for _, link in ipairs(p.viewport_change_links or {}) do
-      if link.from_visible then
-        row = row and math.max(row, link.from_row) or link.from_row
+    visit_change_rows(p, { visible_only = true }, function(r)
+      if r then
+        row = row and math.max(row, r) or r
       end
-      if link.to_visible then
-        row = row and math.max(row, link.to_row) or link.to_row
-      end
-    end
-    for _, edge in ipairs(p.viewport_change_edges or {}) do
-      row = row and math.max(row, edge.row) or edge.row
-    end
+    end)
     return row
   end
 
@@ -139,21 +168,13 @@ local function occupancy_range(p)
 
   if p.kind == "change" then
     local start_row, finish_row
-    local function include_row(row)
+    visit_change_rows(p, nil, function(row)
       if not row then
         return
       end
       start_row = start_row and math.min(start_row, row) or row
       finish_row = finish_row and math.max(finish_row, row) or row
-    end
-
-    for _, link in ipairs(p.viewport_change_links or {}) do
-      include_row(link.from_row)
-      include_row(link.to_row)
-    end
-    for _, edge in ipairs(p.viewport_change_edges or {}) do
-      include_row(edge.row)
-    end
+    end)
 
     if start_row and finish_row then
       return start_row, finish_row
@@ -177,16 +198,116 @@ local function occupancy_range(p)
   return start_row, finish_row
 end
 
--- Compute column position for a lane
+-- Path-space vertical bar span (origin/triangle geometry with tail and
+-- hidden-triangle adjustments). Returns start_row, end_row; the span is
+-- empty when end_row < start_row.
+local function path_bar_span(p)
+  local origin_row = origin_row_for_path(p)
+  local triangle_row = triangle_row_for_path(p)
+  local start_row = math.min(origin_row, triangle_row) + 1
+  local end_row = math.max(origin_row, triangle_row) - 1
+  if p.connect_tail_on_triangle_row and triangle_row < origin_row then
+    start_row = triangle_row + 1
+    end_row = origin_row
+  elseif p.hide_triangle and triangle_row < origin_row then
+    end_row = origin_row
+  end
+  return start_row, end_row
+end
+
+-- Whether a path draws a vertical bar at all: shared by route planning and
+-- underline bookkeeping, which must agree on it.
+local function path_has_vertical(p)
+  local origin_row = origin_row_for_path(p)
+  local triangle_row = triangle_row_for_path(p)
+  return math.abs(triangle_row - origin_row) > 1
+    or (p.connect_tail_on_triangle_row == true and triangle_row < origin_row)
+end
+
+-- Route-space rail span between source and target rows, extended to the
+-- endpoint rows by the docking pipes. May return an empty span
+-- (end_row < start_row); callers decide how to treat it.
+local function rail_span(source_row, target_row, include_source_pipe, include_target_pipe)
+  local start_row = math.min(source_row, target_row) + 1
+  local end_row = math.max(source_row, target_row) - 1
+  if include_source_pipe then
+    if source_row < target_row then
+      start_row = source_row
+    else
+      end_row = source_row
+    end
+  end
+  if include_target_pipe then
+    if target_row < source_row then
+      start_row = target_row
+    else
+      end_row = target_row
+    end
+  end
+  return start_row, end_row
+end
+
+-- Lane -> column formulas. Add-family rails grow leftward from the glyph
+-- edge; delete-family rails grow rightward from just after the left number
+-- pane (width 0 when sidecar number panes carry the rails themselves).
 local function lane_col_base(lane, glyph_base_col, rail_spacing)
   local idx = math.max(0, lane - 1)
   return glyph_base_col - (idx * (rail_spacing + 1)) - 1
 end
 
-local function delete_lane_col_base(lane, left_number_width, connector_core_width, rail_spacing)
+local function delete_lane_col_base(lane, left_number_width, rail_spacing)
   local idx = math.max(0, lane - 1)
   return left_number_width + 1 + (idx * (rail_spacing + 1))
 end
+
+-- Add and delete segments are mirror images: the origin anchors on the
+-- opposite pane from the block, the line/index fields swap sides, and the
+-- glyph family flips. The spec captures the mirrored parts; extra_fields
+-- carries the historically asymmetric tail. Field NAMES are part of the
+-- contract with projection, rendering, and tests -- do not symmetrize them.
+local SEGMENT_SPEC = {
+  add = {
+    origin_side = "left",
+    target_side = "right",
+    fill_side = "right",
+    line_field = "right_line",
+    index_field = "right_index",
+    origin_index_field = "left_index",
+    glyph = function(approach)
+      return triangle_glyph("right", approach == "from_below")
+    end,
+    extra_fields = function(path, origin_meta, start_row, end_row)
+      path.start_right_line = start_row
+      path.end_right_line = end_row
+      path.origin_left_line = origin_meta and origin_meta.left_line or nil
+      path.origin_left_index = origin_meta and origin_meta.left_index or nil
+      path.origin_kind = origin_meta and origin_meta.kind or nil
+      path.embedded_in_change = origin_meta and origin_meta.kind == "change" or false
+    end,
+  },
+  delete = {
+    origin_side = "right",
+    target_side = "left",
+    fill_side = "left",
+    line_field = "left_line",
+    index_field = "left_index",
+    origin_index_field = "right_index",
+    -- NOTE: legacy asymmetry, preserved on purpose. Base (unprojected)
+    -- deletes use the RIGHT-family ◥ for from-below, unlike projection
+    -- (delete_glyph_for_target), which uses ◣. Normalizing this changes
+    -- rendered wedges; keep verbatim.
+    glyph = function(approach)
+      return approach == "from_below" and "◥" or "◤"
+    end,
+    extra_fields = function(path, origin_meta, start_row, end_row)
+      path.start_left_line = start_row
+      path.end_left_line = end_row
+      path.origin_left_line = origin_meta and origin_meta.left_line or nil
+      path.origin_right_line = origin_meta and origin_meta.right_line or nil
+      path.origin_right_index = origin_meta and origin_meta.right_index or nil
+    end,
+  },
+}
 
 local function build_paths(chunks, line_meta)
   local paths = {}
@@ -194,99 +315,65 @@ local function build_paths(chunks, line_meta)
   local current_chunk_index = nil
 
   local function push_segment(seg_kind, seg_start_idx, seg_end_idx)
+    local spec = SEGMENT_SPEC[seg_kind]
     local start_meta = line_meta[seg_start_idx]
     local end_meta = line_meta[seg_end_idx]
-    if not start_meta or not end_meta then
+    if not spec or not start_meta or not end_meta then
       return
     end
 
     local origin_meta = (seg_start_idx > 1) and line_meta[seg_start_idx - 1] or nil
-    if seg_kind == "add" then
-      local start_row = start_meta.right_line
-      local end_row = end_meta.right_line
-      if start_row and end_row then
-        local visual_origin = origin_meta and origin_meta.left_index or nil
-        local visual_start = start_meta.right_index or seg_start_idx
-        local visual_end = end_meta.right_index or seg_end_idx
-        local approach = "same_row"
-        if visual_origin and visual_origin < visual_start then
-          approach = "from_above"
-        elseif visual_origin and visual_origin > visual_start then
-          approach = "from_below"
-        end
-        paths[#paths + 1] = {
-          kind = "add",
-          chunk = current_chunk_index,
-          top = visual_origin,
-          origin_side = "left",
-          target_side = "right",
-          origin_display_row = visual_origin,
-          meta_start_row = seg_start_idx,
-          meta_end_row = seg_end_idx,
-          display_start_row = visual_start,
-          display_end_row = visual_end,
-          block_display_start = visual_start,
-          block_display_end = visual_end,
-          triangle_display_row = visual_start,
-          approach = approach,
-          triangle_glyph = approach == "from_below" and "◢" or "◥",
-          fill_side = "right",
-          start_row = start_row,
-          end_row = end_row,
-          start_right_line = start_row,
-          end_right_line = end_row,
-          lane = 0,
-          origin_left_line = origin_meta and origin_meta.left_line or nil,
-          origin_left_index = origin_meta and origin_meta.left_index or nil,
-          origin_kind = origin_meta and origin_meta.kind or nil,
-          embedded_in_change = origin_meta and origin_meta.kind == "change" or false,
-          target_start_index = start_meta.right_index,
-          target_end_index = end_meta.right_index,
-        }
-      end
-    elseif seg_kind == "delete" then
-      local start_row = start_meta.left_line
-      local end_row = end_meta.left_line
-      if start_row and end_row then
-        local visual_origin = origin_meta and origin_meta.right_index or nil
-        local visual_start = start_meta.left_index or seg_start_idx
-        local visual_end = end_meta.left_index or seg_end_idx
-        local approach = "same_row"
-        if visual_origin and visual_origin < visual_start then
-          approach = "from_above"
-        elseif visual_origin and visual_origin > visual_start then
-          approach = "from_below"
-        end
-        paths[#paths + 1] = {
-          kind = "delete",
-          chunk = current_chunk_index,
-          top = visual_origin,
-          origin_side = "right",
-          target_side = "left",
-          origin_display_row = visual_origin,
-          meta_start_row = seg_start_idx,
-          meta_end_row = seg_end_idx,
-          display_start_row = visual_start,
-          display_end_row = visual_end,
-          block_display_start = visual_start,
-          block_display_end = visual_end,
-          triangle_display_row = visual_start,
-          approach = approach,
-          triangle_glyph = approach == "from_below" and "◥" or "◤",
-          fill_side = "left",
-          start_row = start_row,
-          end_row = end_row,
-          start_left_line = start_row,
-          end_left_line = end_row,
-          lane = 0,
-          origin_left_line = origin_meta and origin_meta.left_line or nil,
-          origin_right_line = origin_meta and origin_meta.right_line or nil,
-          origin_right_index = origin_meta and origin_meta.right_index or nil,
-          target_start_index = start_meta.left_index,
-          target_end_index = end_meta.left_index,
-        }
-      end
+    local start_row = start_meta[spec.line_field]
+    local end_row = end_meta[spec.line_field]
+    if not start_row or not end_row then
+      return
     end
+
+    local visual_origin = origin_meta and origin_meta[spec.origin_index_field] or nil
+    local visual_start = start_meta[spec.index_field] or seg_start_idx
+    local visual_end = end_meta[spec.index_field] or seg_end_idx
+    -- A hunk at the very first display row (or one whose preceding row has
+    -- no counterpart on the origin side) has no anchor line above it.
+    -- Anchor on the block's own first row so the path still projects and
+    -- routes; origin trimmings are skipped via the flag.
+    local synthetic_origin = false
+    if not visual_origin then
+      visual_origin = visual_start
+      synthetic_origin = true
+    end
+    local approach = "same_row"
+    if visual_origin < visual_start then
+      approach = "from_above"
+    elseif visual_origin > visual_start then
+      approach = "from_below"
+    end
+
+    local path = {
+      kind = seg_kind,
+      chunk = current_chunk_index,
+      top = visual_origin,
+      origin_side = spec.origin_side,
+      target_side = spec.target_side,
+      origin_display_row = visual_origin,
+      meta_start_row = seg_start_idx,
+      meta_end_row = seg_end_idx,
+      display_start_row = visual_start,
+      display_end_row = visual_end,
+      block_display_start = visual_start,
+      block_display_end = visual_end,
+      triangle_display_row = visual_start,
+      approach = approach,
+      synthetic_origin = synthetic_origin,
+      triangle_glyph = spec.glyph(approach),
+      fill_side = spec.fill_side,
+      start_row = start_row,
+      end_row = end_row,
+      lane = 0,
+      target_start_index = start_meta[spec.index_field],
+      target_end_index = end_meta[spec.index_field],
+    }
+    spec.extra_fields(path, origin_meta, start_row, end_row)
+    paths[#paths + 1] = path
   end
 
   for _, chunk in ipairs(chunks) do
@@ -354,10 +441,17 @@ local function build_paths(chunks, line_meta)
     end
   end
 
+  -- Embedded adds (extra right-side rows inside a change hunk) are absorbed
+  -- into their chunk's change band instead of routing standalone. The merge
+  -- must stay within the add's own chunk: with zero-context adjacent hunks an
+  -- add's origin row can be the PREVIOUS chunk's change row, and merging
+  -- across would fuse two independently-stageable chunks into one band.
   for _, p in ipairs(paths) do
     if p.kind == "add" and p.embedded_in_change and p.origin_left_index then
+      local merged = false
       for _, candidate in ipairs(paths) do
         if candidate.kind == "change"
+            and candidate.chunk == p.chunk
             and candidate.start_left_index
             and candidate.end_left_index
             and p.origin_left_index >= candidate.start_left_index
@@ -369,8 +463,15 @@ local function build_paths(chunks, line_meta)
           candidate.display_end_row = math.max(candidate.display_end_row or candidate.end_left_index, candidate.end_right_index or p.display_end_row)
           candidate.block_display_start = candidate.display_start_row
           candidate.block_display_end = candidate.display_end_row
+          merged = true
           break
         end
+      end
+      -- No same-chunk change band absorbed this add: route it normally
+      -- instead of leaving it flagged, which would drop it entirely
+      -- (add_basic_plan_route skips embedded paths).
+      if not merged then
+        p.embedded_in_change = false
       end
     end
   end
@@ -405,7 +506,7 @@ local function assign_lanes(paths)
     if lane_family(a) == lane_family(b) then
       local as, ae = occupancy_range(a)
       local bs, be = occupancy_range(b)
-      if ranges_overlap(as, ae, bs, be, 1) then
+      if ranges_overlap(as, ae, bs, be, LANE_COLLISION_MARGIN) then
         local ap = physical_right_priority(a)
         local bp = physical_right_priority(b)
         local ad = route_direction(a)
@@ -547,39 +648,24 @@ local function assign_lanes(paths)
       return false
     end
 
-    local origin_row = origin_row_for_path(path)
-    local triangle_row = triangle_row_for_path(path)
-    local start_row = math.min(origin_row, triangle_row) + 1
-    local end_row = math.max(origin_row, triangle_row) - 1
-    if path.connect_tail_on_triangle_row and triangle_row < origin_row then
-      start_row = triangle_row + 1
-      end_row = origin_row
-    elseif path.hide_triangle and triangle_row < origin_row then
-      end_row = origin_row
-    end
+    local start_row, end_row = path_bar_span(path)
     return row >= start_row and row <= end_row
   end
 
   local function promote_left_tail_crossings()
+    -- Unlike endpoint_rows_for_path this deliberately skips underline rows:
+    -- tail-crossing promotion only cares where wedges dock, not where their
+    -- underlines run.
     local function change_endpoint_rows(path)
       local rows = {}
       if path.kind ~= "change" then
         return rows
       end
-
-      for _, link in ipairs(path.viewport_change_links or {}) do
-        if link.from_visible and link.from_row then
-          rows[#rows + 1] = link.from_row
+      visit_change_rows(path, { visible_only = true }, function(row)
+        if row then
+          rows[#rows + 1] = row
         end
-        if link.to_visible and link.to_row then
-          rows[#rows + 1] = link.to_row
-        end
-      end
-      for _, edge in ipairs(path.viewport_change_edges or {}) do
-        if edge.row then
-          rows[#rows + 1] = edge.row
-        end
-      end
+      end)
       return rows
     end
 
@@ -607,12 +693,20 @@ local function assign_lanes(paths)
             if endpoint_path ~= rail_path and endpoint_path.kind == "change" and endpoint_path.lane then
               for _, endpoint_row in ipairs(change_endpoint_rows(endpoint_path)) do
                 if route_has_vertical_on_row(rail_path, endpoint_row) then
+                  -- Escalation constants: the inner delete rail hops past the
+                  -- change's inner lane pair (1,2 -> 3), and the change
+                  -- endpoint claims the lane just inside the eight-route cap
+                  -- so its horizontals clear any compact conflict cluster.
+                  -- These are deliberate worst-case jumps, not derived from
+                  -- current occupancy: the fixed-point loop has no occupancy
+                  -- ledger at this stage, so conservative hops guarantee the
+                  -- crossing clears in one move instead of ping-ponging.
                   if rail_path.lane == 1 then
                     rail_path.lane = 3
                     rail_path.collision_lane = rail_path.lane
                     changed = true
                   end
-                  local minimum_lane = 7
+                  local minimum_lane = MAX_VISIBLE_CONNECTOR_ROUTES - 1
                   if endpoint_path.lane < minimum_lane then
                     endpoint_path.lane = minimum_lane
                     endpoint_path.collision_lane = endpoint_path.lane
@@ -642,19 +736,7 @@ local function assign_lanes(paths)
     end
 
     if path.kind == "change" then
-      for _, link in ipairs(path.viewport_change_links or {}) do
-        if link.from_visible then
-          add_row(link.from_row)
-          add_row(link.underline_row)
-        end
-        if link.to_visible then
-          add_row(link.to_row)
-          add_row(link.underline_row)
-        end
-      end
-      for _, edge in ipairs(path.viewport_change_edges or {}) do
-        add_row(edge.row)
-      end
+      visit_change_rows(path, { visible_only = true, underlines = true }, add_row)
       return rows
     end
 
@@ -665,6 +747,14 @@ local function assign_lanes(paths)
     return rows
   end
 
+  -- Returns true when crossing resolution converged within its pass budget.
+  -- The inward move (horizontal drops just inside the crossing vertical) is
+  -- load-bearing for convergence: gating it behind whole-range occupancy
+  -- checks was tried and made this loop ping-pong outward on the dense
+  -- fixture, inflating lanes before bailing. The pass cap is the safety
+  -- net; a bail leaves lanes as-is and is reported via
+  -- lane_resolution_bailed. Same-lane rail stacking is guarded separately
+  -- by tests over compute_active_bars.
   local function resolve_left_endpoint_crossings()
     local changed = true
     local pass = 0
@@ -698,6 +788,7 @@ local function assign_lanes(paths)
         end
       end
     end
+    return not changed
   end
 
   -- Assign lanes so later paths go to OUTER lanes (further from triangle)
@@ -714,14 +805,17 @@ local function assign_lanes(paths)
       if not assigned_lane then
         if use_projected_intervals then
           assigned_lane = 1
-          local collision_margin = has_change_path and 1
-            or ((p.hide_triangle and triangle_row_for_path(p) < origin_row_for_path(p)) and 1 or 0)
+          local collision_margin = has_change_path and LANE_COLLISION_MARGIN
+            or ((p.hide_triangle and triangle_row_for_path(p) < origin_row_for_path(p)) and LANE_COLLISION_MARGIN or 0)
           while lane_has_overlap(lanes, assigned_lane, occupy_start, occupy_end, group, collision_margin) do
             assigned_lane = assigned_lane + 1
           end
 
           if has_change_path or p.hide_triangle then
-            local highest_lane = highest_overlapping_lane(
+            -- Nothing mutates `lanes` between these queries, so the
+            -- same-direction result is computed once and reused for both
+            -- the base bump and the spacer bump below.
+            local same_direction_lane = highest_overlapping_lane(
               lanes,
               occupy_start,
               occupy_end,
@@ -729,8 +823,8 @@ local function assign_lanes(paths)
               collision_margin,
               direction
             )
-            if highest_lane > 0 and assigned_lane <= highest_lane then
-              assigned_lane = highest_lane + 1
+            if same_direction_lane > 0 and assigned_lane <= same_direction_lane then
+              assigned_lane = same_direction_lane + 1
             end
 
             if use_spacer_lanes and has_change_path and p.kind ~= "add" and direction ~= 0 then
@@ -746,14 +840,6 @@ local function assign_lanes(paths)
                 assigned_lane = any_direction_lane + 2
               end
 
-              local same_direction_lane = highest_overlapping_lane(
-                lanes,
-                occupy_start,
-                occupy_end,
-                group,
-                collision_margin,
-                direction
-              )
               if same_direction_lane > 0 and assigned_lane <= same_direction_lane + 1 then
                 assigned_lane = same_direction_lane + 2
               end
@@ -792,7 +878,10 @@ local function assign_lanes(paths)
 
   promote_left_tail_crossings()
   if has_change_path then
-    resolve_left_endpoint_crossings()
+    if not resolve_left_endpoint_crossings() then
+      -- Observable by tests: lanes are left as-is rather than half-moved.
+      paths.lane_resolution_bailed = true
+    end
   end
   max_lane = 0
   for _, p in ipairs(paths) do
@@ -984,23 +1073,8 @@ local function route_vertical_span(route)
     return nil, nil
   end
 
-  local start_row = math.min(route.source_row, route.target_row) + 1
-  local end_row = math.max(route.source_row, route.target_row) - 1
-  if route.include_source_pipe then
-    if route.source_row < route.target_row then
-      start_row = route.source_row
-    else
-      end_row = route.source_row
-    end
-  end
-  if route.include_target_pipe then
-    if route.target_row < route.source_row then
-      start_row = route.target_row
-    else
-      end_row = route.target_row
-    end
-  end
-
+  local start_row, end_row = rail_span(route.source_row, route.target_row,
+    route.include_source_pipe, route.include_target_pipe)
   if end_row < start_row then
     return nil, nil
   end
@@ -1034,12 +1108,21 @@ local function route_offscreen_distance(route, viewport_topline, viewport_height
   return math.max(distance(route.source_row), distance(route.target_row))
 end
 
-local function mark_route_overflow_hidden(route)
+-- Single choke point for hiding a route. Every hide records why, so a
+-- missing connector is always attributable: "overflow-cap" (more than
+-- MAX_VISIBLE_CONNECTOR_ROUTES rails share a row), "width-exhausted" (no
+-- collision-free placement exists at the current core width), or
+-- "backtrack-bounded" (the solver hit its step budget before finding one).
+-- overflow_hidden stays set for renderer/back-compat checks.
+local function hide_route(route, reason)
   route.overflow_hidden = true
+  route.hide_reason = reason
   if route.link then
     route.link.overflow_hidden = true
+    route.link.hide_reason = reason
   elseif route.path then
     route.path.overflow_hidden = true
+    route.path.hide_reason = reason
   end
 end
 
@@ -1052,6 +1135,7 @@ local function prune_overflow_routes(routes, layout)
   local vertical_routes = {}
   for _, route in ipairs(routes) do
     route.overflow_hidden = nil
+    route.hide_reason = nil
     local start_row, end_row = route_vertical_span(route)
     route.vertical_start_row = start_row
     route.vertical_end_row = end_row
@@ -1089,8 +1173,23 @@ local function prune_overflow_routes(routes, layout)
     return active
   end
 
+  -- Hiding priority: never the active chunk's route while any other
+  -- candidate remains, then the route farthest offscreen (fully-visible
+  -- routes have distance 0 and are hidden last), then routes with an
+  -- invisible endpoint, then a deterministic dock-row tie-break.
+  local function route_is_active_chunk(route)
+    local active_chunk = layout.active_chunk_index
+    return active_chunk ~= nil and route.path ~= nil and route.path.chunk == active_chunk
+  end
+
   local function choose_hidden_route(active)
     table.sort(active, function(a, b)
+      local a_active = route_is_active_chunk(a)
+      local b_active = route_is_active_chunk(b)
+      if a_active ~= b_active then
+        return not a_active
+      end
+
       local ad = route_offscreen_distance(a, layout.viewport_topline, layout.viewport_height)
       local bd = route_offscreen_distance(b, layout.viewport_topline, layout.viewport_height)
       if ad ~= bd then
@@ -1147,7 +1246,7 @@ local function prune_overflow_routes(routes, layout)
     end
     hidden_set[route] = true
     hidden[#hidden + 1] = route
-    mark_route_overflow_hidden(route)
+    hide_route(route, "overflow-cap")
     for row = route.vertical_start_row, route.vertical_end_row do
       active_count_by_row[row] = math.max(0, (active_count_by_row[row] or 0) - 1)
     end
@@ -1193,6 +1292,23 @@ local function build_route_segments(route, rail_col, connector_core_width)
     end
   end
 
+  -- A route with a visible, unsuppressed endpoint must never render as
+  -- nothing at all: when rail placement leaves no room for its horizontals
+  -- (rail column 0 with a left-side endpoint, or the mirrored right case)
+  -- and no vertical was emitted, dock a single stub cell at the endpoint
+  -- edge so the connector stays anchored on screen.
+  local function with_visible_stub(segs)
+    if #segs > 0 then
+      return segs
+    end
+    if route.source_visible ~= false and route.suppress_source ~= true then
+      add_route_cells(segs, route.source_row, source_edge_col, source_edge_col, h_hl, route.source_side)
+    elseif route.target_visible ~= false and route.suppress_target ~= true then
+      add_route_cells(segs, route.target_row, target_edge_col, target_edge_col, h_hl, route.target_side)
+    end
+    return segs
+  end
+
   if route.source_row == route.target_row then
     if route.source_visible ~= false
         and route.target_visible ~= false
@@ -1214,7 +1330,7 @@ local function build_route_segments(route, rail_col, connector_core_width)
         add_horizontal_for_side(route.target_side, route.target_row)
       end
     end
-    return segments
+    return with_visible_stub(segments)
   end
 
   if route.source_visible ~= false and route.suppress_source ~= true then
@@ -1223,8 +1339,6 @@ local function build_route_segments(route, rail_col, connector_core_width)
   if route.target_visible ~= false and route.suppress_target ~= true then
     add_horizontal_for_side(route.target_side, route.target_row)
   end
-  local vertical_min_row = math.min(route.source_row, route.target_row)
-  local vertical_max_row = math.max(route.source_row, route.target_row)
   local extra_min_row = nil
   local extra_max_row = nil
   for _, extra in ipairs(route.extra_horizontals or {}) do
@@ -1234,36 +1348,24 @@ local function build_route_segments(route, rail_col, connector_core_width)
       segments[i].continuation = true
     end
     if extra.row then
-      vertical_min_row = math.min(vertical_min_row, extra.row)
-      vertical_max_row = math.max(vertical_max_row, extra.row)
       extra_min_row = extra_min_row and math.min(extra_min_row, extra.row) or extra.row
       extra_max_row = extra_max_row and math.max(extra_max_row, extra.row) or extra.row
     end
   end
 
-  local vertical_start = vertical_min_row + 1
-  local vertical_end = vertical_max_row - 1
-  if route.include_source_pipe then
-    if route.source_row < route.target_row then
-      vertical_start = route.source_row
-    else
-      vertical_end = route.source_row
-    end
-  end
-  if route.include_target_pipe then
-    if route.target_row < route.source_row then
-      vertical_start = route.target_row
-    else
-      vertical_end = route.target_row
-    end
-  end
+  -- Rail between the endpoints, extended by docking pipes, then stretched to
+  -- reach any continuation horizontals (extras always win the final min/max,
+  -- so merging them after the pipe adjustments is equivalent to the old
+  -- extras-first accumulation).
+  local vertical_start, vertical_end = rail_span(route.source_row, route.target_row,
+    route.include_source_pipe, route.include_target_pipe)
   if extra_min_row then
     vertical_start = math.min(vertical_start, extra_min_row)
     vertical_end = math.max(vertical_end, extra_max_row)
   end
   add_vertical_cells(segments, vertical_start, vertical_end, rail_col, v_hl)
 
-  return segments
+  return with_visible_stub(segments)
 end
 
 local function iter_segment_cells(segment, callback)
@@ -1283,12 +1385,26 @@ local function route_has_endpoint(route, side, row)
     or (route.target_side == side and route.target_row == row and route.target_visible ~= false)
 end
 
+local function route_endpoint_on_row(route, row)
+  return route_has_endpoint(route, "left", row) or route_has_endpoint(route, "right", row)
+end
+
 local function routes_can_share_cell(route, owner, row, cell_type, side)
   if owner == route or owner.group == route.group then
     return true
   end
-  if cell_type ~= "horizontal" or not side or side == "both" then
+  if cell_type ~= "horizontal" or not side then
     return false
+  end
+  -- Two routes may stack on a horizontal cell when both genuinely end
+  -- there. Edge-docked endpoints always start at the pane edge, so two
+  -- same-row endpoints can never be separated by widening -- sharing the
+  -- cell (with deterministic paint order) is the only solvable layout.
+  -- A "both"-side horizontal (same-row route spanning edge to edge) is
+  -- itself pinned to its row, so it may stack with any route ending on
+  -- that row on either side; rails merely passing through still collide.
+  if side == "both" then
+    return route_endpoint_on_row(route, row) and route_endpoint_on_row(owner, row)
   end
   return route_has_endpoint(route, side, row) and route_has_endpoint(owner, side, row)
 end
@@ -1367,8 +1483,7 @@ local function add_basic_plan_route(routes, path)
 
   local direction = triangle_row > origin_row and 1
     or (triangle_row < origin_row and -1 or 0)
-  local has_vertical = math.abs(triangle_row - origin_row) > 1
-    or (path.connect_tail_on_triangle_row == true and triangle_row < origin_row)
+  local has_vertical = path_has_vertical(path)
   local target_row = triangle_row
   if has_vertical and direction ~= 0 then
     target_row = triangle_row - direction
@@ -1451,6 +1566,7 @@ function M.plan_routes(paths, layout)
     path.planned_segments = nil
     path.planned_rail_col = nil
     path.overflow_hidden = nil
+    path.hide_reason = nil
     if path.kind == "add" or path.kind == "delete" then
       add_basic_plan_route(routes, path)
     elseif path.kind == "change" then
@@ -1529,6 +1645,7 @@ function M.plan_routes(paths, layout)
     max_visible_connector_routes = layout.max_visible_connector_routes,
     viewport_topline = layout.viewport_topline,
     viewport_height = layout.viewport_height,
+    active_chunk_index = layout.active_chunk_index,
   })
 
   local occupied = {}
@@ -1642,11 +1759,25 @@ function M.plan_routes(paths, layout)
     strategy = backtrack_steps > backtrack_limit and "bounded-hidden" or "greedy-hidden"
     local _, unplaced_routes = solve_greedy()
     hidden_routes = hidden_routes or {}
+    local unplaced_set = {}
+    local reason = strategy == "bounded-hidden" and "backtrack-bounded" or "width-exhausted"
     for _, route in ipairs(unplaced_routes or {}) do
-      mark_route_overflow_hidden(route)
+      hide_route(route, reason)
       hidden_routes[#hidden_routes + 1] = route
+      unplaced_set[route] = true
       route.rail_col = nil
       route.segments = {}
+    end
+    -- Keep routes/hidden_routes disjoint (mirroring prune_overflow_routes)
+    -- so force-hidden routes never reach the planned_routes aggregation.
+    if next(unplaced_set) then
+      local placed = {}
+      for _, route in ipairs(routes) do
+        if not unplaced_set[route] then
+          placed[#placed + 1] = route
+        end
+      end
+      routes = placed
     end
     success = #unplaced_routes == 0
   end
@@ -1667,6 +1798,13 @@ function M.plan_routes(paths, layout)
     end
   end
 
+  local hidden_summary = nil
+  for _, route in ipairs(hidden_routes or {}) do
+    hidden_summary = hidden_summary or {}
+    local reason = route.hide_reason or "unknown"
+    hidden_summary[reason] = (hidden_summary[reason] or 0) + 1
+  end
+
   return {
     routes = routes,
     hidden_routes = hidden_routes or {},
@@ -1674,7 +1812,136 @@ function M.plan_routes(paths, layout)
     strategy = strategy,
     max_used_col = max_used_col,
     occupied = occupied,
+    hidden_summary = hidden_summary,
   }
+end
+
+-- Pressure sizer: the live gutter width is computed ONCE per document (never
+-- while scrolling -- resizing mid-scroll is jarring) and defines the
+-- connector capacity; hiding is only acceptable once that capacity is
+-- genuinely saturated (up to MAX_VISIBLE_CONNECTOR_ROUTES rails).
+--
+-- Two sweeps over the routed ranges, each widening by two columns per
+-- overlapping route:
+--   1. Document pressure: overlap of the ranges as aligned, plus one slack
+--      lane -- the historical compact sizing.
+--   2. Scroll pressure (when viewport_rows is known): any routes whose
+--      anchors fit inside one viewport height can be stacked into parallel
+--      full-height rails by scrolling the panes independently, and each
+--      left-side underline forces every rail crossing it further outward
+--      (about two columns per route). Expanding each range by
+--      viewport_rows - 1 before the sweep counts that worst case, capped at
+--      the eight-rail visibility limit.
+-- The result never narrows below the document sizing, so sparse diffs keep
+-- their compact gutter; only scroll-stackable regions widen. If a viewport
+-- still cannot be planned at this width, routes hide with a recorded reason
+-- rather than resizing.
+function M.pressure_core_width(paths, minimum_width, maximum_width, viewport_rows)
+  local doc_events = {}
+  local left_events = {}
+  local right_events = {}
+  local scroll_reach = viewport_rows and math.max(0, math.floor(viewport_rows) - 1) or nil
+
+  local function add_range(events, start_row, end_row, reach)
+    if not start_row then
+      return
+    end
+    end_row = end_row or start_row
+    start_row = math.floor(start_row)
+    end_row = math.floor(end_row)
+    if end_row < start_row then
+      start_row, end_row = end_row, start_row
+    end
+    reach = reach or 0
+    events[start_row - reach] = (events[start_row - reach] or 0) + 1
+    events[end_row + 1] = (events[end_row + 1] or 0) - 1
+  end
+
+  for _, path in ipairs(paths or {}) do
+    if path.kind == "add" or path.kind == "delete" then
+      if not path.embedded_in_change then
+        add_range(doc_events, path.origin_display_row, path.triangle_display_row or path.display_start_row)
+        if scroll_reach then
+          if path.kind == "add" then
+            add_range(left_events, path.origin_left_index, path.origin_left_index, scroll_reach)
+            add_range(right_events, path.target_start_index, path.target_end_index, scroll_reach)
+          else
+            add_range(left_events, path.target_start_index, path.target_end_index, scroll_reach)
+            add_range(right_events, path.origin_right_index, path.origin_right_index, scroll_reach)
+          end
+        end
+      end
+    elseif path.kind == "change" then
+      -- Document pressure keeps its historical offset-only rule (aligned
+      -- changes draw no rail in the aligned view), but ANY change grows
+      -- rails once the panes scroll apart, so scroll pressure counts all.
+      if path.offset then
+        local start_row = math.min(path.start_left_index or path.display_start_row or 0,
+          path.start_right_index or path.display_start_row or 0)
+        local end_row = math.max(path.end_left_index or path.display_end_row or start_row,
+          path.end_right_index or path.display_end_row or start_row)
+        add_range(doc_events, start_row, end_row)
+      end
+      if scroll_reach then
+        add_range(left_events, path.start_left_index, path.end_left_index, scroll_reach)
+        add_range(right_events, path.start_right_index, path.end_right_index, scroll_reach)
+      end
+    end
+  end
+
+  local function max_overlap(events)
+    local rows = {}
+    for row in pairs(events) do
+      rows[#rows + 1] = row
+    end
+    table.sort(rows)
+    local active = 0
+    local peak = 0
+    for _, row in ipairs(rows) do
+      active = active + events[row]
+      peak = math.max(peak, active)
+    end
+    return peak
+  end
+
+  local doc_pressure = max_overlap(doc_events)
+  if doc_pressure > 0 then
+    doc_pressure = doc_pressure + 1
+  end
+  local scroll_pressure = math.min(
+    math.max(max_overlap(left_events), max_overlap(right_events)),
+    MAX_VISIBLE_CONNECTOR_ROUTES)
+  local max_pressure = math.max(doc_pressure, scroll_pressure)
+
+  local required_core = math.max(minimum_width, minimum_width + (max_pressure * 2))
+  return math.min(maximum_width, required_core)
+end
+
+-- Adapts a plan solved at a narrower working width for rendering inside a
+-- wider core: right- and both-side horizontals dock at the pane edge, so
+-- their edge cells move out to the real core edge; everything else (rails,
+-- left horizontals) is position-stable. Used by the live fallback when the
+-- full-width search tree thrashes but a narrower width solves quickly --
+-- extending into the virgin columns cannot create collisions.
+function M.stretch_plan_to_core(plan, planned_width, core_width)
+  if core_width <= planned_width then
+    return plan
+  end
+  local planned_edge = planned_width - 1
+  local core_edge = core_width - 1
+  for _, route in ipairs(plan.routes or {}) do
+    for _, segment in ipairs(route.segments or {}) do
+      if segment.type == "horizontal"
+          and (segment.side == "right" or segment.side == "both")
+          and segment.end_col == planned_edge then
+        if segment.start_col == planned_edge then
+          segment.start_col = core_edge
+        end
+        segment.end_col = core_edge
+      end
+    end
+  end
+  return plan
 end
 
 function M.required_connector_core_width_for_paths(paths, minimum_width, max_width, layout)
@@ -1699,6 +1966,13 @@ function M.required_connector_core_width_for_paths(paths, minimum_width, max_wid
     max_visible_connector_routes = layout.max_visible_connector_routes,
   })
 end
+
+-- LEGACY LANE LAYER NOTE: rail drawing is owned by plan_routes/segments; the
+-- lane numbers computed by assign_lanes feed only a narrow set of live
+-- outputs from compute_active_bars/compute_underlines --
+-- delete_origin_right_lines (right-pane origin underlines) and the sorted
+-- path order. origin_glyph_cols, origin_bar_cols, and underline_start_after
+-- are consumed by tests only; do not build new rendering on them.
 
 -- Compute active vertical bars per row
 -- Returns: active_bars[row][lane] = path
@@ -1737,17 +2011,7 @@ function M.compute_active_bars(paths)
   -- For deletions: origin is on RIGHT pane (use origin_right_line)
   for _, origin in ipairs(sorted_origins) do
     local p = origin.path
-    local origin_row = origin_row_for_path(p)
-    local triangle_row = triangle_row_for_path(p)
-
-    local bar_start = math.min(origin_row, triangle_row) + 1
-    local bar_end = math.max(origin_row, triangle_row) - 1
-    if p.connect_tail_on_triangle_row and triangle_row < origin_row then
-      bar_start = triangle_row + 1
-      bar_end = origin_row
-    elseif p.hide_triangle and triangle_row < origin_row then
-      bar_end = origin_row
-    end
+    local bar_start, bar_end = path_bar_span(p)
 
     if bar_end >= bar_start then
       for row = bar_start, bar_end do
@@ -1774,11 +2038,9 @@ function M.compute_underlines(paths, active_bars, layout)
   end
 
   local function delete_lane_col(lane)
-    if sidecar_numbers then
-      local idx = math.max(0, lane - 1)
-      return 1 + (idx * (rail_spacing + 1))
-    end
-    return delete_lane_col_base(lane, left_number_width, connector_core_width, rail_spacing)
+    -- Sidecar number panes carry the delete rails themselves, so the rail
+    -- origin ignores the left number width (column 0 is the pane edge).
+    return delete_lane_col_base(lane, sidecar_numbers and 0 or left_number_width, rail_spacing)
   end
 
   local function glyph_col_for_lane(lane)
@@ -1899,13 +2161,14 @@ function M.compute_underlines(paths, active_bars, layout)
   for _, p in ipairs(paths) do
     if (p.kind == "add" or p.kind == "delete") and not p.embedded_in_change and not p.overflow_hidden then
       local lane = math.max(1, p.lane)
-      if p.origin_display_row then
+      -- Synthetic origins anchor on the block's own first row; they have no
+      -- real origin line to decorate with glyphs, bars, or underlines.
+      if p.origin_display_row and not p.synthetic_origin then
         origin_glyph_cols[p.origin_display_row] = compute_glyph_col_for_row(p, p.triangle_display_row)
 
         local origin_row = origin_row_for_path(p)
         local triangle_row = triangle_row_for_path(p)
-        local has_bar = math.abs(triangle_row - origin_row) > 1
-            or (p.connect_tail_on_triangle_row == true and triangle_row < origin_row)
+        local has_bar = path_has_vertical(p)
         origin_has_bar[p.origin_display_row] = has_bar
 
         -- Find the outermost active bar on the origin row.
@@ -2000,14 +2263,11 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
   end
 
   local function delete_glyph_for_target(origin_row, target_row)
-    return origin_row > target_row and "◣" or "◤"
+    return triangle_glyph("left", origin_row > target_row)
   end
 
   local function change_glyph_for(side, row, other_row)
-    if side == "right" then
-      return other_row > row and "◢" or "◥"
-    end
-    return other_row > row and "◣" or "◤"
+    return triangle_glyph(side, other_row > row)
   end
 
   local function set_lane_occupancy(path, row_a, row_b)
@@ -2030,6 +2290,12 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
   local function add_projected(path, origin_row, target_index, target_row, glyph, show_triangle, suppress_tail)
     local q = shallow_copy(path)
     q.route_group = path.route_group or path
+    -- Far-offscreen origins keep their true (possibly negative) rows on
+    -- purpose. Every projected route anchors somewhere visible, so spans
+    -- that overlap offscreen also overlap inside the viewport -- the
+    -- offscreen cells add no real collision constraints -- while clamping
+    -- origins onto a shared edge row collapses the dock ordering and
+    -- degrades rail placement. Rendering clips rows outside the buffer.
     q.top = origin_row
     q.origin_display_row = origin_row
     q.display_start_row = target_row
@@ -2039,9 +2305,9 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
     q.target_end_index = target_index
     local from_below
     if path.kind == "delete" then
-      from_below = glyph == "◣" or glyph == "◥"
+      from_below = glyph == TRIANGLE.left.below
     else
-      from_below = glyph == "◢"
+      from_below = glyph == TRIANGLE.right.below
     end
     q.approach = from_below and "from_below" or "from_above"
     q.triangle_glyph = glyph
@@ -2050,19 +2316,6 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
     q.suppress_tail = suppress_tail == true
     set_lane_occupancy(q, origin_row, target_row)
     projected[#projected + 1] = q
-  end
-
-  -- Add routes: origin on the left pane, targets in right-buffer index space.
-  local function add_projected_path(path, target_index, glyph, show_triangle, suppress_tail)
-    local origin_row = path.origin_left_index or path.origin_display_row
-    add_projected(path, origin_row, target_index, right_to_connector_row(target_index),
-      glyph, show_triangle, suppress_tail)
-  end
-
-  -- Delete routes: origin projected from the right pane, targets already in
-  -- connector-row space.
-  local function add_projected_delete_path(path, origin_row, target_index, glyph, show_triangle, suppress_tail)
-    add_projected(path, origin_row, target_index, target_index, glyph, show_triangle, suppress_tail)
   end
 
   local function add_change_link(links, from_side, from_row, to_side, to_row, show_from, show_to, from_glyph, to_glyph, no_vertical, underline_row)
@@ -2099,22 +2352,14 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
     local start_row, end_row
     local viewport_start = left_topline
     local viewport_end = left_topline + left_height - 1
-    local function include_row(row)
+    visit_change_rows(path, nil, function(row)
       if not row then
         return
       end
       row = math.max(viewport_start, math.min(viewport_end, row))
       start_row = start_row and math.min(start_row, row) or row
       end_row = end_row and math.max(end_row, row) or row
-    end
-
-    for _, link in ipairs(path.viewport_change_links or {}) do
-      include_row(link.from_row)
-      include_row(link.to_row)
-    end
-    for _, edge in ipairs(path.viewport_change_edges or {}) do
-      include_row(edge.row)
-    end
+    end)
 
     if start_row and end_row then
       path.lane_occupancy_start = start_row
@@ -2213,109 +2458,124 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
     return q
   end
 
+  -- One skeleton projects both add and delete block paths; the specs below
+  -- map the mirrored parts. Cases: (a) block fully outside the viewport
+  -- with a visible origin -> suppressed stub one index past the edge;
+  -- (b) origin scrolled offscreen -> single continuation toward the nearer
+  -- visible end; (c) block strictly below/above a visible origin -> single
+  -- wedge; (d) origin inside the visible block -> split wedge pair around
+  -- the origin row.
+  local function project_block_path(p, spec)
+    local origin_row = spec.origin_row(p)
+    local block_start = p.target_start_index or p.triangle_display_row or p.display_start_row
+    local block_end = p.target_end_index or block_start
+    if not origin_row or not block_start or not block_end then
+      return
+    end
+
+    local function emit(target_index, glyph, show_triangle, suppress_tail)
+      add_projected(p, origin_row, target_index, spec.to_row(target_index),
+        glyph, show_triangle, suppress_tail)
+    end
+
+    local origin_visible = origin_row >= left_topline and origin_row <= (left_topline + left_height - 1)
+    local visible_start = math.max(block_start, spec.clip_lo)
+    local visible_end = math.min(block_end, spec.clip_hi)
+    if visible_start > visible_end then
+      if origin_visible then
+        if block_start > spec.clip_hi then
+          emit(spec.clip_hi + 1, triangle_glyph(spec.side, false), false, true)
+        elseif block_end < spec.clip_lo then
+          emit(spec.clip_lo - 1, triangle_glyph(spec.side, true), false, true)
+        end
+      end
+      return
+    end
+
+    local visible_start_row = spec.to_row(visible_start)
+    local visible_end_row = spec.to_row(visible_end)
+
+    if not origin_visible then
+      local target = block_start
+      if visible_end_row < origin_row then
+        target = visible_end
+      elseif visible_start_row > origin_row then
+        target = visible_start
+      end
+      emit(target, spec.offscreen_origin_glyph(origin_row, target, visible_start_row),
+        spec.show_triangle_when_origin_hidden)
+    elseif visible_start_row > origin_row then
+      emit(visible_start, triangle_glyph(spec.side, false), true)
+    elseif visible_end_row < origin_row then
+      emit(visible_end, triangle_glyph(spec.side, true), true)
+    else
+      local origin_target = spec.origin_target_index(origin_row)
+      local target_above = origin_target
+      local target_below = origin_target + 1
+      if visible_start_row == origin_row then
+        target_above = visible_start
+        target_below = visible_start + 1
+      end
+
+      if target_above >= visible_start and target_above <= visible_end then
+        emit(target_above, triangle_glyph(spec.side, true), true)
+      end
+      if target_below >= visible_start and target_below <= visible_end then
+        emit(target_below, triangle_glyph(spec.side, false), true)
+      end
+    end
+  end
+
+  -- Add targets live in right-buffer index space and convert to connector
+  -- rows; the origin is already in left/connector space.
+  local add_projection = {
+    side = "right",
+    clip_lo = right_topline,
+    clip_hi = right_topline + right_height - 1,
+    origin_row = function(p)
+      return p.origin_left_index or p.origin_display_row
+    end,
+    to_row = right_to_connector_row,
+    origin_target_index = function(origin_row)
+      return right_topline + (origin_row - left_topline)
+    end,
+    -- Kept verbatim: compares the visible block start, not the chosen
+    -- target, and diverges from the delete rule only when the panes have
+    -- different heights. Normalizing would change rendered wedges.
+    offscreen_origin_glyph = function(origin_row, _, visible_start_row)
+      return visible_start_row < origin_row and "◢" or "◥"
+    end,
+    -- Preserved asymmetry: adds hide the wedge when the origin scrolls
+    -- offscreen; deletes show it.
+    show_triangle_when_origin_hidden = false,
+  }
+
+  -- Delete targets are already connector rows; the origin projects over
+  -- from the right pane.
+  local delete_projection = {
+    side = "left",
+    clip_lo = left_topline,
+    clip_hi = left_topline + left_height - 1,
+    origin_row = function(p)
+      return p.origin_right_index and right_to_connector_row(p.origin_right_index) or p.origin_display_row
+    end,
+    to_row = function(index)
+      return index
+    end,
+    origin_target_index = function(origin_row)
+      return origin_row
+    end,
+    offscreen_origin_glyph = function(origin_row, target)
+      return delete_glyph_for_target(origin_row, target)
+    end,
+    show_triangle_when_origin_hidden = true,
+  }
+
   for _, p in ipairs(paths) do
     if p.kind == "add" and not p.embedded_in_change then
-      local origin_row = p.origin_left_index or p.origin_display_row
-      local block_start = p.target_start_index or p.triangle_display_row or p.display_start_row
-      local block_end = p.target_end_index or block_start
-      if origin_row and block_start and block_end then
-        local origin_visible = origin_row >= left_topline and origin_row <= (left_topline + left_height - 1)
-        local visible_start = math.max(block_start, right_topline)
-        local visible_end = math.min(block_end, right_topline + right_height - 1)
-        if visible_start > visible_end then
-          if origin_visible then
-            if block_start > right_topline + right_height - 1 then
-              add_projected_path(p, right_topline + right_height, "◥", false, true)
-            elseif block_end < right_topline then
-              add_projected_path(p, right_topline - 1, "◢", false, true)
-            end
-          end
-        else
-          local visible_start_row = right_to_connector_row(visible_start)
-          local visible_end_row = right_to_connector_row(visible_end)
-          local right_index_at_origin = right_topline + (origin_row - left_topline)
-
-          if not origin_visible then
-            local target = block_start
-            if visible_end_row < origin_row then
-              target = visible_end
-            elseif visible_start_row > origin_row then
-              target = visible_start
-            end
-            add_projected_path(p, target, visible_start_row < origin_row and "◢" or "◥", false)
-          elseif visible_start_row > origin_row then
-            add_projected_path(p, visible_start, "◥", true)
-          elseif visible_end_row < origin_row then
-            add_projected_path(p, visible_end, "◢", true)
-          else
-            local target_above
-            local target_below
-            if visible_start_row == origin_row then
-              target_above = visible_start
-              target_below = visible_start + 1
-            else
-              target_above = right_index_at_origin
-              target_below = right_index_at_origin + 1
-            end
-
-            if target_above >= visible_start and target_above <= visible_end then
-              add_projected_path(p, target_above, "◢", true)
-            end
-            if target_below >= visible_start and target_below <= visible_end then
-              add_projected_path(p, target_below, "◥", true)
-            end
-          end
-        end
-      end
+      project_block_path(p, add_projection)
     elseif p.kind == "delete" then
-      local origin_row = p.origin_right_index and right_to_connector_row(p.origin_right_index) or p.origin_display_row
-      local block_start = p.target_start_index or p.triangle_display_row or p.display_start_row
-      local block_end = p.target_end_index or block_start
-      if origin_row and block_start and block_end then
-        local origin_visible = origin_row >= left_topline and origin_row <= (left_topline + left_height - 1)
-        local visible_start = math.max(block_start, left_topline)
-        local visible_end = math.min(block_end, left_topline + left_height - 1)
-        if visible_start > visible_end then
-          if origin_visible then
-            if block_start > left_topline + left_height - 1 then
-              local target = left_topline + left_height
-              add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false, true)
-            elseif block_end < left_topline then
-              local target = left_topline - 1
-              add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), false, true)
-            end
-          end
-        elseif not origin_visible then
-          local target = block_start
-          if visible_end < origin_row then
-            target = visible_end
-          elseif visible_start > origin_row then
-            target = visible_start
-          end
-          add_projected_delete_path(p, origin_row, target, delete_glyph_for_target(origin_row, target), true)
-        elseif visible_start > origin_row then
-          add_projected_delete_path(p, origin_row, visible_start, "◤", true)
-        elseif visible_end < origin_row then
-          add_projected_delete_path(p, origin_row, visible_end, "◣", true)
-        else
-          local target_above
-          local target_below
-          if visible_start == origin_row then
-            target_above = visible_start
-            target_below = visible_start + 1
-          else
-            target_above = origin_row
-            target_below = origin_row + 1
-          end
-
-          if target_above >= visible_start and target_above <= visible_end then
-            add_projected_delete_path(p, origin_row, target_above, "◣", true)
-          end
-          if target_below >= visible_start and target_below <= visible_end then
-            add_projected_delete_path(p, origin_row, target_below, "◤", true)
-          end
-        end
-      end
+      project_block_path(p, delete_projection)
     elseif p.kind == "change" then
       projected[#projected + 1] = project_change_path(p)
     else

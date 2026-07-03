@@ -1566,31 +1566,31 @@ do
     assert_eq(spans.right_changes[1][2], 8, "Mixed replacement emphasis should cover only the changed word")
   end
 
-  -- Paths should include both an add path (for Added line 1/2) and a delete path
+  -- Paths should include both an add path (for Added line 1/2) and a delete path.
+  -- The adjacent change (hunk 3) and add (hunk 4) are separate zero-context
+  -- chunks: the add must keep its own routed path and stage marker rather
+  -- than fusing into the neighboring chunk's change envelope.
   do
     local found_add = false
     local found_delete = false
-    local found_mixed_change = false
     for _, p in ipairs(paths) do
       if p.kind == "add" and p.start_row == 8 and p.end_row == 9 then
         found_add = true
         assert_eq(p.origin_left_line, 8, "Expected add origin to be left line 8")
-        assert_eq(p.embedded_in_change, true, "Expected adjacent add path to be embedded in change envelope")
+        assert_eq(p.embedded_in_change, false,
+          "Adjacent add from its own chunk should route independently")
       end
       if p.kind == "delete" and p.start_row == 6 and p.end_row == 6 then
         found_delete = true
         assert_eq(p.origin_right_line, 5, "Expected delete origin to be right line 5")
       end
-      if p.kind == "change" and p.mixed_add then
-        found_mixed_change = true
-        assert_eq(p.start_left_index, 8, "Mixed change envelope should start at compact left row 8")
-        assert_eq(p.start_right_index, 7, "Mixed change envelope should start at compact right row 7")
-        assert_eq(p.end_right_index, 9, "Mixed change envelope should include adjacent right add rows")
+      if p.kind == "change" then
+        assert_eq(p.mixed_add, nil,
+          "No change path should absorb another chunk's add rows")
       end
     end
     assert_eq(found_add, true, "Expected to find an add path for right lines 8-9")
     assert_eq(found_delete, true, "Expected to find a delete path for left line 6")
-    assert_eq(found_mixed_change, true, "Expected mixed change envelope for adjacent change+add hunks")
     assert_eq(underlines.delete_origin_right_lines[5].glyph_col, 3,
       "Mixed delete wedge should stay compact after the left line number")
   end
@@ -1710,9 +1710,11 @@ do
     local found = false
     for _, p in ipairs(paths) do
       if fixture.expected_kind == "mixed" then
-        if p.kind == "change" and p.mixed_add then
+        -- Adjacent change+add chunks: the add stays its own chunk's route,
+        -- anchored on the neighboring change row, spanning the added block.
+        if p.kind == "add" and p.origin_kind == "change" and not p.embedded_in_change then
           found = true
-          longest = math.max(longest, (p.end_right_index or 0) - (p.start_right_index or 0) + 1)
+          longest = math.max(longest, (p.block_display_end or 0) - (p.block_display_start or 0) + 1)
         end
       elseif fixture.expected_kind == "change" then
         if p.kind == "change" then
@@ -1745,17 +1747,18 @@ do
   local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
 
   local counts = { add = 0, delete = 0, change = 0 }
-  local saw_mixed_change = false
+  local saw_adjacent_add = false
   for _, p in ipairs(paths) do
     counts[p.kind] = (counts[p.kind] or 0) + 1
-    if p.kind == "change" and p.mixed_add then
-      saw_mixed_change = true
+    if p.kind == "add" and p.origin_kind == "change" and not p.embedded_in_change then
+      saw_adjacent_add = true
     end
   end
   assert_eq(counts.add >= 3, true, "Dense mixed fixture should include multiple add routes")
   assert_eq(counts.delete >= 2, true, "Dense mixed fixture should include multiple delete routes")
   assert_eq(counts.change >= 2, true, "Dense mixed fixture should include multiple change routes")
-  assert_eq(saw_mixed_change, true, "Dense mixed fixture should include a mixed change/add envelope")
+  assert_eq(saw_adjacent_add, true,
+    "Dense mixed fixture should route the change-adjacent add as its own chunk")
 
   local projected = fake_session:project_paths_for_toplines(paths, 1, 49, 14, 14)
   local max_lane = paths_mod.max_lane(projected)
@@ -1765,7 +1768,7 @@ do
     viewport_height = 14,
     max_route_backtrack_steps = 500,
   })
-  assert_eq(required_width, 14,
+  assert_eq(required_width, 16,
     "Seven-lane dense conflict should use the smallest solvable compact connector width")
   assert_eq(required_plan.success, true, "Seven-lane dense conflict should remain collision-free")
 
@@ -1784,59 +1787,119 @@ do
     end
     return false
   end
-  assert_eq(row_has_bar(1, "add", 1, 11), true,
+  assert_eq(row_has_bar(1, "add", 2, 11), true,
     "Clipped add route from origin 11 should enter from the top edge")
-  assert_eq(row_has_bar(9, "add", 1, 11), true,
+  assert_eq(row_has_bar(9, "add", 2, 11), true,
     "Clipped add route from origin 11 should not be overwritten by same-lane delete/add routes")
   assert_eq(row_has_bar(9, "delete", 7, 5), true,
     "Dense conflict should keep the lower deletion route active alongside add routes")
 end
 
--- Test Suite 12c: Planned connector routes are two-turn, collision-free shapes
-do
-  local function assert_clean_plan(plan, label)
-    assert_eq(plan.success, true, label .. " should produce a solvable route plan")
-
-    local occupied = {}
-    local function check_cell(row, col, group, row_margin)
-      occupied[row] = occupied[row] or {}
-      row_margin = row_margin or 0
-      for check_row = row - row_margin, row + row_margin do
-        local row_occupied = occupied[check_row]
-        if row_occupied then
-          for check_col = col - 1, col + 1 do
-            local owner = row_occupied[check_col]
-            assert_eq(owner == nil or owner == group, true,
-              label .. " should not crowd connector cells at row " .. tostring(row) .. ", col " .. tostring(col))
-          end
-        end
-      end
-      occupied[row][col] = group
+-- Shared invariant checker for planned connector routes: cell exclusivity
+-- (mirroring the planner's endpoint-sharing rule), in-bounds geometry, route
+-- shape, visible routes carrying segments, and routes/hidden bookkeeping.
+local function assert_plan_invariants(plan, layout, label, opts)
+  opts = opts or {}
+  if not opts.success_optional then
+    local expect_success = opts.expect_success
+    if expect_success == nil then
+      expect_success = true
     end
-
-    for _, route in ipairs(plan.routes or {}) do
-      local horizontal_count = 0
-      local vertical_count = 0
-      for _, segment in ipairs(route.segments or {}) do
-        if segment.type == "horizontal" then
-          if not segment.continuation then
-            horizontal_count = horizontal_count + 1
-          end
-          for col = segment.start_col, segment.end_col do
-            check_cell(segment.row, col, route.group)
-          end
-        elseif segment.type == "vertical" then
-          vertical_count = vertical_count + 1
-          for row = segment.start_row, segment.end_row do
-            check_cell(row, segment.col, route.group)
-          end
-        end
-      end
-      assert_eq(horizontal_count <= 2, true, label .. " route should have at most two horizontal segments")
-      assert_eq(vertical_count <= 1, true, label .. " route should have at most one vertical segment")
-    end
+    assert_eq(plan.success, expect_success, label .. " plan success flag")
   end
 
+  local function endpoint_at(route, side, row)
+    return (route.source_side == side and route.source_row == row and route.source_visible ~= false)
+      or (route.target_side == side and route.target_row == row and route.target_visible ~= false)
+  end
+
+  -- Mirrors routes_can_share_cell: edge-docked endpoints always start at the
+  -- pane edge, so two same-row endpoints can never be separated by widening;
+  -- stacking them (with deterministic paint order) is the only solvable
+  -- layout and is deliberately legal. A "both"-side horizontal is itself
+  -- pinned to its row and may stack with any route ending on that row.
+  local function endpoint_on_row(route, row)
+    return endpoint_at(route, "left", row) or endpoint_at(route, "right", row)
+  end
+  local function may_share(route, owner, row, cell_type, side)
+    if owner == route or owner.group == route.group then
+      return true
+    end
+    if cell_type ~= "horizontal" or not side then
+      return false
+    end
+    if side == "both" then
+      return endpoint_on_row(route, row) and endpoint_on_row(owner, row)
+    end
+    return endpoint_at(route, side, row) and endpoint_at(owner, side, row)
+  end
+
+  local core_width = layout.connector_core_width
+  local occupied = {}
+  local function check_cell(row, col, route, cell_type, side)
+    -- Rows outside the buffer are deliberately allowed: offscreen
+    -- continuations emit a stub one row past the top edge, and projected
+    -- origins keep their true (possibly negative) rows because every
+    -- projected route anchors somewhere visible -- offscreen span overlap
+    -- implies visible overlap, so the extra rows add no collision risk,
+    -- while clamping them collapses dock ordering and degrades placement.
+    -- Rendering clips anything outside the buffer.
+    assert_eq(col >= 0 and col <= core_width - 1, true,
+      label .. " cell col should stay within the connector core (col " .. tostring(col) .. ")")
+    occupied[row] = occupied[row] or {}
+    for check_col = col - 1, col + 1 do
+      local owner = occupied[row][check_col]
+      assert_eq(owner == nil or may_share(route, owner, row, cell_type, side), true,
+        label .. " should not crowd connector cells at row " .. tostring(row) .. ", col " .. tostring(col))
+    end
+    occupied[row][col] = route
+  end
+
+  local hidden_set = {}
+  for _, route in ipairs(plan.hidden_routes or {}) do
+    hidden_set[route] = true
+    assert_eq(route.overflow_hidden, true,
+      label .. " hidden routes should be marked overflow_hidden")
+    assert_eq(route.hide_reason ~= nil, true,
+      label .. " hidden routes should record why they were hidden")
+  end
+
+  for _, route in ipairs(plan.routes or {}) do
+    if not opts.allow_hidden_in_routes then
+      assert_eq(hidden_set[route] == nil, true,
+        label .. " plan.routes and plan.hidden_routes should be disjoint")
+    end
+    local horizontal_count = 0
+    local vertical_count = 0
+    local cell_count = 0
+    for _, segment in ipairs(route.segments or {}) do
+      if segment.type == "horizontal" then
+        if not segment.continuation then
+          horizontal_count = horizontal_count + 1
+        end
+        for col = segment.start_col, segment.end_col do
+          check_cell(segment.row, col, route, "horizontal", segment.side)
+          cell_count = cell_count + 1
+        end
+      elseif segment.type == "vertical" then
+        vertical_count = vertical_count + 1
+        for row = segment.start_row, segment.end_row do
+          check_cell(row, segment.col, route, "vertical", nil)
+          cell_count = cell_count + 1
+        end
+      end
+    end
+    assert_eq(horizontal_count <= 2, true, label .. " route should have at most two horizontal segments")
+    assert_eq(vertical_count <= 1, true, label .. " route should have at most one vertical segment")
+    if not hidden_set[route] and not opts.allow_empty_visible_routes then
+      assert_eq(cell_count >= 1, true,
+        label .. " visible routes should draw at least one connector cell")
+    end
+  end
+end
+
+-- Test Suite 12c: Planned connector routes are two-turn, collision-free shapes
+do
   local left = read_file(root .. "/tests/files/left_dense_mixed.txt")
   local right = read_file(root .. "/tests/files/right_dense_mixed.txt")
   local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
@@ -1847,11 +1910,11 @@ do
   local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
   local projections = {
     { 1, 1, 4, "dense initial" },
-    { 1, 38, 10, "dense pre-conflict" },
-    { 1, 46, 14, "dense four-route conflict" },
-    { 1, 49, 14, "dense lower-route entering" },
-    { 1, 53, 14, "dense post-conflict" },
-    { 8, 46, 5, "dense lane reuse" },
+    { 1, 38, 12, "dense pre-conflict" },
+    { 1, 46, 16, "dense four-route conflict" },
+    { 1, 49, 16, "dense lower-route entering" },
+    { 1, 53, 16, "dense post-conflict" },
+    { 8, 46, 7, "dense lane reuse" },
   }
 
   for _, projection in ipairs(projections) do
@@ -1862,7 +1925,7 @@ do
       max_route_backtrack_steps = 500,
     })
     assert_eq(width, projection[3], projection[4] .. " should use its compact planned connector width")
-    assert_clean_plan(plan, projection[4])
+    assert_plan_invariants(plan, { connector_core_width = width }, projection[4])
   end
 
   local function route_segment_counts(plan)
@@ -1911,7 +1974,7 @@ do
   }
   local two_width, two_plan = paths_mod.required_connector_core_width_for_paths(two_vertical, 3, 24)
   assert_eq(two_width, 5, "Competing vertical routes should widen only enough to avoid collisions")
-  assert_clean_plan(two_plan, "two compact vertical routes")
+  assert_plan_invariants(two_plan, { connector_core_width = two_width }, "two compact vertical routes")
 
   local upward = {
     {
@@ -1932,7 +1995,7 @@ do
     },
   }
   local upward_plan = paths_mod.plan_routes(upward, { connector_core_width = 12 })
-  assert_clean_plan(upward_plan, "upward priority")
+  assert_plan_invariants(upward_plan, { connector_core_width = 12 }, "upward priority")
   assert_eq(upward[1].planned_rail_col < upward[2].planned_rail_col, true,
     "Top-edge upward route should take the leftmost rail")
 
@@ -1955,7 +2018,7 @@ do
     },
   }
   local downward_plan = paths_mod.plan_routes(downward, { connector_core_width = 12 })
-  assert_clean_plan(downward_plan, "downward priority")
+  assert_plan_invariants(downward_plan, { connector_core_width = 12 }, "downward priority")
   assert_eq(downward[2].planned_rail_col < downward[1].planned_rail_col, true,
     "Bottom-edge downward route should take the leftmost rail")
 
@@ -1976,7 +2039,7 @@ do
     viewport_topline = 1,
     viewport_height = 14,
   })
-  assert_clean_plan(overflow_plan, "overflow cap")
+  assert_plan_invariants(overflow_plan, { connector_core_width = 24 }, "overflow cap")
   assert_eq(#overflow_plan.routes, paths_mod.MAX_VISIBLE_CONNECTOR_ROUTES,
     "Overflow planner should keep at most eight vertical routes")
   assert_eq(#overflow_plan.hidden_routes, 2,
@@ -2160,6 +2223,356 @@ do
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   assert_eq(get_hl("DiffBanditAdd").bg, 0x304050,
     "ColorScheme refresh should rederive add color")
+end
+
+-- ==============================================================================
+-- CONNECTOR HARDENING TESTS (Suite 15)
+-- ==============================================================================
+
+-- Test Suite 15a: Hunks at the very first display row keep their connectors
+do
+  local function project_first_row(left, right, label)
+    local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+    assert_eq(err, nil, "diff error (" .. label .. ")")
+    local v = view.build(left, right, hunks, config)
+    local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+    assert_eq(#paths >= 1, true, label .. " should produce at least one base path")
+    local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
+    return paths, fake_session:project_paths_for_toplines(paths, 1, 1, 10, 10)
+  end
+
+  -- A hunk starting at display row 1 has no origin row above it. build_paths
+  -- synthesizes a same-row anchor (synthetic_origin) so the hunk still
+  -- projects and routes; renderers skip origin glyphs/underlines for it.
+  local function assert_first_row_routes(paths, projected, label)
+    assert_eq(paths[1].origin_display_row, 1, label .. " should anchor on its own first row")
+    assert_eq(paths[1].synthetic_origin, true, label .. " anchor should be flagged synthetic")
+    assert_eq(#projected, 2, label .. " should project the split pair around the anchor row")
+    local layout = { connector_core_width = 12 }
+    local plan = paths_mod.plan_routes(projected, layout)
+    assert_plan_invariants(plan, layout, label)
+    assert_eq(#plan.routes >= 1, true, label .. " should plan at least one visible route")
+  end
+
+  local add_paths, add_projected = project_first_row(
+    { "alpha", "beta" },
+    { "new one", "new two", "alpha", "beta" },
+    "insert-at-top")
+  assert_first_row_routes(add_paths, add_projected, "insert-at-top")
+
+  local delete_paths, delete_projected = project_first_row(
+    { "old one", "old two", "alpha", "beta" },
+    { "alpha", "beta" },
+    "delete-at-top")
+  assert_first_row_routes(delete_paths, delete_projected, "delete-at-top")
+
+  local _, change_projected = project_first_row(
+    { "old", "alpha" },
+    { "new", "alpha" },
+    "change-at-top")
+  assert_eq(#change_projected >= 1, true,
+    "Change hunks at the first display row should still project")
+end
+
+-- Test Suite 15b: Embedded adds merge into their own chunk's change band
+do
+  -- Hand-crafted hunks: the live diff config (linematch) usually splits uneven
+  -- changes into separate hunks, but larger hunks bypass linematch and produce
+  -- change hunks with uneven counts -- the shape that creates embedded adds.
+  local left = { "ctx", "old", "tail" }
+  local right = { "ctx", "new", "extra", "tail" }
+  local mixed_hunks = {
+    { index = 1, type = "change", left = { start = 2, count = 1 }, right = { start = 2, count = 2 } },
+  }
+  local v = view.build(left, right, mixed_hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+
+  local change_path, add_path
+  for _, p in ipairs(paths) do
+    if p.kind == "change" then change_path = p end
+    if p.kind == "add" then add_path = p end
+  end
+  assert_eq(add_path ~= nil, true, "Mixed change hunk should produce an embedded add path")
+  assert_eq(add_path.embedded_in_change, true, "Extra right-side row should be flagged embedded")
+  assert_eq(change_path.mixed_add, true, "Embedded add should merge into the change band")
+  assert_eq(change_path.end_right_index, 3, "Merged change band should extend over the added row")
+
+  -- Embedded adds are deliberately not routed on their own; the change band
+  -- carries them. Pin that so an unmerged embedded add is visibly a bug.
+  local solo_plan = paths_mod.plan_routes({ add_path }, { connector_core_width = 12 })
+  assert_eq(#solo_plan.routes, 0, "Embedded add paths should not plan standalone routes")
+
+  -- The merge pass must respect chunk boundaries. With zero-context adjacent
+  -- hunks, an add whose origin row is the previous chunk's change row must
+  -- NOT merge into that neighboring chunk's band (that would fuse two
+  -- independently-stageable chunks); it falls back to normal routing instead.
+  local adj_left = { "ctx", "old", "tail" }
+  local adj_right = { "ctx", "new", "inserted", "tail" }
+  local adjacent_hunks = {
+    { index = 1, type = "change", left = { start = 2, count = 1 }, right = { start = 2, count = 1 } },
+    { index = 2, type = "add", left = { start = 2, count = 0 }, right = { start = 3, count = 1 } },
+  }
+  local adj_view = view.build(adj_left, adj_right, adjacent_hunks, config)
+  local adj_paths = paths_mod.compute_paths(adj_view.chunks, adj_view.line_meta)
+  local adj_change, adj_add
+  for _, p in ipairs(adj_paths) do
+    if p.kind == "change" then adj_change = p end
+    if p.kind == "add" then adj_add = p end
+  end
+  assert_eq(adj_add.chunk, 2, "Adjacent add path should belong to the second chunk")
+  assert_eq(adj_add.embedded_in_change, false,
+    "Cross-chunk adds should fall back to normal routing, not stay embedded")
+  assert_eq(adj_change.mixed_add, nil,
+    "A neighboring chunk's change band should not absorb another chunk's add")
+  local adj_layout = { connector_core_width = 12 }
+  local adj_plan = paths_mod.plan_routes({ adj_add }, adj_layout)
+  assert_plan_invariants(adj_plan, adj_layout, "cross-chunk add")
+  assert_eq(#adj_plan.routes, 1, "Cross-chunk add should plan its own visible route")
+end
+
+-- Test Suite 15c: Overflow pruning keeps the cap with fully-visible routes
+do
+  local function overflow_fixture()
+    local group = {}
+    local paths = {}
+    for i = 1, 10 do
+      paths[i] = {
+        kind = "add",
+        chunk = i,
+        origin_side = "left",
+        target_side = "right",
+        origin_display_row = i,
+        triangle_display_row = 14,
+        route_group = group,
+      }
+    end
+    return paths
+  end
+
+  local paths = overflow_fixture()
+  local layout = { connector_core_width = 24, viewport_topline = 1, viewport_height = 14 }
+  local plan = paths_mod.plan_routes(paths, layout)
+  assert_plan_invariants(plan, layout, "fully-visible overflow")
+  assert_eq(#plan.routes, paths_mod.MAX_VISIBLE_CONNECTOR_ROUTES,
+    "Fully-visible overflow should keep exactly the route cap")
+  assert_eq(#plan.hidden_routes, 2, "Fully-visible overflow should hide two routes")
+  -- All ten routes are fully on-screen, so hiding is decided purely by the
+  -- dock-row tie-break: the two latest origins are dropped, with a reason.
+  assert_eq(paths[9].overflow_hidden, true, "Overflow should hide the ninth route")
+  assert_eq(paths[10].overflow_hidden, true, "Overflow should hide the tenth route")
+  assert_eq(paths[9].hide_reason, "overflow-cap", "Overflow hides should record the cap reason")
+  assert_eq(plan.hidden_summary["overflow-cap"], 2, "Plan should summarize cap hides")
+  assert_eq(paths[1].overflow_hidden == true, false, "Overflow should keep the first route")
+
+  -- The active chunk's connector is what the user navigated to: it must
+  -- survive pruning while any other candidate remains.
+  local active_paths = overflow_fixture()
+  local active_layout = {
+    connector_core_width = 24,
+    viewport_topline = 1,
+    viewport_height = 14,
+    active_chunk_index = 9,
+  }
+  local active_plan = paths_mod.plan_routes(active_paths, active_layout)
+  assert_plan_invariants(active_plan, active_layout, "active-chunk overflow")
+  assert_eq(#active_plan.hidden_routes, 2, "Active-chunk overflow should still hide two routes")
+  assert_eq(active_paths[9].overflow_hidden == true, false,
+    "Overflow should never hide the active chunk's route while others remain")
+  assert_eq(active_paths[10].overflow_hidden, true,
+    "Overflow should hide the farthest non-active route")
+  assert_eq(active_paths[8].overflow_hidden, true,
+    "Overflow should hide the next non-active route in dock order")
+end
+
+-- Test Suite 15d: Width saturation force-hides routes instead of overlapping
+do
+  local paths = {}
+  for i = 1, 6 do
+    paths[i] = {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = i,
+      triangle_display_row = i + 7,
+      route_group = {},
+    }
+  end
+  local layout = { connector_core_width = 4 }
+  local plan = paths_mod.plan_routes(paths, layout)
+  assert_eq(plan.strategy, "greedy-hidden", "Width saturation should fall back to greedy-hidden")
+  assert_eq(#plan.hidden_routes, 5, "Width saturation should force-hide the unplaceable routes")
+  assert_eq(#plan.routes, 1, "Width saturation should keep only the placeable route visible")
+  assert_eq(plan.hidden_summary["width-exhausted"], 5,
+    "Width saturation hides should record the width reason")
+  assert_plan_invariants(plan, layout, "width saturation", { expect_success = false })
+end
+
+-- Test Suite 15e: Dense adjacent hunks hold plan and lane invariants under scroll
+do
+  local left = read_file(root .. "/tests/files/left_dense_mixed.txt")
+  local right = read_file(root .. "/tests/files/right_dense_mixed.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (dense hardening)")
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+  local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
+
+  for _, toplines in ipairs({ { 1, 1 }, { 1, 38 }, { 1, 46 }, { 8, 46 }, { 20, 30 }, { 40, 40 } }) do
+    local label = string.format("dense hardening %d/%d", toplines[1], toplines[2])
+    local projected = fake_session:project_paths_for_toplines(paths, toplines[1], toplines[2], 14, 14)
+    -- lane_resolution_bailed=true is expected on dense projections: the
+    -- legacy crossing loop oscillates and its pass cap ships a bounded,
+    -- collision-free state. The stacking check below is the real invariant;
+    -- the flag exists so a bail is observable instead of silent.
+    local width, plan = paths_mod.required_connector_core_width_for_paths(projected, 3, 24, {
+      viewport_topline = toplines[1],
+      viewport_height = 14,
+      max_route_backtrack_steps = 500,
+    })
+    assert_plan_invariants(plan, { connector_core_width = width }, label)
+
+    -- No two same-kind paths may hold the same lane on the same row: their
+    -- lane-column formula is shared per kind, so stacking means ambiguous
+    -- rails. Different kinds anchor to different edges and may reuse numbers.
+    local active_bars = paths_mod.compute_active_bars(projected)
+    for row, bars in pairs(active_bars) do
+      local seen_lanes = {}
+      for _, item in ipairs(bars.__items or {}) do
+        local key = item.path.kind .. ":" .. tostring(item.lane)
+        assert_eq(seen_lanes[key] == nil, true,
+          label .. " row " .. tostring(row) .. " should not stack two rails on " .. key)
+        seen_lanes[key] = item.path
+      end
+    end
+  end
+end
+
+-- Test Suite 15f: The live pressure sizer stays consistent with the planner
+do
+  -- The gutter width is sized ONCE per document by pressure_core_width and
+  -- never resizes while scrolling. Across a grid of independent topline
+  -- pairs, every viewport must either plan cleanly at that width or hide
+  -- routes with a recorded reason -- never silently.
+  local single = paths_mod.pressure_core_width({
+    { kind = "add", origin_display_row = 1, triangle_display_row = 4 },
+  }, 3, 24)
+  assert_eq(single, 7, "A single routed range should size to minimum plus slack lanes")
+  assert_eq(paths_mod.pressure_core_width({}, 3, 24), 3,
+    "A document with no routes should keep the compact minimum width")
+
+  local left = read_file(root .. "/tests/files/left_dense_mixed.txt")
+  local right = read_file(root .. "/tests/files/right_dense_mixed.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (pressure sizer)")
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+  local width = paths_mod.pressure_core_width(paths, 3, 24)
+  assert_eq(width >= 3 and width <= 24, true, "Pressure width should respect the configured bounds")
+
+  local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
+  local toplines = { 1, 10, 20, 30, 40, 50 }
+  for _, lt in ipairs(toplines) do
+    for _, rt in ipairs(toplines) do
+      local label = string.format("pressure sizer %d/%d", lt, rt)
+      local projected = fake_session:project_paths_for_toplines(paths, lt, rt, 14, 14)
+      local layout = {
+        connector_core_width = width,
+        viewport_topline = lt,
+        viewport_height = 14,
+        max_route_backtrack_steps = 500,
+      }
+      local plan = paths_mod.plan_routes(projected, layout)
+      assert_plan_invariants(plan, layout, label, { success_optional = true })
+      if not plan.success then
+        assert_eq(#plan.hidden_routes >= 1, true,
+          label .. " planner failure must surface as recorded hidden routes")
+      end
+    end
+  end
+end
+
+-- Test Suite 15g: Offscreen-origin continuations keep a visible anchor
+do
+  local paths = {
+    {
+      kind = "add",
+      origin_side = "left",
+      target_side = "right",
+      origin_display_row = 5,
+      triangle_display_row = 1,
+      hide_triangle = true,
+      route_group = {},
+    },
+  }
+  local layout = { connector_core_width = 12 }
+  local plan = paths_mod.plan_routes(paths, layout)
+  assert_plan_invariants(plan, layout, "hide_triangle continuation")
+  assert_eq(#plan.routes, 1, "Hidden-triangle route should still plan")
+  local touches_triangle_row = false
+  local cell_count = 0
+  for _, segment in ipairs(plan.routes[1].segments or {}) do
+    if segment.type == "horizontal" then
+      cell_count = cell_count + (segment.end_col - segment.start_col + 1)
+      if segment.row == 1 then touches_triangle_row = true end
+    else
+      cell_count = cell_count + (segment.end_row - segment.start_row + 1)
+      if segment.start_row <= 1 and segment.end_row >= 1 then touches_triangle_row = true end
+    end
+  end
+  assert_eq(cell_count >= 1, true,
+    "Hidden-triangle route should keep at least one visible connector cell")
+  assert_eq(touches_triangle_row, false,
+    "Hidden-triangle route should not draw on the suppressed triangle row")
+end
+
+-- Test Suite 15h: Routes never hide before the connector core is saturated
+do
+  -- The scroll-aware sizer widens the core for the worst stacking that
+  -- independent scrolling can produce, and the render path falls back to an
+  -- upward width search (stretched to the core edge) when the fixed-width
+  -- tree thrashes. Together: across every topline pair, the only legal hide
+  -- reason is the eight-route visibility cap.
+  local left = read_file(root .. "/tests/files/left_dense_mixed.txt")
+  local right = read_file(root .. "/tests/files/right_dense_mixed.txt")
+  local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+  assert_eq(err, nil, "diff error (saturation sweep)")
+  local v = view.build(left, right, hunks, config)
+  local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
+  local core = paths_mod.pressure_core_width(paths, 3, 24, 14)
+  assert_eq(core, 17, "Scroll-aware sizing should widen the dense core for stackable routes")
+  local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
+
+  for lt = 1, 57, 4 do
+    for rt = 1, 57, 4 do
+      local label = string.format("saturation %d/%d", lt, rt)
+      local projected = fake_session:project_paths_for_toplines(paths, lt, rt, 14, 14)
+      local layout = {
+        connector_core_width = core,
+        viewport_topline = lt,
+        viewport_height = 14,
+        max_route_backtrack_steps = 500,
+      }
+      local plan = paths_mod.plan_routes(projected, layout)
+      if not plan.success then
+        local solved_width, retry = paths_mod.required_connector_core_width_for_paths(projected, 3, core, layout)
+        assert_eq(retry.success, true, label .. " fallback width search should solve within the core")
+        plan = paths_mod.stretch_plan_to_core(retry, solved_width, core)
+        for _, route in ipairs(plan.routes) do
+          for _, segment in ipairs(route.segments or {}) do
+            if segment.type == "horizontal" and (segment.side == "right" or segment.side == "both") then
+              assert_eq(segment.end_col <= core - 1, true,
+                label .. " stretched horizontals should stay within the core")
+            end
+          end
+        end
+      end
+      for _, r in ipairs(plan.hidden_routes) do
+        assert_eq(r.hide_reason, "overflow-cap",
+          label .. " routes should only hide at the visibility cap, not before saturation")
+      end
+      assert_plan_invariants(plan, layout, label, { success_optional = true })
+    end
+  end
 end
 
 -- ==============================================================================
@@ -3696,12 +4109,21 @@ if vim.fn.executable("git") == 1 then
     assert_eq(has_semantic_bg_from_col_zero(session.result_right_num_buf, session.result_remote_session.ns, 7,
       "DiffBanditConnectorChange"), true,
       "Mixed result right number gutter should color through the connector-side spacer on overlap rows")
+    assert_eq(has_semantic_bg_from_col_zero(session.result_right_num_buf, session.result_remote_session.ns, 8,
+      "DiffBanditConnectorChange"), false,
+      "Mixed result right number gutter should not extend the change band over the adjacent add chunk")
     assert_eq(has_semantic_bg_span(session.result_right_num_buf, session.result_remote_session.ns, 8,
-      "DiffBanditConnectorChange", 0, session.result_remote_session:right_triangle_col()), true,
-      "Mixed result right number gutter should not bleed through transition rows")
+      "DiffBanditConnectorAdd", 0, session.result_remote_session:right_triangle_col()), true,
+      "Mixed result right number gutter should color the adjacent add chunk with the add band")
+    -- With the adjacent add routed as its own chunk, the change band no
+    -- longer overlaps the add rows, so the connector-side spacer stays
+    -- uncolored and the change mark starts after it.
     assert_eq(has_semantic_bg_from_col_zero(session.remote_num_buf, session.result_remote_session.ns, 8,
-      "DiffBanditConnectorChange"), true,
-      "Mixed remote number gutter should color through the connector-side spacer on overlap rows")
+      "DiffBanditConnectorChange"), false,
+      "Mixed remote number gutter should keep the spacer uncolored without band overlap")
+    assert_eq(has_semantic_bg_span(session.remote_num_buf, session.result_remote_session.ns, 8,
+      "DiffBanditConnectorChange", 1, 0), true,
+      "Mixed remote number gutter should still color the change row after the spacer")
     pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.result_buf })
     session:close()
   end
