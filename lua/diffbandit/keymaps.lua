@@ -33,7 +33,43 @@ function M.set(host, mode, buf, lhs, rhs, opts)
       previous = existing_buffer_keymap(mode, buf, lhs) or false,
     }
   end
+  local backup = host.keymap_backups[key]
+  backup.rhs = rhs
+  backup.opts = opts
   vim.keymap.set(mode, lhs, rhs, vim.tbl_extend("force", opts or {}, { buffer = buf }))
+end
+
+local function map_matches_rhs(map, rhs)
+  if not map then
+    return false
+  end
+  if type(rhs) == "function" then
+    return map.callback == rhs
+  end
+  return map.rhs == rhs
+end
+
+-- Re-install the host's mappings on `buf` when something set buffer-local
+-- maps over them after setup — LSP configs commonly bind [d/]d and friends
+-- from LspAttach handlers, which fire after the session claims a real file
+-- buffer. A foreign map that shadowed ours becomes the new restore target so
+-- it survives clear() once the session closes.
+function M.reassert(host, buf)
+  if not (host.keymap_backups and buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  for _, backup in pairs(host.keymap_backups) do
+    if backup.buf == buf and backup.rhs ~= nil then
+      local current = existing_buffer_keymap(backup.mode, buf, backup.lhs)
+      if not map_matches_rhs(current, backup.rhs) then
+        if current then
+          backup.previous = current
+        end
+        vim.keymap.set(backup.mode, backup.lhs, backup.rhs,
+          vim.tbl_extend("force", backup.opts or {}, { buffer = buf }))
+      end
+    end
+  end
 end
 
 function M.clear(host)

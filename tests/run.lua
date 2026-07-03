@@ -4815,5 +4815,119 @@ do
     "Closing a review panel should close the owning diff session")
 end
 
+-- Document-navigation keymaps survive LspAttach handlers that install
+-- buffer-local diagnostic maps ([d/]d) over the session's maps.
+do
+  local right_path = vim.fn.tempname() .. ".txt"
+  vim.fn.writefile({ "one" }, right_path)
+  local right_buf = vim.api.nvim_create_buf(false, false)
+  vim.api.nvim_set_option_value("swapfile", false, { buf = right_buf })
+  vim.api.nvim_buf_set_name(right_buf, right_path)
+  vim.api.nvim_buf_set_lines(right_buf, 0, -1, false, { "one" })
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = right_buf })
+
+  local session = assert((Session.start({
+    left = source_mod.from_lines({ "zero" }, nil, "left"),
+    right = source_mod.from_lines({ "one" }, right_path, "right", {
+      editable = { target = "buffer", bufnr = right_buf, path = right_path },
+    }),
+  }, config, {})))
+  local top_key = config.navigation.document_keys.top
+  local session_cb = buffer_keymap_callback(session.right_buf, "n", top_key)
+  assert_eq(type(session_cb), "function",
+    "Session should map the document-top key on the right buffer")
+
+  local foreign = function() end
+  vim.keymap.set("n", top_key, foreign, { buffer = session.right_buf })
+  assert_eq(buffer_keymap_callback(session.right_buf, "n", top_key), foreign,
+    "A buffer-local LSP-style map should shadow the session map")
+
+  vim.api.nvim_exec_autocmds("LspAttach", { buffer = session.right_buf })
+  vim.wait(500, function()
+    return buffer_keymap_callback(session.right_buf, "n", top_key) == session_cb
+  end, 10)
+  assert_eq(buffer_keymap_callback(session.right_buf, "n", top_key), session_cb,
+    "LspAttach should re-assert the session's document-navigation map")
+
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = right_buf })
+  session:close()
+  assert_eq(buffer_keymap_callback(right_buf, "n", top_key), foreign,
+    "Closing the session should restore the shadowing diagnostic map")
+  pcall(vim.api.nvim_buf_delete, right_buf, { force = true })
+end
+
+-- Three-way merge gutters follow their content panes on scroll, matching the
+-- two-way session's owned gutter synchronization.
+do
+  local function win_topline(win)
+    return vim.api.nvim_win_call(win, function()
+      return vim.fn.line("w0")
+    end)
+  end
+  local many = {}
+  for i = 1, 80 do
+    many[i] = "line " .. i
+  end
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo, "p")
+  local merge_session = assert((merge_mod.start({
+    root = repo,
+    path = "merge-scroll.txt",
+    base_lines = many,
+    local_lines = many,
+    remote_lines = many,
+    result_lines = many,
+    conflicts = {},
+    non_conflicting = {},
+    local_hunks = {},
+    remote_hunks = {},
+  }, config, {})))
+
+  -- Headless nvim never emits WinScrolled (it is checked during UI redraw),
+  -- so fire it explicitly with the scrolled window as <amatch>.
+  vim.api.nvim_set_current_win(merge_session.result_win)
+  vim.api.nvim_win_set_cursor(merge_session.result_win, { 50, 0 })
+  vim.api.nvim_win_call(merge_session.result_win, function()
+    vim.cmd("normal! zt")
+  end)
+  vim.api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(merge_session.result_win) })
+  vim.wait(1000, function()
+    local top = win_topline(merge_session.result_win)
+    return top > 1
+      and win_topline(merge_session.result_left_num_win) == top
+      and win_topline(merge_session.result_right_num_win) == top
+  end, 10)
+  local result_top = win_topline(merge_session.result_win)
+  assert_ne(result_top, 1, "Scrolling the merge result pane should move its topline")
+  assert_eq(win_topline(merge_session.result_left_num_win), result_top,
+    "Merge result left number pane should follow the result pane topline")
+  assert_eq(win_topline(merge_session.result_right_num_win), result_top,
+    "Merge result right number pane should follow the result pane topline")
+
+  vim.api.nvim_set_current_win(merge_session.local_win)
+  vim.api.nvim_win_set_cursor(merge_session.local_win, { 30, 0 })
+  vim.api.nvim_win_call(merge_session.local_win, function()
+    vim.cmd("normal! zt")
+  end)
+  vim.api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(merge_session.local_win) })
+  vim.wait(1000, function()
+    local top = win_topline(merge_session.local_win)
+    return top > 1
+      and win_topline(merge_session.local_num_win) == top
+      and win_topline(merge_session.local_result_connector_win) == top
+  end, 10)
+  local local_top = win_topline(merge_session.local_win)
+  assert_ne(local_top, 1, "Scrolling the merge local pane should move its topline")
+  assert_eq(win_topline(merge_session.local_num_win), local_top,
+    "Merge local number pane should follow the local pane topline")
+  assert_eq(win_topline(merge_session.local_result_connector_win), local_top,
+    "Merge local connector should follow the local pane topline")
+  assert_eq(win_topline(merge_session.result_left_num_win), win_topline(merge_session.result_win),
+    "Scrolling the local pane should leave result gutters synced to the result pane")
+
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = merge_session.result_buf })
+  merge_session:close()
+end
+
 vim.api.nvim_out_write("OK\n")
 vim.cmd("qa")
