@@ -234,4 +234,52 @@ function M.build(left_lines, right_lines, hunks, config)
   }
 end
 
+-- Map a compact buffer row on one side of the aligned view to the row it
+-- faces on the other side. `from_side` is "left" or "right"; `row` is a
+-- 1-based line number in that side's buffer. Returns target_row, exact:
+--   exact == true  -> the aligned row carrying `row` has real content on the
+--                     other side (context/change rows).
+--   exact == false -> `row` faces a filler row; the nearest aligned row above
+--                     with real content on the target side is used (so a whole
+--                     add/delete block anchors to the line above it), falling
+--                     back to the nearest one below, falling back to `row`.
+function M.counterpart_row(line_meta, from_side, row)
+  local from_key = from_side == "left" and "left_index" or "right_index"
+  local to_key = from_side == "left" and "right_index" or "left_index"
+  row = math.max(1, math.floor(tonumber(row) or 1))
+
+  -- left_index/right_index increase strictly along line_meta, so scan until
+  -- the row is found or passed; out-of-range rows clamp to the last row.
+  local anchor
+  for idx, meta in ipairs(line_meta) do
+    local from_idx = meta[from_key]
+    if from_idx and from_idx >= row then
+      anchor = idx
+      break
+    end
+  end
+  anchor = anchor or #line_meta
+  if anchor == 0 then
+    return row, false
+  end
+
+  local meta = line_meta[anchor]
+  if meta and meta[to_key] then
+    return meta[to_key], true
+  end
+  for idx = anchor - 1, 1, -1 do
+    local m = line_meta[idx]
+    if m and m[to_key] then
+      return m[to_key], false
+    end
+  end
+  for idx = anchor + 1, #line_meta do
+    local m = line_meta[idx]
+    if m and m[to_key] then
+      return m[to_key], false
+    end
+  end
+  return row, false
+end
+
 return M

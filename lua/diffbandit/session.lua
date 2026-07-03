@@ -546,6 +546,11 @@ function Session:setup_keymaps()
         self:goto_document_edge("bottom")
       end)
     end
+    if navigation.snap_key then
+      map(buf, navigation.snap_key, function()
+        self:snap_to_cursor()
+      end)
+    end
     if self.file_queue and git_keys.next then
       map(buf, git_keys.next, function()
         self:goto_next_file()
@@ -824,6 +829,51 @@ function Session:align_chunk_viewports(chunk)
     pcall(vim.api.nvim_set_current_win, focused_win)
   elseif self.last_source_win and vim.api.nvim_win_is_valid(self.last_source_win) then
     pcall(vim.api.nvim_set_current_win, self.last_source_win)
+  end
+end
+
+-- Scroll the opposite pane so the row facing the cursor line sits at the same
+-- screen offset, and put its cursor on that row. Panes scroll independently;
+-- this is the manual "re-align on demand" complement to ]c alignment. Snap is
+-- a viewport operation, not navigation — it never touches chunk or
+-- file-boundary state.
+function Session:snap_to_cursor()
+  local focused_win = vim.api.nvim_get_current_win()
+  local source_win
+  if focused_win == self.left_win or focused_win == self.right_win then
+    source_win = focused_win
+  elseif focused_win == self.left_num_win then
+    source_win = self.left_win
+  elseif focused_win == self.right_num_win then
+    source_win = self.right_win
+  elseif self.last_source_win and vim.api.nvim_win_is_valid(self.last_source_win) then
+    source_win = self.last_source_win
+  end
+  if not (source_win and vim.api.nvim_win_is_valid(source_win)) then
+    return
+  end
+  local from_side = source_win == self.left_win and "left" or "right"
+
+  local source_cursor = vim.api.nvim_win_get_cursor(source_win)
+  local cursor_row = source_cursor[1]
+  local topline = get_win_view_topline(source_win)
+  local offset = math.max(0, cursor_row - topline)
+
+  local target_row = view_builder.counterpart_row(self.view.line_meta, from_side, cursor_row)
+  local target_lines = from_side == "left" and #self.view.right or #self.view.left
+  target_row = math.min(math.max(1, target_row), math.max(1, target_lines))
+  local target_topline = math.max(1, target_row - offset)
+
+  -- Pass the full {row, col} pair for the focused side so its cursor column
+  -- survives the snap untouched.
+  if from_side == "left" then
+    self:set_viewport_toplines_preserve_cursors(topline, target_topline, source_cursor, target_row)
+  else
+    self:set_viewport_toplines_preserve_cursors(target_topline, topline, target_row, source_cursor)
+  end
+
+  if focused_win ~= vim.api.nvim_get_current_win() then
+    pcall(vim.api.nvim_set_current_win, focused_win)
   end
 end
 

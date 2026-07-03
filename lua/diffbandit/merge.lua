@@ -12,6 +12,7 @@ local source_mod = require("diffbandit.source")
 local state = require("diffbandit.state")
 local text = require("diffbandit.text")
 local ui = require("diffbandit.ui")
+local view_builder = require("diffbandit.view")
 local connector_width = require("diffbandit.connector_width")
 local config_mod = require("diffbandit.config")
 
@@ -602,6 +603,7 @@ function Merge:setup_keymaps()
     map(buf, keys.focus_panel, function() self:focus_commit_panel_for_current_file() end)
     map(buf, document_keys.top, function() self:goto_document_edge("top") end)
     map(buf, document_keys.bottom, function() self:goto_document_edge("bottom") end)
+    map(buf, keys.snap, function() self:snap_to_cursor() end)
     map(buf, keys.close, function() self:close() end)
   end
 end
@@ -1172,6 +1174,10 @@ function Merge:hunk_index_at_row(ctx, row, range_side)
   return nil
 end
 
+-- Note: view_builder.counterpart_row is the anchored generalization of this
+-- scan and a candidate future replacement; this version keeps a positional
+-- quirk (filler-right rows feed next_source regardless of position) that
+-- align_hunk_item_viewports anchoring depends on.
 function Merge:source_row_for_result_row(side, result_row)
   local ctx = self:pair_context_for_side(side)
   local view = ctx.pair and ctx.pair.view
@@ -1234,6 +1240,76 @@ function Merge:align_hunk_item_viewports(item)
   pcall(vim.api.nvim_win_set_cursor, self.local_win, { local_cursor, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.result_win, { result_cursor, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.remote_win, { remote_cursor, 0 })
+  self:rerender_pair_viewports()
+end
+
+-- Snap the two other content panes to the row facing the cursor line in the
+-- focused pane, preserving the cursor's screen offset. local<->remote pivots
+-- through the shared result pane. Snap is a viewport operation, not
+-- navigation — selection and conflict state stay untouched.
+function Merge:snap_to_cursor()
+  local focused_win = vim.api.nvim_get_current_win()
+  local source_win
+  if focused_win == self.local_win or focused_win == self.result_win or focused_win == self.remote_win then
+    source_win = focused_win
+  elseif self.last_content_win and vim.api.nvim_win_is_valid(self.last_content_win) then
+    source_win = self.last_content_win
+  end
+  if not (source_win and vim.api.nvim_win_is_valid(source_win)) then
+    return
+  end
+
+  local source_cursor = vim.api.nvim_win_get_cursor(source_win)
+  local cursor_row = source_cursor[1]
+  local topline = get_win_view_topline(source_win)
+  local offset = math.max(0, cursor_row - topline)
+
+  local local_meta = (self.local_result_pair and self.local_result_pair.view or {}).line_meta or {}
+  local remote_meta = (self.result_remote_pair and self.result_remote_pair.view or {}).line_meta or {}
+
+  -- Pair orientation: local_result_pair is left=local/right=result,
+  -- result_remote_pair is left=remote/right=result.
+  local local_row, result_row, remote_row
+  if source_win == self.result_win then
+    result_row = cursor_row
+    local_row = view_builder.counterpart_row(local_meta, "right", result_row)
+    remote_row = view_builder.counterpart_row(remote_meta, "right", result_row)
+  elseif source_win == self.local_win then
+    local_row = cursor_row
+    result_row = view_builder.counterpart_row(local_meta, "left", local_row)
+    remote_row = view_builder.counterpart_row(remote_meta, "right", result_row)
+  else
+    remote_row = cursor_row
+    result_row = view_builder.counterpart_row(remote_meta, "left", remote_row)
+    local_row = view_builder.counterpart_row(local_meta, "right", result_row)
+  end
+
+  local function clamp(row, buf)
+    return math.min(math.max(1, row or 1), math.max(1, vim.api.nvim_buf_line_count(buf)))
+  end
+  local_row = clamp(local_row, self.local_buf)
+  result_row = clamp(result_row, self.result_buf)
+  remote_row = clamp(remote_row, self.remote_buf)
+
+  local function topline_for(row)
+    return math.max(1, row - offset)
+  end
+  local local_topline = source_win == self.local_win and topline or topline_for(local_row)
+  local result_topline = source_win == self.result_win and topline or topline_for(result_row)
+  local remote_topline = source_win == self.remote_win and topline or topline_for(remote_row)
+
+  -- set_viewports parks each pane's cursor on its topline, so the focused
+  -- pane's cursor must be restored to its original {row, col} afterwards.
+  self:set_viewports(local_topline, result_topline, remote_topline)
+  local function pane_cursor(win, row)
+    if win == source_win then
+      return source_cursor
+    end
+    return { row, 0 }
+  end
+  pcall(vim.api.nvim_win_set_cursor, self.local_win, pane_cursor(self.local_win, local_row))
+  pcall(vim.api.nvim_win_set_cursor, self.result_win, pane_cursor(self.result_win, result_row))
+  pcall(vim.api.nvim_win_set_cursor, self.remote_win, pane_cursor(self.remote_win, remote_row))
   self:rerender_pair_viewports()
 end
 

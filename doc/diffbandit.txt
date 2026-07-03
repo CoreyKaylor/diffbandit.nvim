@@ -172,6 +172,10 @@ Diff view mappings:
                                                         *diffbandit-]d*
   ]d            Align both panes to the bottom of their documents.
 
+                                                        *diffbandit-]s*
+  ]s            Snap the other pane to the line facing the cursor line,
+                preserving the cursor's screen offset.
+
                                                         *diffbandit-C*
   C             Open or focus the commit panel for the current Git file.
 
@@ -321,6 +325,8 @@ Merge mappings:
   <<            Accept remote/incoming into the result.
   gb            Accept both sides, local then remote.
   gA            Apply non-conflicting changes from both sides.
+  ]s            Snap the other two panes to the line facing the cursor line,
+                preserving the cursor's screen offset.
   :w            Write the result and mark the file resolved with git add.
 
 DiffBandit warns when conflict stages have mixed line endings, but it does not
@@ -364,6 +370,7 @@ Common configuration:
         top = "[d",
         bottom = "]d",
       },
+      snap_key = "]s",
     },
     git = {
       default_mode = "all",
@@ -404,6 +411,7 @@ Common configuration:
         accept_both = "gb",
         apply_non_conflicting = "gA",
         focus_panel = "C",
+        snap = "]s",
         close = "q",
       },
     },

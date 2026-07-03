@@ -90,6 +90,8 @@ assert_eq(config.ui.connector_max_width, 24, "Connector core widening should def
 assert_eq(config.ui.scroll_debounce_ms, 16, "Viewport scroll rerenders should debounce by default")
 assert_eq(config.merge.result_initial_content, "base", "Merge result should initialize from the base by default")
 assert_eq(config.merge.keys.accept_local, ">>", "Merge accept-local key should default to >>")
+assert_eq(config.navigation.snap_key, "]s", "Session snap-to-cursor key should default to ]s")
+assert_eq(config.merge.keys.snap, "]s", "Merge snap-to-cursor key should default to ]s")
 assert_eq(config.folder.compare.mode, "digest", "Folder diff should default to digest comparison")
 assert_eq(config.folder.gutter_width, 7, "Folder diff gutter should default to a centered seven-column status pane")
 assert_eq(config.folder.compare.batch_size, 64, "Folder diff digest batching should default to 64 file pairs")
@@ -4924,6 +4926,211 @@ do
     "Merge local connector should follow the local pane topline")
   assert_eq(win_topline(merge_session.result_left_num_win), win_topline(merge_session.result_win),
     "Scrolling the local pane should leave result gutters synced to the result pane")
+
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = merge_session.result_buf })
+  merge_session:close()
+end
+
+-- Test Suite 16: Snap-to-cursor line mapping and viewport alignment
+
+-- Suite 16a: counterpart_row maps aligned rows across the compact buffers
+do
+  local function build_view(left, right)
+    local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+    assert(hunks, err)
+    return view.build(left, right, hunks, config)
+  end
+
+  -- Add hunk: context rows map exactly, added rows anchor to the line above.
+  local v = build_view({ "a", "b", "c", "d" }, { "a", "b", "X", "c", "d" })
+  local row, exact = view.counterpart_row(v.line_meta, "left", 4)
+  assert_eq(row, 5, "Trailing context after an add should map left 4 to right 5")
+  assert_eq(exact, true, "Context rows should map exactly")
+  row, exact = view.counterpart_row(v.line_meta, "right", 5)
+  assert_eq(row, 4, "Trailing context should map right 5 back to left 4")
+  assert_eq(exact, true, "Context rows should map exactly in both directions")
+  row, exact = view.counterpart_row(v.line_meta, "right", 3)
+  assert_eq(row, 2, "An added row should anchor to the nearest left row above")
+  assert_eq(exact, false, "Filler-facing rows should report a non-exact mapping")
+
+  -- Delete hunk: every deleted row anchors to the context line above it.
+  v = build_view({ "a", "b", "c", "d" }, { "a", "d" })
+  assert_eq((view.counterpart_row(v.line_meta, "left", 2)), 1,
+    "First deleted row should anchor to the context row above")
+  assert_eq((view.counterpart_row(v.line_meta, "left", 3)), 1,
+    "Whole delete blocks should anchor to one target row")
+
+  -- Uneven change: linematch pairs q with z, so the surplus left rows x/y
+  -- face filler and anchor to the context row above; z maps exactly.
+  v = build_view({ "a", "x", "y", "z", "b" }, { "a", "q", "b" })
+  assert_eq((view.counterpart_row(v.line_meta, "left", 2)), 1,
+    "Left surplus change rows should anchor to the nearest right row above")
+  assert_eq((view.counterpart_row(v.line_meta, "left", 3)), 1,
+    "All surplus rows in one block should share the same anchor")
+  row, exact = view.counterpart_row(v.line_meta, "left", 4)
+  assert_eq(row, 2, "The paired change row should map to its counterpart")
+  assert_eq(exact, true, "Paired change rows should map exactly")
+
+  -- Add at the very top of the file: no row above, fall back to nearest below.
+  v = build_view({ "m" }, { "X", "m" })
+  row, exact = view.counterpart_row(v.line_meta, "right", 1)
+  assert_eq(row, 1, "A top-of-file add should fall back to the nearest row below")
+  assert_eq(exact, false, "The top-of-file fallback should report non-exact")
+
+  -- Degenerate and out-of-range input never errors.
+  assert_eq((view.counterpart_row({}, "left", 3)), 3,
+    "Empty aligned views should return the input row unchanged")
+  local far = (view.counterpart_row(v.line_meta, "right", 999))
+  assert_eq(far >= 1, true, "Out-of-range rows should clamp to a valid target row")
+end
+
+-- Suite 16b: Session snap_to_cursor aligns the opposite pane to the cursor's
+-- screen offset without moving the focused pane.
+do
+  local function win_topline(win)
+    return vim.api.nvim_win_call(win, function()
+      return vim.fn.line("w0")
+    end)
+  end
+  local left_lines = {}
+  for i = 1, 60 do
+    left_lines[i] = "line " .. i
+  end
+  local right_lines = {}
+  for i = 1, 10 do
+    right_lines[i] = "line " .. i
+  end
+  for i = 1, 5 do
+    right_lines[10 + i] = "inserted " .. i
+  end
+  for i = 11, 60 do
+    right_lines[i + 5] = "line " .. i
+  end
+
+  local session = assert((Session.start({
+    left = source_mod.from_lines(left_lines, nil, "left"),
+    right = source_mod.from_lines(right_lines, nil, "right"),
+  }, config, {})))
+
+  assert_eq(type(buffer_keymap_callback(session.left_buf, "n", config.navigation.snap_key)), "function",
+    "Session should map the snap key on the left buffer")
+  assert_eq(type(buffer_keymap_callback(session.connector_buf, "n", config.navigation.snap_key)), "function",
+    "Session should map the snap key on the connector buffer")
+
+  -- Left cursor on line 40 with topline 30 (screen offset 10); right pane at top.
+  vim.api.nvim_set_current_win(session.left_win)
+  vim.api.nvim_win_set_cursor(session.left_win, { 30, 0 })
+  vim.api.nvim_win_call(session.left_win, function()
+    vim.cmd("normal! zt")
+  end)
+  vim.api.nvim_win_set_cursor(session.left_win, { 40, 3 })
+  assert_eq(win_topline(session.left_win), 30, "Test setup should leave the left topline at 30")
+
+  session:snap_to_cursor()
+
+  assert_eq(vim.api.nvim_win_get_cursor(session.right_win)[1], 45,
+    "Snap should move the right cursor to the row facing the left cursor")
+  assert_eq(win_topline(session.right_win), 35,
+    "Snap should preserve the cursor's screen offset in the right pane")
+  assert_eq(win_topline(session.left_win), 30,
+    "Snap should not scroll the focused pane")
+  assert_eq(vim.api.nvim_win_get_cursor(session.left_win)[1], 40,
+    "Snap should not move the focused pane's cursor row")
+  assert_eq(vim.api.nvim_win_get_cursor(session.left_win)[2], 3,
+    "Snap should not move the focused pane's cursor column")
+  assert_eq(win_topline(session.right_num_win), 35,
+    "Snap should carry the right number gutter along")
+
+  -- Snapping from the right pane maps back through the same alignment.
+  vim.api.nvim_set_current_win(session.right_win)
+  session:snap_to_cursor()
+  assert_eq(vim.api.nvim_win_get_cursor(session.left_win)[1], 40,
+    "Snap from the right pane should map the cursor back to the left row")
+
+  session:close()
+end
+
+-- Suite 16c: Merge snap_to_cursor aligns both other panes, pivoting
+-- local<->remote through the shared result pane.
+do
+  local function win_topline(win)
+    return vim.api.nvim_win_call(win, function()
+      return vim.fn.line("w0")
+    end)
+  end
+  local base = {}
+  for i = 1, 80 do
+    base[i] = "line " .. i
+  end
+  local local_lines = {}
+  for i = 1, 20 do
+    local_lines[i] = "line " .. i
+  end
+  for i = 1, 3 do
+    local_lines[20 + i] = "local extra " .. i
+  end
+  for i = 21, 80 do
+    local_lines[i + 3] = "line " .. i
+  end
+  local repo = vim.fn.tempname()
+  vim.fn.mkdir(repo, "p")
+  local merge_session = assert((merge_mod.start({
+    root = repo,
+    path = "merge-snap.txt",
+    base_lines = base,
+    local_lines = local_lines,
+    remote_lines = base,
+    result_lines = base,
+    conflicts = {},
+    non_conflicting = {},
+    local_hunks = {},
+    remote_hunks = {},
+  }, config, {})))
+
+  assert_eq(type(buffer_keymap_callback(merge_session.result_buf, "n", config.merge.keys.snap)), "function",
+    "Merge should map the snap key on the result buffer")
+
+  -- Result cursor on line 50 with topline 40 (screen offset 10).
+  vim.api.nvim_set_current_win(merge_session.result_win)
+  vim.api.nvim_win_set_cursor(merge_session.result_win, { 40, 0 })
+  vim.api.nvim_win_call(merge_session.result_win, function()
+    vim.cmd("normal! zt")
+  end)
+  vim.api.nvim_win_set_cursor(merge_session.result_win, { 50, 4 })
+  assert_eq(win_topline(merge_session.result_win), 40, "Test setup should leave the result topline at 40")
+
+  merge_session:snap_to_cursor()
+
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.result_win)[1], 50,
+    "Snap should not move the focused result pane's cursor row")
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.result_win)[2], 4,
+    "Snap should not move the focused result pane's cursor column")
+
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.local_win)[1], 53,
+    "Snap should offset the local cursor past the local-only insertion")
+  assert_eq(win_topline(merge_session.local_win), 43,
+    "Snap should preserve the screen offset in the local pane")
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.remote_win)[1], 50,
+    "Snap should mirror the result row into the identical remote pane")
+  assert_eq(win_topline(merge_session.remote_win), 40,
+    "Snap should preserve the screen offset in the remote pane")
+  assert_eq(win_topline(merge_session.result_win), 40,
+    "Snap should not scroll the focused result pane")
+  assert_eq(win_topline(merge_session.local_num_win), 43,
+    "Snap should carry the local number gutter along")
+
+  -- Snapping from the local pane pivots through result to reach remote.
+  vim.api.nvim_set_current_win(merge_session.local_win)
+  vim.api.nvim_win_set_cursor(merge_session.local_win, { 60, 2 })
+  merge_session:snap_to_cursor()
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.result_win)[1], 57,
+    "Snap from local should map the cursor back through the insertion offset")
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.remote_win)[1], 57,
+    "Snap from local should pivot through result to position remote")
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.local_win)[1], 60,
+    "Snap from local should not move the focused pane's cursor row")
+  assert_eq(vim.api.nvim_win_get_cursor(merge_session.local_win)[2], 2,
+    "Snap from local should not move the focused pane's cursor column")
 
   pcall(vim.api.nvim_set_option_value, "modified", false, { buf = merge_session.result_buf })
   merge_session:close()

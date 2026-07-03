@@ -229,6 +229,7 @@ Inside a diff view:
 | `[f` | Previous changed file in a Git queue |
 | `[d` | Align both panes to the top of the documents |
 | `]d` | Align both panes to the bottom of the documents |
+| `]s` | Snap the other pane to the cursor line |
 | `C` | Open or focus the commit panel for the current Git file |
 | `<Space>` | Toggle stage for the active Git hunk |
 | `>>` | Apply the left side to the right target |
@@ -314,6 +315,7 @@ Default merge keys:
 | `<<` | Accept remote/incoming into the result |
 | `gb` | Accept both sides, local then remote |
 | `gA` | Apply non-conflicting changes from both sides |
+| `]s` | Snap the other two panes to the cursor line |
 | `:w` in the result pane | Write the result and mark the file resolved with `git add` |
 
 DiffBandit warns when conflict stages have mixed line endings, but it does not
@@ -380,6 +382,7 @@ require("diffbandit").setup({
       top = "[d",
       bottom = "]d",
     },
+    snap_key = "]s",
   },
   git = {
     default_mode = "all",
@@ -420,6 +423,7 @@ require("diffbandit").setup({
       accept_both = "gb",
       apply_non_conflicting = "gA",
       focus_panel = "C",
+      snap = "]s",
       close = "q",
     },
   },
