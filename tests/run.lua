@@ -1569,30 +1569,35 @@ do
   end
 
   -- Paths should include both an add path (for Added line 1/2) and a delete path.
-  -- The adjacent change (hunk 3) and add (hunk 4) are separate zero-context
-  -- chunks: the add must keep its own routed path and stage marker rather
-  -- than fusing into the neighboring chunk's change envelope.
+  -- The change (left 8 -> right 7) and the following add (right 8-9) abut, so
+  -- diff.compute_hunks merges them into one chunk: the add segment is absorbed
+  -- into its chunk's change band instead of routing standalone.
   do
     local found_add = false
     local found_delete = false
+    local mixed_change = false
     for _, p in ipairs(paths) do
       if p.kind == "add" and p.start_row == 8 and p.end_row == 9 then
         found_add = true
         assert_eq(p.origin_left_line, 8, "Expected add origin to be left line 8")
-        assert_eq(p.embedded_in_change, false,
-          "Adjacent add from its own chunk should route independently")
+        assert_eq(p.embedded_in_change, true,
+          "Add rows inside a merged chunk should absorb into its change band")
       end
       if p.kind == "delete" and p.start_row == 6 and p.end_row == 6 then
         found_delete = true
         assert_eq(p.origin_right_line, 5, "Expected delete origin to be right line 5")
       end
       if p.kind == "change" then
-        assert_eq(p.mixed_add, nil,
-          "No change path should absorb another chunk's add rows")
+        if p.mixed_add then
+          mixed_change = true
+          assert_eq(p.start_left_index, 8, "Merged change band should start at left row 8")
+          assert_eq(p.end_right_index, 9, "Merged change band should extend to absorbed right row 9")
+        end
       end
     end
     assert_eq(found_add, true, "Expected to find an add path for right lines 8-9")
     assert_eq(found_delete, true, "Expected to find a delete path for left line 6")
+    assert_eq(mixed_change, true, "Expected the merged chunk's change band to absorb the add rows")
     assert_eq(underlines.delete_origin_right_lines[5].glyph_col, 3,
       "Mixed delete wedge should stay compact after the left line number")
   end
@@ -1712,9 +1717,9 @@ do
     local found = false
     for _, p in ipairs(paths) do
       if fixture.expected_kind == "mixed" then
-        -- Adjacent change+add chunks: the add stays its own chunk's route,
-        -- anchored on the neighboring change row, spanning the added block.
-        if p.kind == "add" and p.origin_kind == "change" and not p.embedded_in_change then
+        -- Abutting change+add hunks merge into one chunk: the add block is
+        -- absorbed into the chunk's change band, which spans the added rows.
+        if p.kind == "change" and p.mixed_add then
           found = true
           longest = math.max(longest, (p.block_display_end or 0) - (p.block_display_start or 0) + 1)
         end
@@ -1749,18 +1754,18 @@ do
   local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
 
   local counts = { add = 0, delete = 0, change = 0 }
-  local saw_adjacent_add = false
+  local saw_absorbed_add = false
   for _, p in ipairs(paths) do
     counts[p.kind] = (counts[p.kind] or 0) + 1
-    if p.kind == "add" and p.origin_kind == "change" and not p.embedded_in_change then
-      saw_adjacent_add = true
+    if p.kind == "add" and p.origin_kind == "change" and p.embedded_in_change then
+      saw_absorbed_add = true
     end
   end
   assert_eq(counts.add >= 3, true, "Dense mixed fixture should include multiple add routes")
   assert_eq(counts.delete >= 2, true, "Dense mixed fixture should include multiple delete routes")
   assert_eq(counts.change >= 2, true, "Dense mixed fixture should include multiple change routes")
-  assert_eq(saw_adjacent_add, true,
-    "Dense mixed fixture should route the change-adjacent add as its own chunk")
+  assert_eq(saw_absorbed_add, true,
+    "Dense mixed fixture should absorb the change-adjacent add into its merged chunk's band")
 
   local projected = fake_session:project_paths_for_toplines(paths, 1, 49, 14, 14)
   local max_lane = paths_mod.max_lane(projected)
@@ -1770,7 +1775,7 @@ do
     viewport_height = 14,
     max_route_backtrack_steps = 500,
   })
-  assert_eq(required_width, 16,
+  assert_eq(required_width, 14,
     "Seven-lane dense conflict should use the smallest solvable compact connector width")
   assert_eq(required_plan.success, true, "Seven-lane dense conflict should remain collision-free")
 
@@ -1789,9 +1794,9 @@ do
     end
     return false
   end
-  assert_eq(row_has_bar(1, "add", 2, 11), true,
+  assert_eq(row_has_bar(1, "add", 1, 11), true,
     "Clipped add route from origin 11 should enter from the top edge")
-  assert_eq(row_has_bar(9, "add", 2, 11), true,
+  assert_eq(row_has_bar(9, "add", 1, 11), true,
     "Clipped add route from origin 11 should not be overwritten by same-lane delete/add routes")
   assert_eq(row_has_bar(9, "delete", 7, 5), true,
     "Dense conflict should keep the lower deletion route active alongside add routes")
@@ -1912,11 +1917,11 @@ do
   local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
   local projections = {
     { 1, 1, 4, "dense initial" },
-    { 1, 38, 12, "dense pre-conflict" },
-    { 1, 46, 16, "dense four-route conflict" },
-    { 1, 49, 16, "dense lower-route entering" },
-    { 1, 53, 16, "dense post-conflict" },
-    { 8, 46, 7, "dense lane reuse" },
+    { 1, 38, 10, "dense pre-conflict" },
+    { 1, 46, 14, "dense four-route conflict" },
+    { 1, 49, 14, "dense lower-route entering" },
+    { 1, 53, 14, "dense post-conflict" },
+    { 8, 46, 5, "dense lane reuse" },
   }
 
   for _, projection in ipairs(projections) do
@@ -2541,7 +2546,7 @@ do
   local v = view.build(left, right, hunks, config)
   local paths = paths_mod.compute_paths(v.chunks, v.line_meta)
   local core = paths_mod.pressure_core_width(paths, 3, 24, 14)
-  assert_eq(core, 17, "Scroll-aware sizing should widen the dense core for stackable routes")
+  assert_eq(core, 15, "Scroll-aware sizing should widen the dense core for stackable routes")
   local fake_session = setmetatable({ view = v, left = { lines = left }, right = { lines = right } }, Session)
 
   for lt = 1, 57, 4 do
@@ -4200,21 +4205,32 @@ if vim.fn.executable("git") == 1 then
     assert_eq(has_semantic_bg_from_col_zero(session.result_right_num_buf, session.result_remote_session.ns, 7,
       "DiffBanditConnectorChange"), true,
       "Mixed result right number gutter should color through the connector-side spacer on overlap rows")
+    -- The change and the following add abut, so they merge into one chunk:
+    -- the change band extends over the absorbed add rows for continuous
+    -- band coloring through the gutter.
     assert_eq(has_semantic_bg_from_col_zero(session.result_right_num_buf, session.result_remote_session.ns, 8,
-      "DiffBanditConnectorChange"), false,
-      "Mixed result right number gutter should not extend the change band over the adjacent add chunk")
-    assert_eq(has_semantic_bg_span(session.result_right_num_buf, session.result_remote_session.ns, 8,
-      "DiffBanditConnectorAdd", 0, session.result_remote_session:right_triangle_col()), true,
-      "Mixed result right number gutter should color the adjacent add chunk with the add band")
-    -- With the adjacent add routed as its own chunk, the change band no
-    -- longer overlaps the add rows, so the connector-side spacer stays
-    -- uncolored and the change mark starts after it.
+      "DiffBanditConnectorChange"), true,
+      "Mixed result right number gutter should extend the change band over the absorbed add rows")
+    -- Band fills now cover the full pane width (including the wedge/spacer
+    -- column) so the band flows core -> gutter -> pane without a dark strip.
+    do
+      local marks = vim.api.nvim_buf_get_extmarks(session.result_right_num_buf, session.result_remote_session.ns,
+        0, -1, { details = true })
+      local full_width = false
+      for _, mark in ipairs(marks) do
+        local d = mark[4] or {}
+        if mark[2] == 7 and mark[3] == 0 and d.hl_group == "DiffBanditConnectorChange"
+            and ((d.end_row or 0) > 7 or (d.end_col or 0) > session.result_remote_session:right_triangle_col()) then
+          full_width = true
+          break
+        end
+      end
+      assert_eq(full_width, true,
+        "Mixed result right number gutter should color the absorbed add rows with a full-width change band")
+    end
     assert_eq(has_semantic_bg_from_col_zero(session.remote_num_buf, session.result_remote_session.ns, 8,
-      "DiffBanditConnectorChange"), false,
-      "Mixed remote number gutter should keep the spacer uncolored without band overlap")
-    assert_eq(has_semantic_bg_span(session.remote_num_buf, session.result_remote_session.ns, 8,
-      "DiffBanditConnectorChange", 1, 0), true,
-      "Mixed remote number gutter should still color the change row after the spacer")
+      "DiffBanditConnectorChange"), true,
+      "Mixed remote number gutter should color through the spacer on absorbed add rows")
     pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.result_buf })
     session:close()
   end
@@ -4960,16 +4976,17 @@ do
   assert_eq((view.counterpart_row(v.line_meta, "left", 3)), 1,
     "Whole delete blocks should anchor to one target row")
 
-  -- Uneven change: linematch pairs q with z, so the surplus left rows x/y
-  -- face filler and anchor to the context row above; z maps exactly.
+  -- Uneven change: no words match between x/y/z and q, so rows pair
+  -- positionally (IntelliJ-style): q pairs with x, and the surplus left
+  -- rows y/z face filler and anchor to the paired row above.
   v = build_view({ "a", "x", "y", "z", "b" }, { "a", "q", "b" })
-  assert_eq((view.counterpart_row(v.line_meta, "left", 2)), 1,
-    "Left surplus change rows should anchor to the nearest right row above")
-  assert_eq((view.counterpart_row(v.line_meta, "left", 3)), 1,
-    "All surplus rows in one block should share the same anchor")
-  row, exact = view.counterpart_row(v.line_meta, "left", 4)
+  row, exact = view.counterpart_row(v.line_meta, "left", 2)
   assert_eq(row, 2, "The paired change row should map to its counterpart")
   assert_eq(exact, true, "Paired change rows should map exactly")
+  assert_eq((view.counterpart_row(v.line_meta, "left", 3)), 2,
+    "Left surplus change rows should anchor to the nearest right row above")
+  assert_eq((view.counterpart_row(v.line_meta, "left", 4)), 2,
+    "All surplus rows in one block should share the same anchor")
 
   -- Add at the very top of the file: no row above, fall back to nearest below.
   v = build_view({ "m" }, { "X", "m" })
@@ -5287,6 +5304,70 @@ do
   pcall(vim.api.nvim_set_option_value, "modified", false, { buf = merge_session.result_buf })
   merge_session:close()
   vim.o.columns = original_columns
+end
+
+-- Suite 18: IntelliJ-alignment goldens. Expected hunks captured once from
+-- the real IntelliJ engine (tools/intellij-oracle, util-diff 261.26222.72,
+-- ComparisonPolicy.DEFAULT) — each case pins one ported heuristic. If these
+-- move, the port diverged from the IDE; re-verify against the oracle before
+-- updating (see tools/intellij-oracle/README.md).
+do
+  local function assert_hunks(label, left, right, expected)
+    local hunks, err = diff.compute_hunks(to_text(left), to_text(right), config.diff)
+    assert_eq(err, nil, label .. ": diff error")
+    assert_eq(#hunks, #expected, label .. ": hunk count")
+    for i, e in ipairs(expected) do
+      local h = hunks[i]
+      assert_eq(h.type, e[1], label .. ": hunk " .. i .. " type")
+      assert_eq(h.left.start, e[2], label .. ": hunk " .. i .. " left start")
+      assert_eq(h.left.count, e[3], label .. ": hunk " .. i .. " left count")
+      assert_eq(h.right.start, e[4], label .. ": hunk " .. i .. " right start")
+      assert_eq(h.right.count, e[5], label .. ": hunk " .. i .. " right count")
+    end
+    return hunks
+  end
+
+  -- correctChangesSecondStep: the whitespace-agnostic first pass matches
+  -- shifted brace lines; the second step realigns them so the exactly-equal
+  -- pairs match and only the first line remains deleted (example from the
+  -- ByLineRt.kt source comment).
+  assert_hunks("iw-realign",
+    { ".{", "..{", "...{" },
+    { "..{", "...{" },
+    { { "delete", 1, 1, 0, 0 } })
+
+  -- LineChunkOptimizer: the inserted function is ambiguous (could slide);
+  -- the boundary must sit at the blank line so the insertion is one clean
+  -- block, anchored after line 4.
+  assert_hunks("blank-line slide",
+    { "fun a() {", "    body", "}", "", "fun c() {", "    body", "}" },
+    { "fun a() {", "    body", "}", "", "fun b() {", "    body", "}", "", "fun c() {", "    body", "}" },
+    { { "add", 4, 0, 5, 4 } })
+
+  -- compareSmart: brace/blank lines are excluded from primary matching, so
+  -- the repeated {,},blank scaffolding cannot drag the alignment — the
+  -- insertion lands as one block at the top.
+  assert_hunks("unimportant-line anchoring",
+    { "alpha one", "{", "}", "", "beta two", "{", "}" },
+    { "gamma three", "{", "}", "", "alpha one", "{", "}", "", "beta two", "{", "}" },
+    { { "add", 0, 0, 1, 4 } })
+
+  -- Reindexer.discardUnique + MyersLCS tie-breaking: swapped blocks resolve
+  -- as delete-at-top + add-at-bottom, exactly like the IDE.
+  assert_hunks("block reorder",
+    { "aa bb", "cc dd", "ee ff", "gg hh" },
+    { "ee ff", "gg hh", "aa bb", "cc dd" },
+    { { "delete", 1, 2, 0, 0 }, { "add", 4, 0, 3, 2 } })
+
+  -- ByWordRt.compareAndSplit: the rewrite plus inserted line stay one
+  -- sub-block (word matching does not split them), and the inner emphasis
+  -- spans come from the block-scoped word fragments.
+  local hunks = assert_hunks("word sub-blocks",
+    { "val x = compute(a, b)", "return x" },
+    { "val x = compute(a, b, c)", "log(x)", "return x" },
+    { { "change", 1, 1, 1, 2 } })
+  assert_eq(hunks[1].sub_hunks, nil, "word sub-blocks: single sub-block stays unsplit")
+  assert_eq(hunks[1].inner_spans ~= nil, true, "word sub-blocks: inner spans present")
 end
 
 vim.api.nvim_out_write("OK\n")

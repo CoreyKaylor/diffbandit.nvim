@@ -2,8 +2,9 @@ local M = {}
 
 local base_defaults = {
   DiffBanditContext = {},  -- Will be set dynamically with sp color
-  DiffBanditLineNumberLeft = { link = "LineNr" },
-  DiffBanditLineNumberRight = { link = "LineNr" },
+  DiffBanditLineNumberLeft = { link = "LineNr" }, -- overridden dynamically (fg only)
+  DiffBanditLineNumberRight = { link = "LineNr" }, -- overridden dynamically (fg only)
+  DiffBanditSignColumn = { link = "Normal" },
   DiffBanditActiveChunk = {},
   DiffBanditConnectorText = { link = "Normal" },
   DiffBanditSplit = { link = "WinSeparator" },
@@ -343,6 +344,36 @@ local function apply_diff_variants(config)
 
   -- Variants for line numbers with diff backgrounds (for visual text overlay)
   local line_number_fg = get_foreground_color("LineNr", "#808080")
+
+  -- Base number colors take only LineNr's FOREGROUND: many colorschemes give
+  -- LineNr its own background, which painted a lighter strip over the number
+  -- cells on context rows. With no bg the pane background shows through, so
+  -- non-hunk rows match the document panes exactly (band fills still paint
+  -- over these rows).
+  apply_group("DiffBanditLineNumberLeft", { fg = line_number_fg })
+  apply_group("DiffBanditLineNumberRight", { fg = line_number_fg })
+  -- The editable right pane's sign column must share the pane background
+  -- instead of the colorscheme's SignColumn bg.
+  apply_group("DiffBanditSignColumn", { bg = normal_bg })
+  -- Band continuation into the sign column: line_hl_group does not cover the
+  -- sign column, so band rows place a low-priority blank sign carrying the
+  -- band background (real signs outrank it and still display).
+  apply_group("DiffBanditSignAdd", { bg = add_bg })
+  apply_group("DiffBanditSignChange", { bg = change_bg })
+  -- Diagnostic glyphs on band rows: the diagnostic sign highlights are
+  -- foreground-only, so the glyph cell showed the plain sign-column
+  -- background inside a band. Band rows mirror the glyph with these
+  -- combined groups (diagnostic fg over band bg).
+  for severity, diag_group in pairs({
+    Error = "DiagnosticSignError",
+    Warn = "DiagnosticSignWarn",
+    Info = "DiagnosticSignInfo",
+    Hint = "DiagnosticSignHint",
+  }) do
+    local diag_fg = get_foreground_color(diag_group, "#808080")
+    apply_group("DiffBanditSignAdd" .. severity, { fg = diag_fg, bg = add_bg })
+    apply_group("DiffBanditSignChange" .. severity, { fg = diag_fg, bg = change_bg })
+  end
   for name, color in pairs({ RightAdd = add_bg, LeftDelete = delete_bg, LeftChange = change_bg, RightChange = change_bg }) do
     apply_group("DiffBanditLineNumber" .. name, { fg = line_number_fg, bg = color })
   end

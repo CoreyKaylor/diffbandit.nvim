@@ -106,7 +106,10 @@ function M.acquire_buffer(editable)
     return nil, "unable to create buffer for " .. tostring(path)
   end
   pcall(vim.api.nvim_set_option_value, "swapfile", false, { buf = bufnr })
-  vim.fn.bufload(bufnr)
+  -- Loading the buffer emits the ':edit'-style file-info message
+  -- ("path" [noeol] N lines, M bytes); long paths wrap the cmdline and
+  -- block the queue advance behind a hit-enter prompt. Silence it.
+  vim.cmd(string.format("silent call bufload(%d)", bufnr))
   if not vim.api.nvim_buf_is_loaded(bufnr) then
     return nil, "unable to load buffer for " .. tostring(path)
   end

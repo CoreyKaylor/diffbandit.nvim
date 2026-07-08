@@ -33,8 +33,8 @@ local hidden_split = "VertSplit:DiffBanditHiddenSplit,WinSeparator:DiffBanditHid
 M.winhl = {
   split = split,
   hidden_split = hidden_split,
-  source = split .. ",CursorLine:DiffBanditCursorLine",
-  hidden_source = hidden_split .. ",CursorLine:DiffBanditCursorLine",
+  source = split .. ",CursorLine:DiffBanditCursorLine,SignColumn:DiffBanditSignColumn",
+  hidden_source = hidden_split .. ",CursorLine:DiffBanditCursorLine,SignColumn:DiffBanditSignColumn",
   gutter = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
     .. split .. ",CursorLine:DiffBanditCursorLine",
   overview = "Normal:DiffBanditOverviewContext,NormalNC:DiffBanditOverviewContext,"
