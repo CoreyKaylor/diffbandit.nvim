@@ -2490,21 +2490,30 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
         end
       end
     elseif ls and le then
+      -- One-sided continuations: the visible band end links toward the
+      -- offscreen counterpart. The from-side wedge only docks on the band's
+      -- REAL edge; a clip boundary (band continuing past the viewport)
+      -- keeps line/background continuity — no synthetic triangles at
+      -- viewport edges.
       local projected_right_start = right_to_connector_row(path.start_right_index)
       local projected_right_end = right_to_connector_row(path.end_right_index)
       if projected_right_end < ls then
-        add_change_link(q.viewport_change_links, "left", ls, "right", left_topline - 1, true, false,
+        add_change_link(q.viewport_change_links, "left", ls, "right", left_topline - 1,
+          q.viewport_left_start == path.start_left_index, false,
           nil, nil, false, math.max(left_topline, ls - 1))
       elseif projected_right_start > le then
-        add_change_link(q.viewport_change_links, "left", le, "right", left_topline + left_height, true, false,
+        add_change_link(q.viewport_change_links, "left", le, "right", left_topline + left_height,
+          q.viewport_left_end == path.end_left_index, false,
           nil, nil, false, le)
       end
     elseif rs and re then
       if path.end_left_index < rs then
-        add_change_link(q.viewport_change_links, "right", rs, "left", left_topline - 1, true, false,
+        add_change_link(q.viewport_change_links, "right", rs, "left", left_topline - 1,
+          q.viewport_right_index_start == path.start_right_index, false,
           nil, nil, false, math.max(left_topline, rs - 1))
       elseif path.start_left_index > re then
-        add_change_link(q.viewport_change_links, "right", re, "left", left_topline + left_height, true, false,
+        add_change_link(q.viewport_change_links, "right", re, "left", left_topline + left_height,
+          q.viewport_right_index_end == path.end_right_index, false,
           nil, nil, false, re)
       end
     end
@@ -2557,8 +2566,15 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
       elseif visible_start_row > origin_row then
         target = visible_start
       end
+      local show_triangle = spec.show_triangle_when_origin_hidden
+      if show_triangle and spec.dock_only_real_edges then
+        -- Only a real block edge docks; a clip boundary (block continuing
+        -- past the viewport) keeps rail/background continuity instead.
+        show_triangle = (target == block_start and block_start >= spec.clip_lo)
+          or (target == block_end and block_end <= spec.clip_hi)
+      end
       emit(target, spec.offscreen_origin_glyph(origin_row, target, visible_start_row),
-        spec.show_triangle_when_origin_hidden)
+        show_triangle)
     elseif visible_start_row > origin_row then
       emit(visible_start, triangle_glyph(spec.side, false), true)
     elseif visible_end_row < origin_row then
@@ -2600,11 +2616,15 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
     offscreen_origin_glyph = function(origin_row, _, visible_start_row)
       return visible_start_row < origin_row and "◢" or "◥"
     end,
-    -- Visible targets always dock: like deletes, an add with an offscreen
-    -- origin still draws its target horizontal and wedge. (Historically
-    -- adds hid the wedge here, which left rails dangling one row short of
-    -- a visible target with no triangle.)
+    -- Visible REAL targets always dock: like deletes, an add with an
+    -- offscreen origin draws its target horizontal and wedge when the
+    -- docking row is the block's true edge. (Historically adds hid the
+    -- wedge here, which left rails dangling one row short of a visible
+    -- target with no triangle.) Clipped block edges are NOT real targets:
+    -- when the block continues past the viewport, the clip boundary shows
+    -- rails/background only — no synthetic triangles at viewport edges.
     show_triangle_when_origin_hidden = true,
+    dock_only_real_edges = true,
   }
 
   -- Delete targets are already connector rows; the origin projects over

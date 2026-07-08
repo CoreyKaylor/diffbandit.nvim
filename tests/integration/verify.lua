@@ -729,15 +729,21 @@ local function verify_mixed(lines, ansi_lines)
   elseif saw_delete_transition_glyph and delete_after_bg == delete_before_bg then
     table.insert(errors, "Mixed delete gutter background should not continue broadly after the triangle")
   end
-  -- Added rows adjacent to the change are independent add chunks (linematch
-  -- splits them out; adds never fuse into a neighboring chunk's change band),
-  -- so the add background runs to the end of the row.
+  -- Added rows adjacent to the change are absorbed into the merged chunk
+  -- (word-driven blocks fuse abutting adds into the change region). The
+  -- terminal absorbed add row keeps its add background over the text and
+  -- closes with the change envelope after it.
   if not added_line2_bg or not added_line2_after_bg then
     table.insert(errors, "Expected ANSI backgrounds for terminal added row")
-  elseif added_line2_bg ~= added_line2_after_bg then
-    table.insert(errors, "Terminal added row should keep its add background after its text")
-  elseif modified_tail_bg and added_line2_bg == modified_tail_bg then
-    table.insert(errors, "Terminal added row background should differ from the change envelope")
+  elseif added_line2_bg == added_line2_after_bg then
+    table.insert(errors, "Terminal absorbed add row should close with the change envelope after its text")
+  else
+    if modified_tail_bg and added_line2_bg == modified_tail_bg then
+      table.insert(errors, "Terminal added row text should stay add-colored, not the change envelope")
+    end
+    if modified_tail_bg and added_line2_after_bg ~= modified_tail_bg then
+      table.insert(errors, "Terminal added row tail should continue the change envelope")
+    end
   end
 
   return errors
@@ -2045,23 +2051,33 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
   end
   local function mixed_connector_core_bg(label)
     if not ansi_lines then
-      return nil, "ANSI capture missing; cannot verify mixed connector core row"
+      return nil, "ANSI capture missing; cannot verify mixed connector core row", nil
     end
     for _, line in ipairs(ansi_lines) do
       local stripped = strip_ansi(line)
       if stripped:find(label, 1, true) then
         local core_start, core_end = connector_core_bounds(stripped)
         if not core_start or not core_end then
-          return nil, "Expected ANSI separator data for mixed connector row: " .. label
+          return nil, "Expected ANSI separator data for mixed connector row: " .. label, nil
         end
         local core_pos = core_start + #"│" + math.floor((core_end - core_start - #"│") / 2)
-        return ansi_bg_at_plain_byte(line, core_pos), nil
+        local center_bg = ansi_bg_at_plain_byte(line, core_pos)
+        -- Solid means the WHOLE core interior carries one background; a
+        -- partial route horizontal crossing the center cell is line-only.
+        local uniform = true
+        for pos = core_start + #"│", core_end - 1 do
+          if ansi_bg_at_plain_byte(line, pos) ~= center_bg then
+            uniform = false
+            break
+          end
+        end
+        return center_bg, nil, uniform
       end
     end
-    return nil, "Expected mixed row for connector core check: " .. label
+    return nil, "Expected mixed row for connector core check: " .. label, nil
   end
   local function require_non_solid_mixed_connector(label, overlap_label, overlap_base_label)
-    local row_bg, row_err = mixed_connector_core_bg(label)
+    local row_bg, row_err, row_uniform = mixed_connector_core_bg(label)
     local overlap_bg, overlap_err = nil, nil
     if ansi_lines then
       for _, line in ipairs(ansi_lines) do
@@ -2076,7 +2092,7 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
       table.insert(errors, row_err)
     elseif overlap_err then
       table.insert(errors, overlap_err)
-    elseif overlap_bg and row_bg == overlap_bg then
+    elseif overlap_bg and row_bg == overlap_bg and row_uniform then
       table.insert(errors, "Expected mixed transition row connector core to stay line-only, not solid background")
     end
   end
@@ -2114,16 +2130,15 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     require_non_solid_mixed_connector("Scroll mixed context 04", "Original scroll header", "scroll header")
     require_no_core_route({ "Original scroll header", "Added mixed scroll 01" },
       "Expected initial mixed overlap row to remain a solid connector background row without route lines")
-    -- The added block is a zero-context adjacent add chunk, not part of the
-    -- change chunk: backgrounds never fuse across chunk boundaries, so the
-    -- right number pane uses the add background and the overlap row's
-    -- connector core stays line-only instead of a solid change band.
+    -- The added block is absorbed into the merged change chunk: the right
+    -- number pane carries the change band across the absorbed rows, and the
+    -- overlap row's connector core is a solid change band (the change hunk
+    -- shares this screen row with the right side).
     local add_number_bg = first_number_pane_digit_bg("Added mixed scroll 01", "right")
     require_number_pane_bg("Original scroll header", "left", change_number_bg,
       "Expected initial mixed overlap left line number pane to stay solid change background")
     require_number_text_bg("Original scroll header", "right", add_number_bg,
-      "Expected initial mixed overlap right line number pane to use the add background")
-    require_non_solid_mixed_connector("Original scroll header", "Original scroll header", "scroll header")
+      "Expected initial mixed overlap right line number pane to share the absorbed band background")
     local _, lower_wedge_line, lower_wedge = find_plain_line_all(lines,
       { "Scroll mixed context 05", "Added mixed scroll 02" }, wedge_glyphs)
     if not lower_wedge_line
@@ -2177,23 +2192,24 @@ local function verify_scroll_mixed(lines, ansi_lines, phase)
     require_number_pane_gap("Old scroll value B", "left",
       "Expected second scrolled changed left line number pane to leave a clear spacer by the route",
       nil, change_number_bg)
-    local _, _, top_wedge = find_plain_line_all(lines, { "Original scroll header", "Added mixed scroll" }, wedge_glyphs)
+    -- Wedges paint the transitions at the projected overlap's edges: the
+    -- top wedge sits on the row above the overlap row.
+    local _, _, top_wedge = find_plain_line_all(lines, { "Scroll mixed context 04", "Added mixed scroll" }, wedge_glyphs)
     if top_wedge ~= "\226\151\162" then
-      table.insert(errors, "Expected right-diverged mixed top wedge to dock on the projected overlap row")
+      table.insert(errors, "Expected right-diverged mixed top wedge to dock on the overlap's upper edge row")
     end
-    -- The added block is an independent adjacent add chunk: its right number
-    -- pane keeps the add background and no solid change band crosses the core.
+    -- The added block is absorbed into the merged change chunk: its right
+    -- number pane shares the band background across the absorbed rows.
     local add_number_bg = first_number_pane_digit_bg("Added mixed scroll", "right")
     require_number_text_bg("Scroll mixed context 04", "right", add_number_bg,
-      "Expected right-diverged mixed top transition right line number text to keep the add background",
+      "Expected right-diverged mixed top transition right line number text to keep the band background",
       "Added mixed scroll")
     require_non_solid_mixed_connector("Scroll mixed context 04", "Original scroll header", "scroll header")
     if not find_plain_line(lines, { "Original scroll header", "Added mixed scroll" }) then
       table.insert(errors, "Expected right-diverged mixed overlap row to keep the added block alongside the header")
     end
     require_number_text_bg("Original scroll header", "right", add_number_bg,
-      "Expected right-diverged mixed overlap right line number pane to use the add background")
-    require_non_solid_mixed_connector("Original scroll header", "Original scroll header", "scroll header")
+      "Expected right-diverged mixed overlap right line number pane to share the absorbed band background")
     local _, _, lower_wedge = find_plain_line_all(lines, { "Scroll mixed context 05", "Added mixed scroll" }, wedge_glyphs)
     if lower_wedge ~= "\226\151\165" then
       table.insert(errors, "Expected right-diverged mixed lower wedge to stay adjacent to the projected overlap row")
