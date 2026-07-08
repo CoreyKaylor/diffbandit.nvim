@@ -1,6 +1,6 @@
-local text = require("diffbandit.text")
-local smart_align = require("diffbandit.smart_align")
-local word_diff = require("diffbandit.word_diff")
+local text = require("diffbandit.util.text")
+local smart_align = require("diffbandit.diff.smart_align")
+local word_diff = require("diffbandit.diff.word_diff")
 
 local M = {}
 

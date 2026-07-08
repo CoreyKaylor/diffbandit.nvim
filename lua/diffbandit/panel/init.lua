@@ -1,8 +1,9 @@
 local git = require("diffbandit.git")
-local nvim = require("diffbandit.nvim")
-local ui = require("diffbandit.ui")
+local nvim = require("diffbandit.util.nvim")
+local ui = require("diffbandit.util.ui")
 local config_mod = require("diffbandit.config")
-local layout = require("diffbandit.layout")
+local layout = require("diffbandit.util.layout")
+local panel_api = require("diffbandit.host.panel_api")
 
 local M = {}
 
@@ -36,10 +37,7 @@ end
 
 local function icons_for(session)
   local config = panel_config(session)
-  local mode = config.icons or "auto"
-  local use_nerd = mode == "nerd"
-    or (mode == "auto" and (vim.g.diffbandit_have_nerd_font == true or vim.g.have_nerd_font == true))
-  return use_nerd and nerd_icons or plain_icons
+  return ui.use_nerd_icons(config.icons or "auto") and nerd_icons or plain_icons
 end
 
 local function stage_symbol(session, state)
@@ -715,14 +713,14 @@ local function preview_selected(session)
   if not row or row.type ~= "file" then
     return
   end
-  if entry_kind(row.entry) == "unmerged" and type(session.open_merge_file) == "function" then
-    session:open_merge_file(row.index, { preserve_focus = true })
+  if entry_kind(row.entry) == "unmerged" and panel_api.has(session, "open_merge_file") then
+    panel_api.open_merge_file(session, row.index, { preserve_focus = true })
     return
   end
   if row.index == session.file_queue_index then
     return
   end
-  session:goto_queue_file(row.index, "top", { preserve_focus = true })
+  panel_api.goto_queue_file(session, row.index, "top", { preserve_focus = true })
 end
 
 function M.preview_selected(session)
@@ -821,11 +819,11 @@ function M.focus_commit(session)
 end
 
 function M.navigate_change(session, direction)
-  if type(session.goto_next_chunk) == "function" then
+  if panel_api.has(session, "goto_next_chunk") then
     if direction == "prev" then
-      session:goto_prev_chunk()
+      panel_api.goto_prev_chunk(session)
     else
-      session:goto_next_chunk()
+      panel_api.goto_next_chunk(session)
     end
     M.focus_nav(session)
     return
@@ -836,23 +834,23 @@ function M.navigate_change(session, direction)
     M.move(session, direction == "prev" and -1 or 1)
     row = selected_row(session)
   end
-  if row and row.type == "file" and type(session.goto_queue_file) == "function" then
-    if entry_kind(row.entry) == "unmerged" and type(session.open_merge_file) == "function" then
-      session:open_merge_file(row.index, { navigate_change = direction })
+  if row and row.type == "file" and panel_api.has(session, "goto_queue_file") then
+    if entry_kind(row.entry) == "unmerged" and panel_api.has(session, "open_merge_file") then
+      panel_api.open_merge_file(session, row.index, { navigate_change = direction })
       return
     end
-    session:goto_queue_file(row.index, { navigate_change = direction })
+    panel_api.goto_queue_file(session, row.index, { navigate_change = direction })
   end
 end
 
 function M.navigate_file(session, direction)
   local queue = session and session.file_queue
-  if not queue or type(session.goto_queue_file) ~= "function" then
+  if not queue or not panel_api.has(session, "goto_queue_file") then
     return
   end
   local current = session.file_queue_index or queue.index or 1
   local delta = direction == "prev" and -1 or 1
-  session:goto_queue_file(current + delta, "top", { preserve_focus = true })
+  panel_api.goto_queue_file(session, current + delta, "top", { preserve_focus = true })
 end
 
 function M.toggle_stage(session)
@@ -888,8 +886,8 @@ function M.toggle_stage(session)
       nvim.notify_info(tostring(err))
       return
     end
-    if type(session.refresh_git_queue) == "function" then
-      session:refresh_git_queue(row.entry.path, { preserve_panel_selection = row.index })
+    if panel_api.has(session, "refresh_git_queue") then
+      panel_api.refresh_git_queue(session, row.entry.path, { preserve_panel_selection = row.index })
     end
   end)
 end
@@ -902,9 +900,8 @@ function M.toggle_amend(session)
   if not panel then
     return
   end
-  if type(session.set_amend_mode) == "function" then
-    session:set_amend_mode(not panel.amend)
-    return
+  if panel_api.has(session, "set_amend_mode") then
+    panel_api.set_amend_mode(session, not panel.amend)
   end
 end
 
@@ -934,20 +931,20 @@ function M.commit(session)
   panel.message_lines = { "" }
   panel.message_initialized = false
   panel.validation_message = nil
-  if type(session.clear_amend_mode) == "function" then
-    session:clear_amend_mode()
+  if panel_api.has(session, "clear_amend_mode") then
+    panel_api.clear_amend_mode(session)
   else
     panel.amend = false
     panel.amend_loaded = false
   end
-  session:refresh_git_queue()
+  panel_api.refresh_git_queue(session)
   nvim.notify_info("committed changes")
   return true, nil
 end
 
 function M.close(session)
-  if is_review_panel(session) and type(session.close) == "function" then
-    session:close()
+  if is_review_panel(session) and panel_api.has(session, "close") then
+    panel_api.close(session)
     return
   end
   local panel = session.panel

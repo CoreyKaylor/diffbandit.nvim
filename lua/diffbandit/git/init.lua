@@ -1,6 +1,7 @@
-local process = require("diffbandit.process")
-local text = require("diffbandit.text")
-local git_sources = require("diffbandit.git_sources")
+local process = require("diffbandit.util.process")
+local text = require("diffbandit.util.text")
+local document = require("diffbandit.util.document")
+local git_sources = require("diffbandit.git.sources")
 
 local M = {}
 
@@ -342,18 +343,7 @@ local function abs_path(root, path)
 end
 
 local function find_loaded_buffer(path)
-  local abs = realpath(path) or vim.fn.fnamemodify(path, ":p")
-  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(bufnr) then
-      local name = vim.api.nvim_buf_get_name(bufnr)
-      local buftype = vim.api.nvim_get_option_value("buftype", { buf = bufnr })
-      local buffer_path = realpath(name) or vim.fn.fnamemodify(name, ":p")
-      if buftype == "" and name ~= "" and buffer_path == abs then
-        return bufnr
-      end
-    end
-  end
-  return nil
+  return document.find_loaded_buffer(path)
 end
 
 local function has_modified_loaded_buffer(root, path)

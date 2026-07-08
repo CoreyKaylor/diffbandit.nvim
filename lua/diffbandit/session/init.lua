@@ -1,24 +1,24 @@
-local diff_mod = require("diffbandit.diff")
-local view_builder = require("diffbandit.view")
 local state = require("diffbandit.state")
-local paths_mod = require("diffbandit.connector_routes")
-local actions = require("diffbandit.actions")
-local status = require("diffbandit.status")
+local actions = require("diffbandit.session.actions")
+local status = require("diffbandit.util.status")
 local panel_mod = require("diffbandit.panel")
-local nvim = require("diffbandit.nvim")
-local document = require("diffbandit.document")
-local overview = require("diffbandit.overview")
-local amend_mode = require("diffbandit.amend_mode")
-local queue_host = require("diffbandit.queue_host")
-local ui = require("diffbandit.ui")
-local connector_width = require("diffbandit.connector_width")
-local keymaps = require("diffbandit.keymaps")
-local session_layout = require("diffbandit.session_layout")
-local session_render = require("diffbandit.session_render")
+local nvim = require("diffbandit.util.nvim")
+local document = require("diffbandit.util.document")
+local overview = require("diffbandit.util.overview")
+local amend_mode = require("diffbandit.util.amend_mode")
+local queue_host = require("diffbandit.host.queue")
+local ui = require("diffbandit.util.ui")
+local connector_width = require("diffbandit.connector.width")
+local keymaps = require("diffbandit.util.keymaps")
+local session_layout = require("diffbandit.session.layout")
+local render_host = require("diffbandit.session.render_host")
 local config_mod = require("diffbandit.config")
+local diff_mod = require("diffbandit.diff")
+local view_builder = require("diffbandit.diff.view")
 
 local Session = {}
 Session.__index = Session
+render_host.install(Session)
 
 local function display_number_width(source)
   local width = ui.digits_of(#(source and source.lines or {}))
@@ -46,42 +46,15 @@ local get_win_view_topline = nvim.get_win_view_topline
 
 local set_buffer_options = nvim.set_buffer_options
 
+-- Use source.text (already concatenated) rather than diff.pair.build, which
+-- would re-run text.to_text on every line table and allocate unused metrics.
 local function build_view_for_sources(sources, config)
   local hunks, err = diff_mod.compute_hunks(sources.left.text, sources.right.text, config.diff)
   if err then
     return nil, err
   end
-
   local view = view_builder.build(sources.left.lines, sources.right.lines, hunks, config)
   return hunks, view
-end
-
-function Session:invalidate_render_caches()
-  self.base_paths_cache = nil
-  self.overview_marks_cache = nil
-  self.changed_spans_cache = nil
-  self.display_lines_cache = nil
-  self.route_plan_cache = nil
-end
-
-function Session:base_paths()
-  if not self.base_paths_cache then
-    self.base_paths_cache = paths_mod.compute_paths(self.view.chunks, self.view.line_meta)
-  end
-  return self.base_paths_cache
-end
-
-function Session:display_lines()
-  local padding = self:get_scroll_padding()
-  if not self.display_lines_cache or self.display_lines_cache.padding ~= padding then
-    local left_lines, right_lines = session_render.build_display_lines(self)
-    self.display_lines_cache = {
-      left = left_lines,
-      right = right_lines,
-      padding = padding,
-    }
-  end
-  return self.display_lines_cache.left, self.display_lines_cache.right
 end
 
 function Session:overview_marks(side)
@@ -174,55 +147,6 @@ function Session.start(sources, config, opts)
   end
 
   return self
-end
-
-function Session:left_triangle_col()
-  if self.mirror_connector_sides then
-    return 0
-  end
-  return self.left_number_pane_width - 1
-end
-
-function Session:left_number_text_start_col()
-  return self.mirror_connector_sides and 1 or 0
-end
-
-function Session:left_number_text_end_col()
-  if self.mirror_connector_sides then
-    return -1
-  end
-  return self:left_triangle_col()
-end
-
-function Session:right_triangle_col()
-  if self.mirror_connector_sides then
-    return self.right_number_pane_width - 1
-  end
-  return 0
-end
-
-function Session:right_number_text_start_col()
-  return self.mirror_connector_sides and 0 or 1
-end
-
-function Session:right_number_text_end_col()
-  if self.mirror_connector_sides then
-    return self:right_triangle_col()
-  end
-  return -1
-end
-
-function Session:display_glyph(glyph)
-  if not self.mirror_connector_sides then
-    return glyph
-  end
-  local mirrored = {
-    ["◤"] = "◥",
-    ["◥"] = "◤",
-    ["◢"] = "◣",
-    ["◣"] = "◢",
-  }
-  return mirrored[glyph] or glyph
 end
 
 function Session:open_layout()
@@ -678,37 +602,22 @@ function Session:sync_from_right()
   sync_source_to_gutter(self, self.right_win, self.right_num_win)
 end
 
--- Debounce a per-session action behind a boolean flag field: the first call
--- schedules, later calls coalesce until the deferred fn clears the flag.
-local function schedule_once(self, flag_field, fn)
-  if self[flag_field] then
-    return
-  end
-  self[flag_field] = true
-  local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
-  vim.defer_fn(function()
-    self[flag_field] = false
-    if self.disposed then
-      return
-    end
-    fn()
-  end, math.max(0, delay))
-end
-
 function Session:request_viewport_rerender()
   if self.disposed or self.rendering_viewport then
     return
   end
-  schedule_once(self, "viewport_rerender_scheduled", function()
+  local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
+  ui.schedule_once(self, "viewport_rerender_scheduled", function()
     self:rerender_for_viewport()
-  end)
+  end, delay)
 end
 
 function Session:request_editable_right_refresh()
   if self.disposed or not (self.right and self.right.editable) then
     return
   end
-  schedule_once(self, "editable_right_refresh_scheduled", function()
+  local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
+  ui.schedule_once(self, "editable_right_refresh_scheduled", function()
     if not (self.right and self.right.editable) then
       return
     end
@@ -954,46 +863,6 @@ function Session:goto_document_edge(edge)
   end
 end
 
-function Session:rerender_for_viewport()
-  if self.disposed or self.rendering_viewport then
-    return
-  end
-
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
-  local left_cursor = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_cursor(self.left_win) or nil
-  local right_cursor = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_cursor(self.right_win) or nil
-
-  -- One navigation keypress renders synchronously (set_viewport_toplines)
-  -- and then again from debounced scroll autocmds for the same state. Skip
-  -- repaints whose inputs are identical; Session:render() clears the key,
-  -- so any direct render (source replace, staging, resize, merge accepts)
-  -- always repaints and re-arms the next viewport render.
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 0
-  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 0
-  local key = string.format("%s:%s:%d:%d:%d",
-    tostring(left_topline), tostring(right_topline), left_height, right_height, self.current_chunk or 0)
-  if key == self.last_viewport_render_key then
-    return
-  end
-
-  self.rendering_viewport = true
-  self:render()
-  self.last_viewport_render_key = key
-  set_win_view_topline(self.left_win, left_topline)
-  set_win_view_topline(self.left_num_win, left_topline)
-  set_win_view_topline(self.connector_win, left_topline)
-  set_win_view_topline(self.right_win, right_topline)
-  set_win_view_topline(self.right_num_win, right_topline)
-  if left_cursor and vim.api.nvim_win_is_valid(self.left_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.left_win, left_cursor)
-  end
-  if right_cursor and vim.api.nvim_win_is_valid(self.right_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.right_win, right_cursor)
-  end
-  self.rendering_viewport = false
-end
-
 function Session:dispose()
   if self.disposed then
     return
@@ -1221,39 +1090,6 @@ function Session:replace_sources(sources, opts)
   end
 
   return true, nil
-end
-
-function Session:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
-  return paths_mod.project_for_toplines(paths, left_topline, right_topline, left_height, right_height)
-end
-
-function Session:project_paths_for_viewport(paths)
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
-  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
-  return self:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
-end
-
-function Session:precompute_connector_core_width()
-  local viewport_rows = vim.api.nvim_win_is_valid(self.left_win)
-      and vim.api.nvim_win_get_height(self.left_win) or nil
-  local required_core = paths_mod.pressure_core_width(
-    self:base_paths(),
-    connector_width.base(self.view, self.config),
-    connector_width.maximum(self.config),
-    viewport_rows)
-  if required_core ~= self.connector_core_width then
-    self.connector_core_width = required_core
-    self:resize_layout()
-  end
-
-  return required_core
-end
-
-function Session:render()
-  self.last_viewport_render_key = nil
-  session_render.render(self)
 end
 
 function Session:clear_active_chunk()

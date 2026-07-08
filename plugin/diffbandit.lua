@@ -1,5 +1,5 @@
 local diffbandit = require("diffbandit")
-local nvim = require("diffbandit.nvim")
+local nvim = require("diffbandit.util.nvim")
 
 local function report(result, err)
   if not result and err then

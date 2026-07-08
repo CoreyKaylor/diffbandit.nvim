@@ -1,34 +1,25 @@
-local diff_pair = require("diffbandit.diff_pair")
+local diff_pair = require("diffbandit.diff.pair")
 local git = require("diffbandit.git")
-local merge_model = require("diffbandit.merge_model")
-local nvim = require("diffbandit.nvim")
-local keymaps = require("diffbandit.keymaps")
-local layout = require("diffbandit.layout")
-local document = require("diffbandit.document")
-local pair_renderer = require("diffbandit.pair_renderer")
+local merge_model = require("diffbandit.merge.model")
+local nvim = require("diffbandit.util.nvim")
+local keymaps = require("diffbandit.util.keymaps")
+local layout = require("diffbandit.util.layout")
+local document = require("diffbandit.util.document")
+local pair_renderer = require("diffbandit.merge.pair_renderer")
 local panel_mod = require("diffbandit.panel")
-local queue_host = require("diffbandit.queue_host")
-local source_mod = require("diffbandit.source")
+local queue_host = require("diffbandit.host.queue")
+local source_mod = require("diffbandit.util.source")
 local state = require("diffbandit.state")
-local text = require("diffbandit.text")
-local ui = require("diffbandit.ui")
-local view_builder = require("diffbandit.view")
-local connector_width = require("diffbandit.connector_width")
+local text = require("diffbandit.util.text")
+local ui = require("diffbandit.util.ui")
+local view_builder = require("diffbandit.diff.view")
+local connector_width = require("diffbandit.connector.width")
 local config_mod = require("diffbandit.config")
 
 local Merge = {}
 Merge.__index = Merge
 
-local function logical_buffer_lines(buf)
-  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
-    return {}
-  end
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  if #lines == 1 and lines[1] == "" then
-    return {}
-  end
-  return lines
-end
+local logical_buffer_lines = document.buffer_lines
 
 local make_buffer = nvim.make_buffer
 local set_win_width = nvim.set_window_width

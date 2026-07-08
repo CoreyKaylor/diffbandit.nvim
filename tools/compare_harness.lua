@@ -12,7 +12,7 @@
 local root = vim.fn.fnamemodify(vim.fn.fnamemodify(arg[0], ":p:h"), ":h")
 vim.opt.rtp:prepend(root)
 local diff = require("diffbandit.diff")
-local word_diff = require("diffbandit.word_diff")
+local word_diff = require("diffbandit.diff.word_diff")
 local config = require("diffbandit.config").defaults()
 
 local corpus = root .. "/tools/corpus"

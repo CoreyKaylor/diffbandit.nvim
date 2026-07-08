@@ -1,9 +1,9 @@
 local state = require("diffbandit.state")
-local folder_model = require("diffbandit.folder_model")
-local nvim = require("diffbandit.nvim")
-local process = require("diffbandit.process")
-local ui = require("diffbandit.ui")
-local layout = require("diffbandit.layout")
+local folder_model = require("diffbandit.folder.model")
+local nvim = require("diffbandit.util.nvim")
+local process = require("diffbandit.util.process")
+local ui = require("diffbandit.util.ui")
+local layout = require("diffbandit.util.layout")
 local config_mod = require("diffbandit.config")
 
 local Folder = {}
