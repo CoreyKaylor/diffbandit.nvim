@@ -235,9 +235,19 @@ local function open_windows(session)
   end
 end
 
-local function apply_window_options(session)
+-- Window-local options live per (window, buffer): displaying a different
+-- buffer in the window (editable worktree files swapped in by the file
+-- queue) silently reverts them to that buffer's defaults — 'wrap' coming
+-- back on desyncs the pane's screen rows from its unwrappable gutters.
+-- Re-apply after every right-buffer swap.
+local function apply_right_source_window_options(session)
   local right_source_winhl = session.overview_enabled and layout.winhl.hidden_source or layout.winhl.source
+  set_window_options(session.right_win, layout.win_opts.source(right_source_winhl, {
+    signcolumn = session.right.editable and "auto" or "no",
+  }))
+end
 
+local function apply_window_options(session)
   set_window_options(session.left_win, layout.win_opts.source())
 
   for _, win in ipairs({ session.left_overview_win, session.right_overview_win }) do
@@ -251,9 +261,7 @@ local function apply_window_options(session)
     set_window_options(win, layout.win_opts.gutter())
   end
 
-  set_window_options(session.right_win, layout.win_opts.source(right_source_winhl, {
-    signcolumn = session.right.editable and "auto" or "no",
-  }))
+  apply_right_source_window_options(session)
 
   for _, win in ipairs({ session.left_header_win, session.center_header_win, session.right_header_win }) do
     if win then
@@ -327,6 +335,10 @@ local function set_initial_focus(session)
   local right_name = session.right.label or session.right.path or ""
   session.title = string.format("DiffBandit: %s ↔ %s", left_name, right_name)
   vim.api.nvim_tabpage_set_var(session.tabpage, "diffbandit_title", session.title)
+end
+
+function M.apply_right_source_window_options(session)
+  apply_right_source_window_options(session)
 end
 
 function M.open(session)

@@ -61,6 +61,7 @@ function Session:invalidate_render_caches()
   self.overview_marks_cache = nil
   self.changed_spans_cache = nil
   self.display_lines_cache = nil
+  self.route_plan_cache = nil
 end
 
 function Session:base_paths()
@@ -303,6 +304,26 @@ function Session:setup_autocmds()
       if tonumber(event.file) == self.tabnr then
         self:dispose()
       end
+    end,
+  })
+
+  -- Diagnostics arriving (or clearing) after the initial render toggle the
+  -- editable pane's sign column: the band-colored sign fills must be
+  -- (re)painted, and the viewport dedupe key would otherwise skip the
+  -- repaint since nothing else changed. Checked by buffer in the callback
+  -- because replace_sources swaps the right buffer.
+  vim.api.nvim_create_autocmd("DiagnosticChanged", {
+    group = augroup,
+    callback = function(event)
+      if self.disposed or event.buf ~= self.right_buf then
+        return
+      end
+      -- Band rows mirror diagnostic glyphs in the sign column, so any
+      -- diagnostic change (arrival, clearing, moving lines, severity)
+      -- needs a repaint; the request is debounced, and the dedupe key must
+      -- not swallow it since the viewport itself is unchanged.
+      self.last_viewport_render_key = nil
+      pcall(Session.request_viewport_rerender, self)
     end,
   })
 
@@ -716,7 +737,8 @@ function Session:set_viewport_toplines(left_topline, right_topline)
   self:rerender_for_viewport()
 end
 
-function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_cursor, right_cursor)
+function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_cursor, right_cursor, opts)
+  opts = opts or {}
   apply_viewport_toplines(self, left_topline, right_topline)
   local function cursor_pair(cursor)
     if type(cursor) == "table" then
@@ -737,7 +759,14 @@ function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topl
     pcall(vim.api.nvim_win_set_cursor, self.right_win, right_pair)
     pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_pair[1], 0 })
   end
-  self:rerender_for_viewport()
+  if opts.defer_render then
+    -- The viewport (text, backgrounds, cursors) moves immediately; only the
+    -- route overlay repaint rides the scroll debounce, so rapid navigation
+    -- coalesces into one render — same contract as wheel scrolling.
+    self:request_viewport_rerender()
+  else
+    self:rerender_for_viewport()
+  end
 end
 
 local function first_meta_index_with(meta_list, start_idx, end_idx, predicate)
@@ -823,7 +852,21 @@ function Session:align_chunk_viewports(chunk)
   left_cursor = left_cursor or left_topline
   right_cursor = right_cursor or right_topline
 
-  self:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_cursor, right_cursor)
+  -- Defer the route repaint through the scroll debounce when the target
+  -- viewport is already inside the last render's styled window: rapid ]c/[c
+  -- keeps the UI responsive and coalesces repaints. Long jumps outside the
+  -- window render synchronously so no unstyled rows ever appear.
+  local clip = self.last_render_clip
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local within_styled_window = clip ~= nil
+    and left_topline >= clip.left_min
+    and (left_topline + left_height) <= clip.left_max
+    and right_topline >= clip.right_min
+    and (right_topline + right_height) <= clip.right_max
+
+  self:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_cursor, right_cursor,
+    { defer_render = within_styled_window })
 
   if focused_win == self.left_win or focused_win == self.right_win then
     pcall(vim.api.nvim_set_current_win, focused_win)
@@ -920,8 +963,23 @@ function Session:rerender_for_viewport()
   local right_topline = get_win_view_topline(self.right_win)
   local left_cursor = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_cursor(self.left_win) or nil
   local right_cursor = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_cursor(self.right_win) or nil
+
+  -- One navigation keypress renders synchronously (set_viewport_toplines)
+  -- and then again from debounced scroll autocmds for the same state. Skip
+  -- repaints whose inputs are identical; Session:render() clears the key,
+  -- so any direct render (source replace, staging, resize, merge accepts)
+  -- always repaints and re-arms the next viewport render.
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 0
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 0
+  local key = string.format("%s:%s:%d:%d:%d",
+    tostring(left_topline), tostring(right_topline), left_height, right_height, self.current_chunk or 0)
+  if key == self.last_viewport_render_key then
+    return
+  end
+
   self.rendering_viewport = true
   self:render()
+  self.last_viewport_render_key = key
   set_win_view_topline(self.left_win, left_topline)
   set_win_view_topline(self.left_num_win, left_topline)
   set_win_view_topline(self.connector_win, left_topline)
@@ -1066,6 +1124,10 @@ function Session:replace_sources(sources, opts)
     self.right_buf = self.right.editable.bufnr
     if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
       vim.api.nvim_win_set_buf(self.right_win, self.right_buf)
+      -- Window-local options are per (window, buffer); the swap reverted
+      -- them to the new buffer's defaults ('wrap' on desyncs the pane's
+      -- screen rows from its gutters).
+      session_layout.apply_right_source_window_options(self)
     end
   elseif not self.right.editable and old_right_editable then
     self.right_buf = vim.api.nvim_create_buf(false, true)
@@ -1077,6 +1139,7 @@ function Session:replace_sources(sources, opts)
     })
     if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
       vim.api.nvim_win_set_buf(self.right_win, self.right_buf)
+      session_layout.apply_right_source_window_options(self)
     end
     set_buffer_options(self.right_buf, { bufhidden = "wipe" })
   end
@@ -1189,6 +1252,7 @@ function Session:precompute_connector_core_width()
 end
 
 function Session:render()
+  self.last_viewport_render_key = nil
   session_render.render(self)
 end
 
@@ -1211,24 +1275,30 @@ function Session:highlight_active_chunk(chunk, opts)
   for meta_idx = chunk.display_start, chunk.display_end do
     local meta = self.view.line_meta[meta_idx]
     if meta then
-      -- Skip for diff lines with strong backgrounds to avoid washing out colors
-      local has_strong_bg = meta.kind ~= "context" and not meta.filler_left and not meta.filler_right
+      -- Skip sides with strong backgrounds to avoid washing out colors.
+      -- Strength is PER SIDE: an embedded add row is a gap on the left but
+      -- real green content (and its gutter band) on the right — a single
+      -- per-row flag painted the overlay across the right gutter and
+      -- punched holes in the band above the wedge (and symmetrically over
+      -- the left delete background).
+      local left_strong = meta.kind ~= "context" and not meta.filler_left
+      local right_strong = meta.kind ~= "context" and not meta.filler_right
 
       -- Highlight left buffer if this metadata has a left line
-      if meta.left_index and not has_strong_bg then
+      if meta.left_index and not left_strong then
         local row = meta.left_index - 1
         add_hl(self.left_buf, self.active_ns, active_hl, row, 0, -1)
         add_hl(self.left_num_buf, self.active_ns, active_hl, row, 0, -1)
       end
 
       -- Highlight right buffer if this metadata has a right line
-      if meta.right_index and not has_strong_bg then
+      if meta.right_index and not right_strong then
         local row = meta.right_index - 1
         add_hl(self.right_buf, self.active_ns, active_hl, row, 0, -1)
         add_hl(self.right_num_buf, self.active_ns, active_hl, row, 0, -1)
       end
 
-      if not has_strong_bg then
+      if not (left_strong and right_strong) then
         add_hl(self.connector_buf, self.active_ns, active_hl, meta_idx - 1, 0, -1)
       end
     end

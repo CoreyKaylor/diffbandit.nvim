@@ -132,34 +132,87 @@ local function build_render_context(self)
   local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
   local right_text_hl_mode = self.right.editable and "combine" or "replace"
 
-  -- Compute connector routing lanes using extracted paths module
+  -- Compute connector routing lanes using extracted paths module. Projection
+  -- and planning are the most expensive render stages, and both are pure
+  -- functions of the viewport state — cache per state so revisited viewports
+  -- (navigation back and forth, debounced duplicate repaints) are free.
   local paths = self:base_paths()
-  local route_paths = self:project_paths_for_viewport(paths)
-  local plan_layout = {
-    connector_core_width = self.connector_core_width,
-    viewport_topline = left_topline,
-    viewport_height = left_height,
-    max_route_backtrack_steps = 500,
-    -- The navigated chunk's connector is the one the user is looking at;
-    -- overflow pruning hides it only when no other candidate remains.
-    active_chunk_index = (self.current_chunk or 0) > 0 and self.current_chunk or nil,
-  }
-  local route_plan = paths_mod.plan_routes(route_paths, plan_layout)
-  if not route_plan.success then
-    -- Wide cores can make the fixed-width search tree thrash on viewports
-    -- that a narrower working width solves immediately. Routes must not
-    -- disappear before the core is genuinely saturated, so retry as an
-    -- upward width search and stretch the edge-docked horizontals of the
-    -- narrower solution out to the real core edge. The gutter width itself
-    -- never changes here.
-    local solved_width, retry_plan = paths_mod.required_connector_core_width_for_paths(
-      route_paths,
-      connector_width.minimum(self.config),
-      self.connector_core_width,
-      plan_layout)
-    if retry_plan.success then
-      route_plan = paths_mod.stretch_plan_to_core(retry_plan, solved_width, self.connector_core_width)
+  local win_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local plan_cache_key = string.format("%s:%s:%d:%d:%d:%d",
+    tostring(left_topline), tostring(right_topline), left_height, win_height,
+    self.current_chunk or 0, self.connector_core_width or 0)
+  self.route_plan_cache = self.route_plan_cache or { n = 0 }
+  local route_paths, route_plan
+  local cached_plan = self.route_plan_cache[plan_cache_key]
+  if cached_plan then
+    route_paths = cached_plan.route_paths
+    route_plan = cached_plan.route_plan
+  else
+    route_paths = self:project_paths_for_viewport(paths)
+
+    -- Wall-clock budget for the rail solver: dense projections can make the
+    -- backtracking search and the width-search fallback pathologically slow
+    -- (seconds). On expiry the solver degrades through its documented
+    -- bounded path (lookahead off, unplaced routes hidden with recorded
+    -- reasons) — an interactive render must never hang.
+    local budget_ms = tonumber((self.config.ui or {}).route_plan_budget_ms) or 25
+    local function budget_abort()
+      local deadline = vim.uv.hrtime() + budget_ms * 1e6
+      return function()
+        return vim.uv.hrtime() > deadline
+      end
     end
+    local plan_layout = {
+      connector_core_width = self.connector_core_width,
+      viewport_topline = left_topline,
+      viewport_height = left_height,
+      max_route_backtrack_steps = 500,
+      should_abort = budget_ms > 0 and budget_abort() or nil,
+      -- The navigated chunk's connector is the one the user is looking at;
+      -- overflow pruning hides it only when no other candidate remains.
+      active_chunk_index = (self.current_chunk or 0) > 0 and self.current_chunk or nil,
+    }
+    route_plan = paths_mod.plan_routes(route_paths, plan_layout)
+    if not route_plan.success then
+      -- Wide cores can make the fixed-width search tree thrash on viewports
+      -- that a narrower working width solves immediately — solvability is
+      -- NOT monotone in width. Try a few near-core widths first (the usual
+      -- cure for fixed-width thrash, often solving in one attempt), then
+      -- fall back to the upward width search from the minimum. Successful
+      -- narrower solutions get their edge-docked horizontals stretched out
+      -- to the real core edge; the gutter width itself never changes here.
+      -- Each phase gets a fresh budget.
+      local min_width = connector_width.minimum(self.config)
+      plan_layout.should_abort = budget_ms > 0 and budget_abort() or nil
+      for width = self.connector_core_width - 1, math.max(min_width, self.connector_core_width - 3), -1 do
+        local near_layout = vim.tbl_extend("force", {}, plan_layout, { connector_core_width = width })
+        local near_plan = paths_mod.plan_routes(route_paths, near_layout)
+        if near_plan.success then
+          route_plan = paths_mod.stretch_plan_to_core(near_plan, width, self.connector_core_width)
+          break
+        end
+        if plan_layout.should_abort and plan_layout.should_abort() then
+          break
+        end
+      end
+      if not route_plan.success then
+        plan_layout.should_abort = budget_ms > 0 and budget_abort() or nil
+        local solved_width, retry_plan = paths_mod.required_connector_core_width_for_paths(
+          route_paths,
+          min_width,
+          self.connector_core_width,
+          plan_layout)
+        if retry_plan.success then
+          route_plan = paths_mod.stretch_plan_to_core(retry_plan, solved_width, self.connector_core_width)
+        end
+      end
+    end
+
+    if self.route_plan_cache.n >= 48 then
+      self.route_plan_cache = { n = 0 }
+    end
+    self.route_plan_cache[plan_cache_key] = { route_paths = route_paths, route_plan = route_plan }
+    self.route_plan_cache.n = self.route_plan_cache.n + 1
   end
 
   -- Compute underline data using extracted helper
@@ -232,13 +285,17 @@ local function build_render_context(self)
   end
   for _, p in ipairs(route_paths) do
     if p.kind == "change" and p.viewport_solid_start and p.viewport_solid_end then
+      -- viewport_solid rows are the side-by-side overlap in LEFT-row space
+      -- (projection maps right rows into it via the screen alignment), NOT
+      -- line_meta display indexes: map back directly. Routing through
+      -- line_meta happened to agree near the top of a file and painted the
+      -- wrong rows everywhere else.
       for row = p.viewport_solid_start, p.viewport_solid_end do
-        local left_index = display_row_to_left_index(row)
-        if left_index then
-          solid_change_number_left_indexes[left_index] = true
+        if row >= 1 and row <= #left_lines then
+          solid_change_number_left_indexes[row] = true
         end
-        local right_index = display_row_to_right_index(row)
-        if right_index then
+        local right_index = right_topline + (row - left_topline)
+        if right_index >= 1 and right_index <= #right_lines then
           solid_change_number_right_indexes[right_index] = true
         end
       end
@@ -272,53 +329,149 @@ local function build_render_context(self)
       end
     end
 
-    local function right_index_for_connector_row(row)
-      return display_row_to_right_index(row)
-    end
-
-    local function mark_right_connector_row(row, chunk_index)
-      mark_right(right_index_for_connector_row(row), chunk_index)
-    end
-
-    for _, p in ipairs(route_paths) do
-      if p.kind == "add" and not p.embedded_in_change and not p.hide_triangle and not p.overflow_hidden then
-        mark_right(p.target_start_index, p.chunk)
-      elseif p.kind == "delete" and not p.hide_triangle and not p.overflow_hidden then
-        mark_right(p.origin_right_index, p.chunk)
-        mark_right_connector_row(p.origin_display_row or p.target_start_index, p.chunk)
-      elseif p.kind == "change" then
-        for _, edge in ipairs(p.viewport_change_edges or {}) do
-          if edge.side == "right" then
-            mark_right(right_index_for_connector_row(edge.row), p.chunk)
+    -- Exactly one marker per chunk, anchored to stable view geometry (NOT
+    -- route geometry: projected routes mark several rows for a wide block,
+    -- and hidden/clipped routes mark none — duplicated or missing boxes).
+    -- The marker sits on the chunk's first real right-pane row; pure
+    -- deletions have no right rows, so they anchor on the context row the
+    -- deletion attaches to (above, falling back to below at file top).
+    for _, chunk in ipairs(self.view.chunks) do
+      local marker_row = nil
+      for idx = chunk.display_start, chunk.display_end do
+        local meta = self.view.line_meta[idx]
+        if meta and meta.right_index and not meta.filler_right then
+          marker_row = meta.right_index
+          break
+        end
+      end
+      if not marker_row then
+        for idx = chunk.display_start - 1, 1, -1 do
+          local meta = self.view.line_meta[idx]
+          if meta and meta.right_index then
+            marker_row = meta.right_index
+            break
           end
         end
-        for _, link in ipairs(p.viewport_change_links or {}) do
-          if not link.overflow_hidden and link.from_visible then
-            if link.from_side == "right" then
-              mark_right(right_index_for_connector_row(link.from_row), p.chunk)
-            end
-          end
-          if not link.overflow_hidden and link.to_visible then
-            if link.to_side == "right" then
-              mark_right(right_index_for_connector_row(link.to_row), p.chunk)
-            end
+      end
+      if not marker_row then
+        for idx = chunk.display_end + 1, #self.view.line_meta do
+          local meta = self.view.line_meta[idx]
+          if meta and meta.right_index then
+            marker_row = meta.right_index
+            break
           end
         end
-        if p.viewport_solid_start and p.viewport_solid_end then
-          mark_right(right_index_for_connector_row(p.viewport_solid_start), p.chunk)
-          mark_right(right_index_for_connector_row(p.viewport_solid_end), p.chunk)
+      end
+      mark_right(marker_row, chunk.index)
+    end
+  end
+
+  -- Viewport clipping bounds for the per-row mark loops. Document-wide
+  -- extmark application dominated render cost on large files; marks are only
+  -- needed for rows that can appear on screen before the next debounced
+  -- scroll re-render, so each loop skips rows outside the padded viewports.
+  local right_height = win_height
+  local clip_pad = math.max(200, 3 * math.max(left_height, right_height))
+  local left_row_min = math.max(1, (left_topline or 1) - clip_pad)
+  local left_row_max = (left_topline or 1) + left_height + clip_pad
+  local right_row_min = math.max(1, (right_topline or 1) - clip_pad)
+  local right_row_max = (right_topline or 1) + right_height + clip_pad
+  local function left_row_visible(row)
+    return row ~= nil and row >= left_row_min and row <= left_row_max
+  end
+  local function right_row_visible(row)
+    return row ~= nil and row >= right_row_min and row <= right_row_max
+  end
+  local function meta_visible(meta)
+    return left_row_visible(meta.left_index) or right_row_visible(meta.right_index)
+  end
+  -- Meta-space bounds for connector-row loops (line_meta index == connector
+  -- buffer row; left_index/right_index increase monotonically with it).
+  local meta_min, meta_max = nil, 0
+  for idx, meta in ipairs(self.view.line_meta) do
+    if meta_visible(meta) then
+      meta_min = meta_min or idx
+      meta_max = idx
+    end
+  end
+  meta_min = meta_min or 1
+
+  -- Navigation uses this to decide whether a target viewport is already
+  -- fully styled (defer the repaint through the scroll debounce) or needs a
+  -- synchronous render (long jump outside the clipped window).
+  self.last_render_clip = {
+    left_min = left_row_min,
+    left_max = left_row_max,
+    right_min = right_row_min,
+    right_max = right_row_max,
+  }
+
+  -- External signs (diagnostics etc.) make the right pane's sign column
+  -- visible; band rows then need their own sign-column fill. Our own band
+  -- signs from the previous render are still present at this point (the
+  -- namespaces clear later), so they must not count as "external".
+  local right_has_signs = false
+  local right_diag_severity = {}
+  local diag_sign_text = { "E", "W", "I", "H" }
+  local diag_signs_enabled = true
+  do
+    local signs_cfg = (vim.diagnostic.config() or {}).signs
+    if signs_cfg == false then
+      diag_signs_enabled = false
+    elseif type(signs_cfg) == "table" and type(signs_cfg.text) == "table" then
+      for severity, glyph in pairs(signs_cfg.text) do
+        if type(severity) == "number" then
+          diag_sign_text[severity] = glyph
         end
       end
     end
   end
+  if self.right_buf and vim.api.nvim_buf_is_valid(self.right_buf) then
+    if diag_signs_enabled then
+      local ok_diag, diags = pcall(vim.diagnostic.get, self.right_buf)
+      for _, d in ipairs(ok_diag and diags or {}) do
+        local lnum = d.lnum + 1
+        local severity = d.severity or vim.diagnostic.severity.ERROR
+        if not right_diag_severity[lnum] or severity < right_diag_severity[lnum] then
+          right_diag_severity[lnum] = severity
+        end
+        right_has_signs = true
+      end
+    end
+    if not right_has_signs then
+      local sign_marks = vim.api.nvim_buf_get_extmarks(self.right_buf, -1, 0, -1, { type = "sign", details = true })
+      for _, mark in ipairs(sign_marks) do
+        local d = mark[4] or {}
+        if d.ns_id ~= self.extmark_ns then
+          right_has_signs = true
+          break
+        end
+      end
+    end
+  end
+  -- Remembered so the DiagnosticChanged autocmd can tell whether sign
+  -- presence actually flipped since the last render.
+  self.right_signs_state = right_has_signs
 
   return {
+    right_has_signs = right_has_signs,
+    right_diag_severity = right_diag_severity,
+    diag_sign_text = diag_sign_text,
     left_lines = left_lines,
     right_lines = right_lines,
     left_topline = left_topline,
     right_topline = right_topline,
     left_height = left_height,
     right_text_hl_mode = right_text_hl_mode,
+    left_row_visible = left_row_visible,
+    right_row_visible = right_row_visible,
+    meta_visible = meta_visible,
+    meta_min = meta_min,
+    meta_max = meta_max,
+    left_row_min = left_row_min,
+    left_row_max = left_row_max,
+    right_row_min = right_row_min,
+    right_row_max = right_row_max,
     paths = paths,
     route_paths = route_paths,
     route_plan = route_plan,
@@ -422,6 +575,9 @@ end
 local function render_pane_backgrounds(self, ctx)
   -- Apply highlights to left and right buffers (pane-wide backgrounds)
   for _, meta in ipairs(self.view.line_meta) do
+    if not ctx.meta_visible(meta) then
+      goto continue
+    end
     local left_hl = highlight_for_left(meta)
     local right_hl = highlight_for_right(meta)
     local final_left_hl = left_hl
@@ -459,6 +615,32 @@ local function render_pane_backgrounds(self, ctx)
         hl_mode = "combine",
       })
     end
+    -- line_hl/range marks never cover the sign column, which punches a
+    -- notch into band rows whenever diagnostics make it visible. Fill it
+    -- with a low-priority blank sign carrying the band color. Rows that
+    -- carry a diagnostic mirror its glyph at high priority with a combined
+    -- highlight (diagnostic fg over band bg) — the diagnostic sign's own
+    -- highlight is fg-only, which left the glyph cell on the plain
+    -- sign-column background inside a band.
+    if ctx.right_has_signs and meta.right_index and not meta.filler_right and meta.kind ~= "context" then
+      local band = meta.kind == "add" and "Add" or "Change"
+      local severity = meta.right_line and ctx.right_diag_severity[meta.right_line]
+      if severity then
+        local suffix = ({ "Error", "Warn", "Info", "Hint" })[severity] or "Error"
+        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, meta.right_index - 1, 0, {
+          sign_text = ctx.diag_sign_text[severity] or "!",
+          sign_hl_group = "DiffBanditSign" .. band .. suffix,
+          priority = 100,
+        })
+      else
+        pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, meta.right_index - 1, 0, {
+          sign_text = "  ",
+          sign_hl_group = "DiffBanditSign" .. band,
+          priority = 1,
+        })
+      end
+    end
+    ::continue::
   end
 end
 
@@ -467,7 +649,7 @@ local function render_connector_backgrounds(self, ctx)
   -- rows as their owner buffers.
   local ctx_hl = "DiffBanditConnectorContext"
 
-  for row = 0, ctx.connector_height - 1 do
+  for row = ctx.meta_min - 1, math.min(ctx.meta_max, ctx.connector_height) - 1 do
     vim.api.nvim_buf_add_highlight(self.connector_buf, self.ns, ctx_hl, row, 0, -1)
   end
 
@@ -495,7 +677,7 @@ local function render_connector_backgrounds(self, ctx)
   end
 
   for _, meta in ipairs(self.view.line_meta) do
-    if meta.left_index then
+    if meta.left_index and ctx.left_row_visible(meta.left_index) then
       local row = meta.left_index - 1
 
       local left_num_hl
@@ -512,9 +694,21 @@ local function render_connector_backgrounds(self, ctx)
       vim.api.nvim_buf_add_highlight(self.left_num_buf, self.linenum_ns, left_num_hl, row,
         self:left_number_text_start_col(), self:left_number_text_end_col())
       if meta.kind == "delete" then
-        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", row,
-          self:left_number_text_start_col(), self:left_number_text_end_col())
+        -- The wedge/spacer column stays clear on delete rows EXCEPT when the
+        -- row sits inside the chunk's solid overlap (an embedded delete row
+        -- of a merged change block whose band shares this screen row with
+        -- the right side): the band must run contiguously through it.
+        -- Everywhere else the wedge alone marks the transition and the
+        -- corridor carries route lines.
+        local solid = ctx.solid_change_number_left_indexes[meta.left_index]
+        local start_col = solid and 0 or self:left_number_text_start_col()
+        local end_col = solid and -1 or self:left_number_text_end_col()
+        vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", row, start_col, end_col)
       elseif ctx.change_number_left_indexes[meta.left_index] then
+        -- The wedge/spacer column carries the band only on solid rows (the
+        -- side-by-side overlap; wedges paint the transitions there). On
+        -- non-overlapping band rows the corridor shows the route line, so
+        -- the fill stops at the number text.
         local start_col = ctx.solid_change_number_left_indexes[meta.left_index] and 0 or self:left_number_text_start_col()
         local end_col = ctx.solid_change_number_left_indexes[meta.left_index] and -1 or self:left_number_text_end_col()
         vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorChange", row, start_col, end_col)
@@ -524,7 +718,7 @@ local function render_connector_backgrounds(self, ctx)
       end
     end
 
-    if meta.right_index then
+    if meta.right_index and ctx.right_row_visible(meta.right_index) then
       local row = meta.right_index - 1
 
       local is_delete_origin = meta.right_line and ctx.delete_origin_right_lines[meta.right_line] ~= nil
@@ -553,16 +747,22 @@ local function render_connector_backgrounds(self, ctx)
       vim.api.nvim_buf_add_highlight(self.right_num_buf, self.linenum_ns, right_num_hl, row,
         self:right_number_text_start_col(), self:right_number_text_end_col())
       if ctx.change_number_right_indexes[meta.right_index] then
-        -- Delete-origin rows inside a change band fill from the pane edge:
-        -- the underline spacer cell combines on top, so the band flows
-        -- through it instead of leaving a bare default cell in the corridor.
+        -- Solid rows (side-by-side overlap) fill from the pane edge so the
+        -- band flows through the wedge/spacer column; other band rows stop
+        -- at the number text and leave the corridor to the route line.
+        -- Delete-origin rows keep the full fill so the underline spacer
+        -- combines over the band instead of a bare cell.
         local full_fill = ctx.solid_change_number_right_indexes[meta.right_index] or is_delete_origin
         local start_col = full_fill and 0 or self:right_number_text_start_col()
         local end_col = full_fill and -1 or self:right_number_text_end_col()
         vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorChange", row, start_col, end_col)
       elseif meta.kind == "add" then
-        vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", row,
-          self:right_number_text_start_col(), self:right_number_text_end_col())
+        -- Mirror of the delete rule: embedded add rows inside the chunk's
+        -- solid overlap carry the band through the wedge/spacer column.
+        local solid = ctx.solid_change_number_right_indexes[meta.right_index]
+        local start_col = solid and 0 or self:right_number_text_start_col()
+        local end_col = solid and -1 or self:right_number_text_end_col()
+        vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", row, start_col, end_col)
       end
     end
   end
@@ -573,12 +773,16 @@ local function render_route_backgrounds(self, ctx)
   -- sidecar number panes; the connector core is reserved for routes.
   for _, p in ipairs(ctx.paths) do
     if p.kind == "add" and not p.embedded_in_change then
-      for right_index = p.target_start_index or p.display_start_row, p.target_end_index or p.display_end_row do
+      local first = math.max(p.target_start_index or p.display_start_row, ctx.right_row_min)
+      local last = math.min(p.target_end_index or p.display_end_row, ctx.right_row_max)
+      for right_index = first, last do
         vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", right_index - 1,
           self:right_number_text_start_col(), self:right_number_text_end_col())
       end
     elseif p.kind == "delete" then
-      for left_index = p.target_start_index or p.display_start_row, p.target_end_index or p.display_end_row do
+      local first = math.max(p.target_start_index or p.display_start_row, ctx.left_row_min)
+      local last = math.min(p.target_end_index or p.display_end_row, ctx.left_row_max)
+      for left_index = first, last do
         vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", left_index - 1,
           self:left_number_text_start_col(), self:left_number_text_end_col())
       end
@@ -601,13 +805,27 @@ local function render_intraline_spans(self, ctx)
   for meta_idx, meta in ipairs(self.view.line_meta) do
     local is_change = meta.kind == "change" and meta.left_index and meta.right_index
     local not_filler = not meta.filler_left and not meta.filler_right
-    if is_change and not_filler then
+    if is_change and not_filler and ctx.meta_visible(meta) then
       local left_line = self.left.lines and self.left.lines[meta.left_line] or nil
       local right_line = self.right.lines and self.right.lines[meta.right_line] or nil
       if left_line and right_line then
         local spans = self.changed_spans_cache[meta_idx]
         if not spans then
-          spans = diff_mod.changed_spans(left_line, right_line)
+          -- Smart-align hunks carry block-scoped emphasis spans computed by
+          -- the IntelliJ word engine (one matching per change block); rows
+          -- without them fall back to the per-row-pair comparison.
+          local hunk = meta.chunk and self.hunks and self.hunks[meta.chunk]
+          local inner = hunk and hunk.inner_spans
+          if inner then
+            spans = {
+              left = inner.left[meta.left_line] or {},
+              right_changes = inner.right[meta.right_line] or {},
+              add_start = inner.add_start[meta.right_line],
+              right_len = #right_line,
+            }
+          else
+            spans = diff_mod.changed_spans(left_line, right_line)
+          end
           self.changed_spans_cache[meta_idx] = spans
         end
         local row_l = meta.left_index - 1
@@ -709,7 +927,8 @@ local function render_intraline_spans(self, ctx)
           end
         end
       end
-    elseif meta.kind == "add" and meta.right_index and not meta.filler_right then
+    elseif meta.kind == "add" and meta.right_index and not meta.filler_right
+        and ctx.right_row_visible(meta.right_index) then
       local row_r = meta.right_index - 1
       local line_content = self.right.lines and self.right.lines[meta.right_line] or ""
       local line_len = #line_content
@@ -801,14 +1020,15 @@ end
 -- line-number rendering.
 local function render_origin_underlines(self, ctx)
   for _, meta in ipairs(self.view.line_meta) do
-    if meta.origin == "add" and not ctx.embedded_add_origin_left_indexes[meta.left_index] and meta.left_index then
+    if meta.origin == "add" and not ctx.embedded_add_origin_left_indexes[meta.left_index]
+        and ctx.left_row_visible(meta.left_index) then
       underline_origin_row(self, self.left_buf, self.left_win, meta.left_index - 1,
         "DiffBanditAddLeftSeparator", "combine", 100)
     end
   end
   for right_line_num in pairs(ctx.delete_origin_right_lines) do
     local origin_row = right_line_num - 1
-    if origin_row >= 0 and origin_row < #ctx.right_lines then
+    if origin_row >= 0 and origin_row < #ctx.right_lines and ctx.right_row_visible(right_line_num) then
       underline_origin_row(self, self.right_buf, self.right_win, origin_row,
         "DiffBanditDeleteRightSeparator", ctx.right_text_hl_mode, 150)
     end

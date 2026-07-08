@@ -389,7 +389,15 @@ local function build_paths(chunks, line_meta)
         while j + 1 <= chunk.display_end and line_meta[j + 1] and line_meta[j + 1].kind == k do
           j = j + 1
         end
+        local before = #paths
         push_segment(k, i, j)
+        -- Merged chunks (word-driven sub-blocks of one change block) are
+        -- one logical change region: every interior add/delete segment is
+        -- absorbed into the chunk's change band instead of routing standalone.
+        if chunk.merged and #paths > before then
+          paths[#paths].embedded_in_change = true
+          paths[#paths].embedded_merged = true
+        end
         i = j + 1
       else
         i = i + 1
@@ -447,27 +455,46 @@ local function build_paths(chunks, line_meta)
   -- add's origin row can be the PREVIOUS chunk's change row, and merging
   -- across would fuse two independently-stageable chunks into one band.
   for _, p in ipairs(paths) do
-    if p.kind == "add" and p.embedded_in_change and p.origin_left_index then
+    if (p.kind == "add" or p.kind == "delete") and p.embedded_in_change
+        and (p.embedded_merged or (p.kind == "add" and p.origin_left_index)) then
       local merged = false
       for _, candidate in ipairs(paths) do
-        if candidate.kind == "change"
-            and candidate.chunk == p.chunk
-            and candidate.start_left_index
-            and candidate.end_left_index
-            and p.origin_left_index >= candidate.start_left_index
-            and p.origin_left_index <= candidate.end_left_index then
-          candidate.mixed_add = true
-          candidate.end_right_index = math.max(candidate.end_right_index or 0, p.target_end_index or p.display_end_row or 0)
-          candidate.start_right_index = math.min(candidate.start_right_index or candidate.end_right_index, p.target_start_index or p.display_start_row)
-          candidate.display_start_row = math.min(candidate.display_start_row or candidate.start_left_index, candidate.start_right_index or p.display_start_row)
-          candidate.display_end_row = math.max(candidate.display_end_row or candidate.end_left_index, candidate.end_right_index or p.display_end_row)
-          candidate.block_display_start = candidate.display_start_row
-          candidate.block_display_end = candidate.display_end_row
-          merged = true
-          break
+        if candidate.kind == "change" and candidate.chunk == p.chunk then
+          -- Segments from merged chunks belong to their chunk's band by
+          -- construction; origin-anchored embedded adds additionally require
+          -- the origin row to sit inside the band.
+          local in_band = p.embedded_merged
+            or (candidate.start_left_index
+              and candidate.end_left_index
+              and p.origin_left_index >= candidate.start_left_index
+              and p.origin_left_index <= candidate.end_left_index)
+          if in_band then
+            if p.kind == "add" then
+              candidate.mixed_add = true
+              candidate.end_right_index = math.max(candidate.end_right_index or 0, p.target_end_index or p.display_end_row or 0)
+              candidate.start_right_index = math.min(candidate.start_right_index or candidate.end_right_index, p.target_start_index or p.display_start_row)
+            else
+              candidate.mixed_delete = true
+              candidate.end_left_index = math.max(candidate.end_left_index or 0, p.target_end_index or p.display_end_row or 0)
+              candidate.start_left_index = math.min(candidate.start_left_index or candidate.end_left_index, p.target_start_index or p.display_start_row)
+              candidate.start_row = candidate.start_left_index or candidate.start_row
+              candidate.end_row = candidate.end_left_index or candidate.end_row
+            end
+            if p.embedded_merged then
+              candidate.display_start_row = math.min(candidate.display_start_row or p.display_start_row, p.display_start_row)
+              candidate.display_end_row = math.max(candidate.display_end_row or p.display_end_row, p.display_end_row)
+            else
+              candidate.display_start_row = math.min(candidate.display_start_row or candidate.start_left_index, candidate.start_right_index or p.display_start_row)
+              candidate.display_end_row = math.max(candidate.display_end_row or candidate.end_left_index, candidate.end_right_index or p.display_end_row)
+            end
+            candidate.block_display_start = candidate.display_start_row
+            candidate.block_display_end = candidate.display_end_row
+            merged = true
+            break
+          end
         end
       end
-      -- No same-chunk change band absorbed this add: route it normally
+      -- No same-chunk change band absorbed this segment: route it normally
       -- instead of leaving it flagged, which would drop it entirely
       -- (add_basic_plan_route skips embedded paths).
       if not merged then
@@ -1657,7 +1684,28 @@ function M.plan_routes(paths, layout)
     end
   end
 
+  -- Optional wall-clock budget (layout.should_abort). When it trips, the
+  -- solver degrades exactly like the backtrack bound: lookahead is disabled,
+  -- the search stops, and unplaced routes are hidden with a recorded reason.
+  -- Renders must never hang on a pathological projection.
+  local planning_aborted = false
+  local function check_abort()
+    if planning_aborted then
+      return true
+    end
+    if layout.should_abort and layout.should_abort() then
+      planning_aborted = true
+      return true
+    end
+    return false
+  end
+
   local function remaining_routes_have_candidate(start_index)
+    if check_abort() then
+      -- Budget expired: skip the O(n^2) lookahead so the greedy pass can
+      -- still finish quickly with plain first-fit placement.
+      return true
+    end
     for check_index = start_index, #routes do
       local check_route = routes[check_index]
       local has_candidate = false
@@ -1720,7 +1768,7 @@ function M.plan_routes(paths, layout)
   local backtrack_limit = tonumber(layout.max_route_backtrack_steps) or 20000
   local function solve_route(index)
     backtrack_steps = backtrack_steps + 1
-    if backtrack_steps > backtrack_limit then
+    if backtrack_steps > backtrack_limit or check_abort() then
       return false
     end
     if index > #routes then
@@ -1756,7 +1804,7 @@ function M.plan_routes(paths, layout)
     success = solve_route(1)
   end
   if not success then
-    strategy = backtrack_steps > backtrack_limit and "bounded-hidden" or "greedy-hidden"
+    strategy = (backtrack_steps > backtrack_limit or planning_aborted) and "bounded-hidden" or "greedy-hidden"
     local _, unplaced_routes = solve_greedy()
     hidden_routes = hidden_routes or {}
     local unplaced_set = {}
@@ -1954,9 +2002,15 @@ function M.required_connector_core_width_for_paths(paths, minimum_width, max_wid
       viewport_topline = layout.viewport_topline,
       viewport_height = layout.viewport_height,
       max_visible_connector_routes = layout.max_visible_connector_routes,
+      should_abort = layout.should_abort,
     })
     if plan.success then
       return width, plan
+    end
+    -- Wall-clock budget expired: stop probing widths and ship the bounded
+    -- max-width plan below (hidden routes carry recorded reasons).
+    if layout.should_abort and layout.should_abort() then
+      break
     end
   end
   return max_width, M.plan_routes(paths, {
@@ -1964,6 +2018,7 @@ function M.required_connector_core_width_for_paths(paths, minimum_width, max_wid
     viewport_topline = layout.viewport_topline,
     viewport_height = layout.viewport_height,
     max_visible_connector_routes = layout.max_visible_connector_routes,
+    should_abort = layout.should_abort,
   })
 end
 
@@ -2545,9 +2600,11 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
     offscreen_origin_glyph = function(origin_row, _, visible_start_row)
       return visible_start_row < origin_row and "◢" or "◥"
     end,
-    -- Preserved asymmetry: adds hide the wedge when the origin scrolls
-    -- offscreen; deletes show it.
-    show_triangle_when_origin_hidden = false,
+    -- Visible targets always dock: like deletes, an add with an offscreen
+    -- origin still draws its target horizontal and wedge. (Historically
+    -- adds hid the wedge here, which left rails dangling one row short of
+    -- a visible target with no triangle.)
+    show_triangle_when_origin_hidden = true,
   }
 
   -- Delete targets are already connector rows; the origin projects over
@@ -2574,7 +2631,7 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
   for _, p in ipairs(paths) do
     if p.kind == "add" and not p.embedded_in_change then
       project_block_path(p, add_projection)
-    elseif p.kind == "delete" then
+    elseif p.kind == "delete" and not p.embedded_in_change then
       project_block_path(p, delete_projection)
     elseif p.kind == "change" then
       projected[#projected + 1] = project_change_path(p)
