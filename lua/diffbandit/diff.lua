@@ -1,6 +1,28 @@
 local text = require("diffbandit.text")
+local smart_align = require("diffbandit.smart_align")
+local word_diff = require("diffbandit.word_diff")
 
 local M = {}
+
+local function split_lines(body)
+  if body == "" then
+    return {}
+  end
+  local lines = vim.split(body, "\n", { plain = true })
+  if lines[#lines] == "" then
+    table.remove(lines)
+  end
+  return lines
+end
+
+local function classify(count_a, count_b)
+  if count_a == 0 and count_b > 0 then
+    return "add"
+  elseif count_b == 0 and count_a > 0 then
+    return "delete"
+  end
+  return "change"
+end
 
 function M.read_file(path)
   local ok, contents = pcall(vim.fn.readfile, path)
@@ -10,148 +32,189 @@ function M.read_file(path)
   return contents, text.to_text(contents)
 end
 
-function M.compute_hunks(left_text, right_text, opts)
-  local diff_opts = {
-    result_type = opts.result_type or "indices",
-    algorithm = opts.algorithm,
-    linematch = opts.linematch,
-    ignore_whitespace = opts.ignore_whitespace,
-  }
+-- Split one fragment side into per-line pieces. `range_s`/`range_e` are
+-- 0-based half-open char offsets into the newline-joined sub-block text;
+-- pieces come out as 1-based inclusive column spans per absolute line.
+local function fragment_line_pieces(range_s, range_e, lines, first_line)
+  local out = {}
+  local off = 0
+  for k = 1, #lines do
+    local line_len = #lines[k]
+    local line_s, line_e = off, off + line_len
+    if line_s > range_e then
+      break
+    end
+    local s = math.max(range_s, line_s)
+    local e = math.min(range_e, line_e)
+    if s < e then
+      out[#out + 1] = {
+        line = first_line + k - 1,
+        s = s - line_s + 1,
+        e = e - line_s,
+        at_eol = e == line_e,
+      }
+    end
+    off = line_e + 1
+  end
+  return out
+end
 
-  -- Top-level hunks use line diffs; word/char spans are computed later per line
+-- Row alignment and intra-line emphasis inside a smart-align change block.
+-- IntelliJ derives both from ONE word matching over the whole block
+-- (ByWordRt.compareAndSplit): the sub-block split gives the row pairing,
+-- and each sub-block's inner fragments give the emphasis spans — see
+-- word_diff.lua. Sub-blocks partition the block on both sides, so the
+-- aligned view stays fully covered.
+--
+-- Returns sub_hunks plus `inner_spans` keyed by absolute 1-based line
+-- numbers: `left`/`right` are emphasis span lists, `add_start` marks a pure
+-- insertion reaching the end of a right line (rendered as the green
+-- appended tail).
+local function block_sub_hunks(left_lines, right_lines, range)
+  local s1, e1, s2, e2 = range.start1, range.end1, range.start2, range.end2
+  local c1, c2 = e1 - s1, e2 - s2
+  if c1 == 0 or c2 == 0 then
+    return nil, nil
+  end
 
-  local ok, raw = pcall(vim.diff, left_text, right_text, diff_opts)
+  local t1 = table.concat(left_lines, "\n", s1 + 1, e1)
+  local t2 = table.concat(right_lines, "\n", s2 + 1, e2)
+  local ok, sub_blocks = pcall(word_diff.compare_and_split, t1, t2, c1, c2)
   if not ok then
-    return {}, string.format("diff failed: %s", raw)
+    return nil, nil
+  end
+
+  local spans = { left = {}, right = {}, add_start = {} }
+  local subs = {}
+  for _, sb in ipairs(sub_blocks) do
+    local r = sb.lines
+    local sc1, sc2 = r.e1 - r.s1, r.e2 - r.s2
+    subs[#subs + 1] = {
+      type = classify(sc1, sc2),
+      left = { start = sc1 > 0 and (s1 + r.s1 + 1) or (s1 + r.s1), count = sc1 },
+      right = { start = sc2 > 0 and (s2 + r.s2 + 1) or (s2 + r.s2), count = sc2 },
+    }
+
+    local sub_left, sub_right = {}, {}
+    for k = r.s1, r.e1 - 1 do
+      sub_left[#sub_left + 1] = left_lines[s1 + k + 1]
+    end
+    for k = r.s2, r.e2 - 1 do
+      sub_right[#sub_right + 1] = right_lines[s2 + k + 1]
+    end
+    for _, f in ipairs(sb.fragments) do
+      for _, p in ipairs(fragment_line_pieces(f.start1, f.end1, sub_left, s1 + r.s1 + 1)) do
+        spans.left[p.line] = spans.left[p.line] or {}
+        table.insert(spans.left[p.line], { p.s, p.e })
+      end
+      local is_insertion = f.start1 == f.end1
+      for _, p in ipairs(fragment_line_pieces(f.start2, f.end2, sub_right, s2 + r.s2 + 1)) do
+        if is_insertion and p.at_eol then
+          local prev = spans.add_start[p.line]
+          spans.add_start[p.line] = prev and math.min(prev, p.s) or p.s
+        else
+          spans.right[p.line] = spans.right[p.line] or {}
+          table.insert(spans.right[p.line], { p.s, p.e })
+        end
+      end
+    end
+  end
+
+  if #subs <= 1 then
+    return nil, spans
+  end
+  return subs, spans
+end
+
+local function compute_hunks_smart(left_text, right_text, opts)
+  local left_lines = split_lines(left_text)
+  local right_lines = split_lines(right_text)
+
+  local ok, ranges = pcall(smart_align.compare_lines, left_lines, right_lines, opts)
+  if not ok then
+    return {}, string.format("diff failed: %s", ranges)
   end
 
   local hunks = {}
-  for idx, h in ipairs(raw or {}) do
-    local start_a, count_a, start_b, count_b = h[1], h[2], h[3], h[4]
-    local htype
-    if count_a == 0 and count_b > 0 then
-      htype = "add"
-    elseif count_b == 0 and count_a > 0 then
-      htype = "delete"
-    else
-      htype = "change"
-    end
-
-    hunks[#hunks + 1] = {
-      index = idx,
-      type = htype,
-      left = {
-        start = start_a,
-        count = count_a,
-      },
-      right = {
-        start = start_b,
-        count = count_b,
-      },
+  for _, r in ipairs(ranges) do
+    local c1, c2 = r.end1 - r.start1, r.end2 - r.start2
+    local h = {
+      index = #hunks + 1,
+      type = classify(c1, c2),
+      left = { start = c1 > 0 and r.start1 + 1 or r.start1, count = c1 },
+      right = { start = c2 > 0 and r.start2 + 1 or r.start2, count = c2 },
     }
+    local subs, inner_spans = block_sub_hunks(left_lines, right_lines, r)
+    if subs then
+      h.sub_hunks = subs
+      h.merged = true
+    end
+    h.inner_spans = inner_spans
+    hunks[#hunks + 1] = h
   end
-
   return hunks, nil
 end
 
--- Compute char/word spans for a pair of lines; returns list of {s, e} (1-indexed, inclusive)
+function M.compute_hunks(left_text, right_text, opts)
+  return compute_hunks_smart(left_text, right_text, opts or {})
+end
+
+-- Compute intra-line emphasis spans for a pair of lines; returns lists of
+-- {s, e} (1-indexed, inclusive). Spans come from the IntelliJ word engine
+-- (word_diff.inner_fragments — word matching, punctuation adjustment,
+-- whitespace-edge trimming). A pure insertion at the end of the right line
+-- is reported as `add_start` (rendered as an appended green tail); all other
+-- difference ranges become emphasis spans.
 function M.changed_spans(left_line, right_line)
+  local right_len = #right_line
   if left_line == right_line then
     return {
       left = {},
       right_changes = {},
       prefix_len = 0,
-      right_len = #right_line,
+      right_len = right_len,
       change_end = 0,
       add_start = nil,
     }
   end
 
-  local left_len = #left_line
-  local right_len = #right_line
-
   local prefix = 0
-  local max_prefix = math.min(left_len, right_len)
-  while prefix < max_prefix do
-    local l_char = left_line:sub(prefix + 1, prefix + 1)
-    local r_char = right_line:sub(prefix + 1, prefix + 1)
-    if l_char ~= r_char then
-      break
-    end
+  local max_prefix = math.min(#left_line, right_len)
+  while prefix < max_prefix and left_line:byte(prefix + 1) == right_line:byte(prefix + 1) do
     prefix = prefix + 1
   end
 
-  local suffix = 0
-  local max_suffix = math.min(left_len - prefix, right_len - prefix)
-  while suffix < max_suffix do
-    local l_char = left_line:sub(left_len - suffix, left_len - suffix)
-    local r_char = right_line:sub(right_len - suffix, right_len - suffix)
-    if l_char ~= r_char then
-      break
-    end
-    suffix = suffix + 1
-  end
+  local spans_left, right_changes = {}, {}
+  local add_start = nil
 
-  local left_mid_len = math.max(0, left_len - prefix - suffix)
-  local right_mid_len = math.max(0, right_len - prefix - suffix)
-
-  local spans_left = {}
-  local spans_right_changes = {}
-
-  local change_len = math.min(left_mid_len, right_mid_len)
-  local addition_len = math.max(0, right_mid_len - change_len)
-
-  local left_span_start = prefix + 1
-  local right_change_start = prefix + 1
-  local right_add_start = right_change_start + change_len
-
-  local function is_word_char(char)
-    return char ~= nil and char:match("[%w_]") ~= nil
-  end
-
-  if left_mid_len > 0 and addition_len > 0 then
-    local before_add = right_line:sub(right_add_start - 1, right_add_start - 1)
-    local at_add = right_line:sub(right_add_start, right_add_start)
-    if is_word_char(before_add) and is_word_char(at_add) then
-      change_len = right_mid_len
-      addition_len = 0
-      right_add_start = right_change_start + change_len
-    end
-  end
-
-  local shared_change_suffix = 0
-  if change_len > 0 and addition_len > 0 then
-    while shared_change_suffix < change_len do
-      local left_pos = left_span_start + left_mid_len - shared_change_suffix - 1
-      local right_pos = right_change_start + change_len - shared_change_suffix - 1
-      if left_line:sub(left_pos, left_pos) ~= right_line:sub(right_pos, right_pos) then
-        break
+  local ok, fragments = pcall(word_diff.inner_fragments, left_line, right_line)
+  if ok then
+    for i, f in ipairs(fragments) do
+      if f.end1 > f.start1 then
+        spans_left[#spans_left + 1] = { f.start1 + 1, f.end1 }
       end
-      shared_change_suffix = shared_change_suffix + 1
+      if f.end2 > f.start2 then
+        if i == #fragments and f.start1 == f.end1 and f.end2 == right_len then
+          add_start = f.start2 + 1
+        else
+          right_changes[#right_changes + 1] = { f.start2 + 1, f.end2 }
+        end
+      end
     end
   end
 
-  local left_emphasis_len = math.max(0, left_mid_len - shared_change_suffix)
-  local right_emphasis_len = math.max(0, change_len - shared_change_suffix)
-
-  if left_emphasis_len > 0 then
-    table.insert(spans_left, { left_span_start, left_span_start + left_emphasis_len - 1 })
+  local change_end = prefix
+  if #right_changes > 0 then
+    change_end = right_changes[#right_changes][2]
   end
-
-  if right_emphasis_len > 0 then
-    table.insert(spans_right_changes, { right_change_start, right_change_start + right_emphasis_len - 1 })
-  end
-
-  local has_change = change_len > 0
-  local has_addition = addition_len > 0
 
   return {
     left = spans_left,
-    right_changes = spans_right_changes,
+    right_changes = right_changes,
     prefix_len = prefix,
     right_len = right_len,
-    change_end = has_change and (right_change_start + change_len - 1) or prefix,
-    add_start = has_addition and right_add_start or nil,
+    change_end = change_end,
+    add_start = add_start,
   }
 end
 

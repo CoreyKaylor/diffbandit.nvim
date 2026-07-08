@@ -2,16 +2,17 @@ local M = {}
 
 local defaults = {
   diff = {
-    algorithm = "myers",
-    linematch = 60,
     ignore_whitespace = false,
-    result_type = "indices",
   },
   ui = {
     connector_width = 3,
     connector_max_width = 24,
     right_number_padding = 2,
     scroll_debounce_ms = 16,
+    -- Wall-clock budget for the connector rail solver per repaint; on expiry
+    -- it degrades to the bounded plan (routes hidden with recorded reasons)
+    -- instead of hanging on pathological dense projections. 0 disables.
+    route_plan_budget_ms = 25,
     split_blend = 0.3,
     status = {
       enabled = true,

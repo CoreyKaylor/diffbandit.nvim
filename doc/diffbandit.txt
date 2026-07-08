@@ -366,8 +366,6 @@ Common configuration:
 >
   require("diffbandit").setup({
     diff = {
-      algorithm = "myers",
-      linematch = 60,
       ignore_whitespace = false,
     },
     navigation = {

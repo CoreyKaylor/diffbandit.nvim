@@ -378,9 +378,7 @@ Example with common customizations:
 ```lua
 require("diffbandit").setup({
   diff = {
-    algorithm = "myers",
-    linematch = 60,
-    ignore_whitespace = false,
+      ignore_whitespace = false,
   },
   navigation = {
     initial_focus = "right",
@@ -512,6 +510,18 @@ require("diffbandit").setup({
 Theme colors are derived from the active colorscheme's diff highlight groups.
 Use `ui.theme.colors` for semantic color overrides, or `ui.theme.highlights` to
 override specific `DiffBandit*` highlight groups.
+
+### Diff matching
+
+Change blocks are computed by a Lua port of the diff engine behind IntelliJ
+IDEA's viewer (Apache 2.0, from `intellij-community`): whitespace-agnostic
+primary matching that ignores "unimportant" lines (braces, blanks) so they
+cannot drag the alignment, boundary sliding toward empty lines, exact
+re-alignment of whitespace-equal lines, and word-driven sub-block splitting
+and intra-line emphasis. Block boundaries match IntelliJ's output exactly
+(verified against the real engine on a large corpus).
+`diff.ignore_whitespace = true` selects the whitespace-ignoring comparison
+policy (whitespace-only changes disappear from the diff).
 
 ## Lua API
 

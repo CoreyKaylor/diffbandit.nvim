@@ -87,6 +87,7 @@ function M.build(left_lines, right_lines, hunks, config)
     local chunk = {
       index = h.index,
       type = h.type,
+      merged = h.merged,
       display_start = #line_meta + 1,
       left = {
         start = h.left.start,
@@ -98,61 +99,74 @@ function M.build(left_lines, right_lines, hunks, config)
       },
     }
 
-    local max_lines = math.max(h.left.count, h.right.count)
-    if max_lines == 0 then
-      max_lines = 1
+    -- Emit the aligned rows for one block (a whole hunk, or one word-driven
+    -- sub-hunk of a merged hunk). All rows carry the owning hunk's index so
+    -- the merged hunk stays a single chunk.
+    local function emit_block(block)
+      local max_lines = math.max(block.left.count, block.right.count)
+      if max_lines == 0 then
+        max_lines = 1
+      end
+
+      local left_line_idx = block.left.start
+      local right_line_idx = block.right.start
+
+      for i = 1, max_lines do
+        local left_text
+        local right_text
+        local left_line_num
+        local right_line_num
+        local filler_left = true
+        local filler_right = true
+
+        if i <= block.left.count then
+          left_text = left_lines[left_line_idx] or ""
+          left_line_num = left_line_idx
+          left_line_idx = left_line_idx + 1
+          filler_left = false
+        else
+          left_text = ""
+        end
+
+        if i <= block.right.count then
+          right_text = right_lines[right_line_idx] or ""
+          right_line_num = right_line_idx
+          right_line_idx = right_line_idx + 1
+          filler_right = false
+        else
+          right_text = ""
+        end
+
+        -- Reclassify extra rows inside change hunks as add/delete so
+        -- right-only rows get proper green backgrounds and left-only rows get delete.
+        local kind = block.type
+        if block.type == "change" then
+          if i > block.left.count and i <= block.right.count then
+            kind = "add"
+          elseif i > block.right.count and i <= block.left.count then
+            kind = "delete"
+          end
+        end
+
+        -- Keep change classification at the line level; intra-line coloring decides blue/green mix.
+        -- Connector glyphs are rendered from route paths in session.lua.
+        add_line(left_text, right_text, {
+          kind = kind,
+          chunk = h.index,
+          left_line = left_line_num,
+          right_line = right_line_num,
+          filler_left = filler_left,
+          filler_right = filler_right,
+        })
+      end
     end
 
-    local left_line_idx = h.left.start
-    local right_line_idx = h.right.start
-
-    for i = 1, max_lines do
-      local left_text
-      local right_text
-      local left_line_num
-      local right_line_num
-      local filler_left = true
-      local filler_right = true
-
-      if i <= h.left.count then
-        left_text = left_lines[left_line_idx] or ""
-        left_line_num = left_line_idx
-        left_line_idx = left_line_idx + 1
-        filler_left = false
-      else
-        left_text = ""
+    if h.sub_hunks then
+      for _, sub in ipairs(h.sub_hunks) do
+        emit_block(sub)
       end
-
-      if i <= h.right.count then
-        right_text = right_lines[right_line_idx] or ""
-        right_line_num = right_line_idx
-        right_line_idx = right_line_idx + 1
-        filler_right = false
-      else
-        right_text = ""
-      end
-
-      -- Reclassify extra rows inside change hunks as add/delete so
-      -- right-only rows get proper green backgrounds and left-only rows get delete.
-      local kind = h.type
-      if h.type == "change" then
-        if i > h.left.count and i <= h.right.count then
-          kind = "add"
-        elseif i > h.right.count and i <= h.left.count then
-          kind = "delete"
-        end
-      end
-
-      -- Keep change classification at the line level; intra-line coloring decides blue/green mix.
-      -- Connector glyphs are rendered from route paths in session.lua.
-      add_line(left_text, right_text, {
-        kind = kind,
-        chunk = h.index,
-        left_line = left_line_num,
-        right_line = right_line_num,
-        filler_left = filler_left,
-        filler_right = filler_right,
-      })
+    else
+      emit_block(h)
     end
 
     chunk.display_end = #line_meta
