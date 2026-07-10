@@ -469,10 +469,11 @@ require("diffbandit").setup({
     },
   },
   ui = {
-    -- Minimum connector core width. DiffBandit chooses a static
-    -- document width up front and keeps it fixed while routes move.
-    connector_width = 3,
-    connector_max_width = 24,
+    -- Connector core width. Defaults fix the gutter at 9 columns
+    -- (min == max). Raise connector_max_width to allow once-per-document
+    -- pressure expansion; set both equal for a different fixed width.
+    connector_width = 9,
+    connector_max_width = 9,
     scroll_debounce_ms = 16,
     split_blend = 0.3,
     overview = {

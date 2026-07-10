@@ -5,8 +5,10 @@ local defaults = {
     ignore_whitespace = false,
   },
   ui = {
-    connector_width = 3,
-    connector_max_width = 24,
+    -- Fixed core by default: min == max. Raise connector_max_width to allow
+    -- once-per-document pressure expansion (legacy behaviour).
+    connector_width = 9,
+    connector_max_width = 9,
     right_number_padding = 2,
     scroll_debounce_ms = 16,
     -- Full re-diff after editable right-pane edits (separate from scroll).
