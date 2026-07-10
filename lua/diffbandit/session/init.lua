@@ -140,13 +140,27 @@ function Session.start(sources, config, opts)
       if not self.disposed then
         local chunk = self.view.chunks[self.current_chunk]
         if chunk then
-          -- Same align-first / clipped-paint sequence as goto_chunk: the
-          -- top-of-file clip from open does not cover a distant first hunk.
-          self:align_chunk_viewports(chunk)
+          -- Mirror goto_chunk's clip-bounded active paint, but only scroll
+          -- when the first hunk is outside the initial top-of-file viewport.
+          -- Near-top diffs (and the integration visual contracts) keep
+          -- document start; distant first hunks still jump so the clip
+          -- covers the overlay.
+          local clip = self.last_render_clip or self.last_paint_clip
+          local in_open_viewport = false
+          if clip and clip.meta_min and clip.meta_max then
+            in_open_viewport = chunk.display_end >= clip.meta_min
+              and chunk.display_start <= clip.meta_max
+          end
+          if not in_open_viewport then
+            self:align_chunk_viewports(chunk)
+            clip = self.last_render_clip or self.last_paint_clip
+          end
           self:highlight_active_chunk(chunk, {
-            clip = self.last_render_clip or self.last_paint_clip,
-            position_cursor = false,
-            sync_gutters = false,
+            clip = clip,
+            -- Align already placed cursors/gutters; otherwise match the
+            -- pre-scroll open path (cursor on hunk, toplines unchanged).
+            position_cursor = in_open_viewport,
+            sync_gutters = in_open_viewport,
             render_chrome = true,
           })
         end

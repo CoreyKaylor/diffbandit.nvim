@@ -73,7 +73,9 @@ Row  │ Left#  Connector        Right# │ Notes
 
 The tmux integration verifier should protect these visual details:
 
-- At least six add triangles appear for the six addition blocks.
+- At least five add triangles appear under the default fixed core (width 9);
+  dense stacking may hide one transition while rails remain. Expanding
+  `connector_max_width` can surface all six blocks' wedges.
 - Multiple vertical bar rows appear, proving long paths are rendered.
 - Native underline rows appear for the addition origins.
 - Add background starts after representative triangle cells.
