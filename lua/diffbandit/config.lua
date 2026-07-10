@@ -9,10 +9,21 @@ local defaults = {
     connector_max_width = 24,
     right_number_padding = 2,
     scroll_debounce_ms = 16,
+    -- Full re-diff after editable right-pane edits (separate from scroll).
+    edit_refresh_debounce_ms = 150,
     -- Wall-clock budget for the connector rail solver per repaint; on expiry
     -- it degrades to the bounded plan (routes hidden with recorded reasons)
     -- instead of hanging on pathological dense projections. 0 disables.
+    -- One shared deadline covers the initial plan plus width retries.
     route_plan_budget_ms = 25,
+    -- Optional render stage timing (also enabled by DIFFBANDIT_PERF=1).
+    -- When log is true (or env set), paints slower than budget_warn_ms are
+    -- reported via vim.notify; values live on session._last_render_perf.
+    perf = {
+      enabled = false,
+      log = false,
+      budget_warn_ms = 8,
+    },
     split_blend = 0.3,
     status = {
       enabled = true,
@@ -23,6 +34,8 @@ local defaults = {
       enabled = true,
       width = 1,
       cursor = true,
+      -- CursorMoved overview repaint (marks already cached; cursor glyph moves).
+      debounce_ms = 32,
     },
     hex = {
       enabled = true,

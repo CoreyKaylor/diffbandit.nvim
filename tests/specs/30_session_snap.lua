@@ -357,3 +357,39 @@ do
   vim.o.columns = original_columns
 end
 
+-- Suite 16d: viewport repaints reuse number/connector buffer text (document
+-- model); only content/metrics changes rewrite those buffers.
+do
+  local left_lines, right_lines = {}, {}
+  for i = 1, 40 do
+    left_lines[i] = "L" .. i
+    right_lines[i] = (i == 10 or i == 20) and ("R" .. i .. " changed") or ("L" .. i)
+  end
+  local session = assert((Session.start({
+    left = source_mod.from_lines(left_lines, nil, "left"),
+    right = source_mod.from_lines(right_lines, nil, "right"),
+  }, config)))
+  assert(session.structural_buffer_key, "first render should set a structural buffer key")
+
+  local num_tick = vim.api.nvim_buf_get_changedtick(session.left_num_buf)
+  local conn_tick = vim.api.nvim_buf_get_changedtick(session.connector_buf)
+  local struct_key = session.structural_buffer_key
+
+  session:set_viewport_toplines(5, 5)
+  assert_eq(session.structural_buffer_key, struct_key,
+    "scroll should keep the same structural buffer key")
+  assert_eq(vim.api.nvim_buf_get_changedtick(session.left_num_buf), num_tick,
+    "scroll should not rewrite left number buffer text")
+  assert_eq(vim.api.nvim_buf_get_changedtick(session.connector_buf), conn_tick,
+    "scroll should not rewrite connector buffer text")
+
+  session:invalidate_render_caches()
+  session:render()
+  assert_eq(vim.api.nvim_buf_get_changedtick(session.left_num_buf) > num_tick, true,
+    "invalidate + render should rewrite number buffer text")
+  assert_eq(vim.api.nvim_buf_get_changedtick(session.connector_buf) > conn_tick, true,
+    "invalidate + render should rewrite connector buffer text")
+
+  session:close()
+end
+

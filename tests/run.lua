@@ -38,6 +38,7 @@ local specs = {
   "10_connector.lua",
   "20_git_merge.lua",
   "30_session_snap.lua",
+  "35_render_recovery.lua",
   "40_oracle.lua",
 }
 

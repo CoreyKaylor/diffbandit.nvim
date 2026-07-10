@@ -8,6 +8,7 @@ local document = require("diffbandit.util.document")
 local pair_renderer = require("diffbandit.merge.pair_renderer")
 local panel_mod = require("diffbandit.panel")
 local queue_host = require("diffbandit.host.queue")
+local render_host = require("diffbandit.session.render_host")
 local source_mod = require("diffbandit.util.source")
 local state = require("diffbandit.state")
 local text = require("diffbandit.util.text")
@@ -1217,10 +1218,24 @@ function Merge:render(opts)
   end
   self:configure_windows()
 
+  -- Pair construction already cleared the host latch (merge_host assigned
+  -- before invalidate). Belt-and-suspenders for any residual timer gen.
+  render_host.clear_idle_recovery_state(self)
+
+  -- One shared remaining-ms bag for both pair *solves* (not one full budget
+  -- each). Mint is lazy at first solver consumption; release after each plan
+  -- phase freezes leftover ms so paint between pairs does not drain the
+  -- sibling. Stamp the same bag before each render.
+  local shared_budget = ui.route_plan_budget_share(
+    config_mod.section(self.config, "ui").route_plan_budget_ms)
   if result_remote then
+    result_remote.route_plan_deadline = shared_budget
+    result_remote.merge_host = self
     result_remote:render()
   end
   if local_result then
+    local_result.route_plan_deadline = shared_budget
+    local_result.merge_host = self
     local_result:render()
   end
   pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = self.result_buf })
@@ -1463,11 +1478,21 @@ function Merge:set_viewports(local_topline, result_topline, remote_topline)
   set_win_view_topline(self.result_remote_connector_win, remote_topline)
 end
 
-function Merge:rerender_pair_viewports()
+function Merge:rerender_pair_viewports(opts)
+  opts = opts or {}
+  local budget_ms = config_mod.section(self.config, "ui").route_plan_budget_ms
+  -- Idle recovery widens to 2× (min 50ms) but still one shared bag across
+  -- pairs — two independent bags would stack ~100ms of synchronous stall.
+  local share_ms = opts.recovery and ui.route_plan_recovery_budget_ms(budget_ms) or budget_ms
+  local shared_budget = ui.route_plan_budget_share(share_ms)
   if self.result_remote_session then
+    self.result_remote_session.route_plan_deadline = shared_budget
+    self.result_remote_session.merge_host = self
     self.result_remote_session:rerender_for_viewport()
   end
   if self.local_result_session then
+    self.local_result_session.route_plan_deadline = shared_budget
+    self.local_result_session.merge_host = self
     self.local_result_session:rerender_for_viewport()
   end
   pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = self.result_buf })

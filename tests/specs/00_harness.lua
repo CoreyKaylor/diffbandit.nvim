@@ -168,9 +168,10 @@ do
     "Editable right-side window should allow diagnostic signs")
   vim.api.nvim_buf_set_lines(session.right_buf, 0, -1, false, { "right edited" })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = session.right_buf })
-  vim.wait(100, function()
+  -- edit_refresh_debounce_ms defaults to 150ms; wait past that.
+  vim.wait(400, function()
     return session.right.text == "right edited\n"
-  end, 5)
+  end, 10)
   assert_eq(session.right.text, "right edited\n",
     "Editing the reusable right buffer should refresh the diff source text")
   vim.api.nvim_set_current_win(session.right_win)
@@ -178,9 +179,6 @@ do
   assert_eq(type(undo_callback), "function",
     "Editable right-side buffer should have a callable undo mapping")
   undo_callback()
-  vim.wait(100, function()
-    return session.right.text == "right original\n"
-  end, 5)
   assert_eq(vim.api.nvim_buf_get_lines(session.right_buf, 0, -1, false)[1], "right original",
     "Undo in an editable right-side buffer should use native buffer undo")
   assert_eq(session.right.text, "right original\n",
@@ -188,9 +186,9 @@ do
   vim.api.nvim_win_set_cursor(session.right_win, { 1, #"right" })
   vim.api.nvim_buf_set_lines(session.right_buf, 0, -1, false, { "right original plus" })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = session.right_buf })
-  vim.wait(100, function()
+  vim.wait(400, function()
     return session.right.text == "right original plus\n"
-  end, 5)
+  end, 10)
   assert_eq(vim.api.nvim_win_get_cursor(session.right_win)[2], #"right",
     "Editable right-side refresh should preserve the cursor column")
   pcall(vim.api.nvim_set_option_value, "modified", false, { buf = right_buf })

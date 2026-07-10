@@ -1701,17 +1701,48 @@ function M.plan_routes(paths, layout)
     return false
   end
 
+  -- Memoize segment builds and preferred columns per route for this solve
+  -- only (greedy lookahead / backtrack re-request many times). Solve-local
+  -- so cached plans do not retain the memo tables.
+  local segments_memo = {}
+  local function segments_for(route, col)
+    local cache = segments_memo[route]
+    if not cache then
+      cache = {}
+      segments_memo[route] = cache
+    end
+    local segments = cache[col]
+    if not segments then
+      segments = build_route_segments(route, col, connector_core_width)
+      cache[col] = segments
+    end
+    return segments
+  end
+
+  local preferred_cols_memo = {}
+  local function preferred_cols(route)
+    local cols = preferred_cols_memo[route]
+    if not cols then
+      cols = route_preferred_columns(route, connector_core_width)
+      preferred_cols_memo[route] = cols
+    end
+    return cols
+  end
+
+  -- O(n²) lookahead is only worth it when several routes compete; small sets
+  -- and budget pressure use plain first-fit.
+  local skip_lookahead = #routes <= 3
+
   local function remaining_routes_have_candidate(start_index)
-    if check_abort() then
-      -- Budget expired: skip the O(n^2) lookahead so the greedy pass can
-      -- still finish quickly with plain first-fit placement.
+    if skip_lookahead or check_abort() then
+      -- Budget expired or lookahead disabled: greedy first-fit only.
       return true
     end
     for check_index = start_index, #routes do
       local check_route = routes[check_index]
       local has_candidate = false
-      for _, check_col in ipairs(route_preferred_columns(check_route, connector_core_width)) do
-        local check_segments = build_route_segments(check_route, check_col, connector_core_width)
+      for _, check_col in ipairs(preferred_cols(check_route)) do
+        local check_segments = segments_for(check_route, check_col)
         if not route_collides(check_segments, occupied, check_route) then
           has_candidate = true
           break
@@ -1730,8 +1761,8 @@ function M.plan_routes(paths, layout)
     local unplaced = {}
     for route_index, route in ipairs(routes) do
       local placed = false
-      for _, col in ipairs(route_preferred_columns(route, connector_core_width)) do
-        local segments = build_route_segments(route, col, connector_core_width)
+      for _, col in ipairs(preferred_cols(route)) do
+        local segments = segments_for(route, col)
         if not route_collides(segments, occupied, route) then
           local marks = {}
           reserve_route_segments(segments, occupied, route, marks)
@@ -1747,8 +1778,8 @@ function M.plan_routes(paths, layout)
         end
       end
       if not placed then
-        for _, col in ipairs(route_preferred_columns(route, connector_core_width)) do
-          local segments = build_route_segments(route, col, connector_core_width)
+        for _, col in ipairs(preferred_cols(route)) do
+          local segments = segments_for(route, col)
           if not route_collides(segments, occupied, route) then
             route.rail_col = col
             route.segments = segments
@@ -1777,8 +1808,8 @@ function M.plan_routes(paths, layout)
     end
 
     local route = routes[index]
-    for _, col in ipairs(route_preferred_columns(route, connector_core_width)) do
-      local segments = build_route_segments(route, col, connector_core_width)
+    for _, col in ipairs(preferred_cols(route)) do
+      local segments = segments_for(route, col)
       if not route_collides(segments, occupied, route) then
         local marks = {}
         reserve_route_segments(segments, occupied, route, marks)
@@ -1854,15 +1885,68 @@ function M.plan_routes(paths, layout)
     hidden_summary[reason] = (hidden_summary[reason] or 0) + 1
   end
 
+  -- aborted only when the wall-clock abort actually left the solve incomplete
+  -- (routes hidden/unplaced). A deadline trip mid-lookahead that still places
+  -- every route is a complete plan and must not latch aborted.
+  local aborted = planning_aborted and not success
+
   return {
     routes = routes,
     hidden_routes = hidden_routes or {},
     success = success,
     strategy = strategy,
+    -- True when wall-clock should_abort caused incomplete placement (not
+    -- merely backtrack-capped, and not a successful place-after-abort).
+    -- Live paint must not cache aborted plans — they hide routes under time
+    -- pressure and would otherwise replay forever at that viewport.
+    aborted = aborted,
     max_used_col = max_used_col,
     occupied = occupied,
     hidden_summary = hidden_summary,
   }
+end
+
+-- Re-apply a plan's hide + planned_* fields onto the shared path objects.
+-- plan_routes mutates paths in place; multi-plan cascades (near-width / width
+-- search) may keep an earlier plan while a discarded solve left its flags on
+-- the paths. Call after the final plan is selected so paint matches segments.
+function M.apply_plan_path_state(paths, plan)
+  for _, path in ipairs(paths or {}) do
+    path.planned_routes = nil
+    path.planned_segments = nil
+    path.planned_rail_col = nil
+    path.overflow_hidden = nil
+    path.hide_reason = nil
+    for _, link in ipairs(path.viewport_change_links or {}) do
+      link.overflow_hidden = nil
+      link.hide_reason = nil
+      link.planned_rail_col = nil
+      link.planned_segments = nil
+    end
+  end
+
+  for _, route in ipairs((plan and plan.routes) or {}) do
+    local path = route.path
+    if path then
+      path.planned_routes = path.planned_routes or {}
+      path.planned_routes[#path.planned_routes + 1] = route
+      path.planned_segments = path.planned_segments or {}
+      for _, segment in ipairs(route.segments or {}) do
+        path.planned_segments[#path.planned_segments + 1] = segment
+      end
+      path.planned_rail_col = path.planned_rail_col or route.rail_col
+      if route.link then
+        route.link.planned_rail_col = route.rail_col
+        route.link.planned_segments = route.segments
+        route.link.overflow_hidden = nil
+        route.link.hide_reason = nil
+      end
+    end
+  end
+
+  for _, route in ipairs((plan and plan.hidden_routes) or {}) do
+    hide_route(route, route.hide_reason or "unknown")
+  end
 end
 
 
@@ -1870,14 +1954,23 @@ function M.required_connector_core_width_for_paths(paths, minimum_width, max_wid
   minimum_width = math.max(1, minimum_width or 1)
   max_width = math.max(minimum_width, max_width or 60)
   layout = layout or {}
-  for width = minimum_width, max_width do
-    local plan = M.plan_routes(paths, {
+  local function plan_at(width)
+    -- Width search owns its own step cap here (not layout.max_route_backtrack_steps
+    -- from the live 500-cap core solve). When no wall-clock deadline exists
+    -- (route_plan_budget_ms = 0), the cap alone bounds the UI-thread work.
+    local WIDTH_SEARCH_BACKTRACK = 20000
+    return M.plan_routes(paths, {
       connector_core_width = width,
       viewport_topline = layout.viewport_topline,
       viewport_height = layout.viewport_height,
       max_visible_connector_routes = layout.max_visible_connector_routes,
+      active_chunk_index = layout.active_chunk_index,
       should_abort = layout.should_abort,
+      max_route_backtrack_steps = WIDTH_SEARCH_BACKTRACK,
     })
+  end
+  for width = minimum_width, max_width do
+    local plan = plan_at(width)
     if plan.success then
       return width, plan
     end
@@ -1887,13 +1980,7 @@ function M.required_connector_core_width_for_paths(paths, minimum_width, max_wid
       break
     end
   end
-  return max_width, M.plan_routes(paths, {
-    connector_core_width = max_width,
-    viewport_topline = layout.viewport_topline,
-    viewport_height = layout.viewport_height,
-    max_visible_connector_routes = layout.max_visible_connector_routes,
-    should_abort = layout.should_abort,
-  })
+  return max_width, plan_at(max_width)
 end
 
 -- ===========================================================================
@@ -2311,6 +2398,9 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
       return q
     end
 
+    -- Strict window bounds drive solid corridor, edges, and links together so
+    -- solid rows always have matching wedge transitions (pad-extended solid
+    -- without wedges violated documented band semantics).
     local left_visible_start = math.max(path.start_left_index, left_topline)
     local left_visible_end = math.min(path.end_left_index, left_topline + left_height - 1)
     local right_visible_index_start = math.max(path.start_right_index, right_topline)
@@ -2335,7 +2425,6 @@ function M.project_for_toplines(paths, left_topline, right_topline, left_height,
       if overlap_start <= overlap_end then
         q.viewport_solid_start = overlap_start
         q.viewport_solid_end = overlap_end
-
         if rs < overlap_start then
           local edge_row = overlap_start - 1
           add_change_edge(q.viewport_change_edges, "right", edge_row, overlap_start)

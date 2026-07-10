@@ -808,9 +808,9 @@ if vim.fn.executable("git") == 1 then
     vim.api.nvim_set_current_win(session.right_win)
     vim.api.nvim_buf_set_lines(session.right_buf, 0, -1, false, { "one", "THREE", "three" })
     vim.api.nvim_exec_autocmds("TextChanged", { buffer = session.right_buf })
-    vim.wait(100, function()
+    vim.wait(400, function()
       return session.right.text == "one\nTHREE\nthree\n"
-    end, 5)
+    end, 10)
 
     session:stage_hunk()
     assert_eq(git_mod.read_index(repo, "mapped-undo-after-edit.txt"), "one\nTHREE\nthree\n",
@@ -824,9 +824,9 @@ if vim.fn.executable("git") == 1 then
       "Undoing the stage action first should leave the right-buffer edit intact")
 
     undo_callback()
-    vim.wait(100, function()
-      return session.right.text == "one\nTWO\nthree\n"
-    end, 5)
+    -- Native buffer undo path refreshes immediately (refresh_editable_right).
+    assert_eq(session.right.text, "one\nTWO\nthree\n",
+      "Second undo should refresh the right source text immediately")
     assert_eq(vim.api.nvim_buf_get_lines(session.right_buf, 0, -1, false)[2], "TWO",
       "A second undo should then use native buffer undo")
 

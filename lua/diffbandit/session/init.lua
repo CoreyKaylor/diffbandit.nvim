@@ -140,7 +140,15 @@ function Session.start(sources, config, opts)
       if not self.disposed then
         local chunk = self.view.chunks[self.current_chunk]
         if chunk then
-          self:highlight_active_chunk(chunk)
+          -- Same align-first / clipped-paint sequence as goto_chunk: the
+          -- top-of-file clip from open does not cover a distant first hunk.
+          self:align_chunk_viewports(chunk)
+          self:highlight_active_chunk(chunk, {
+            clip = self.last_render_clip or self.last_paint_clip,
+            position_cursor = false,
+            sync_gutters = false,
+            render_chrome = true,
+          })
         end
       end
     end)
@@ -360,7 +368,7 @@ function Session:setup_autocmds()
       self.last_source_win = self.left_win
       self.last_source_side = "left"
       self:sync_from_left()
-      self:render_overviews()
+      self:request_overview_render()
     end,
   })
 
@@ -375,7 +383,7 @@ function Session:setup_autocmds()
       self.last_source_win = self.right_win
       self.last_source_side = "right"
       self:sync_from_right()
-      self:render_overviews()
+      self:request_overview_render()
     end,
   })
 
@@ -416,6 +424,16 @@ function Session:setup_autocmds()
       callback = function()
         if self.disposed then
           return
+        end
+        -- Undo records the post-undo changedtick; only suppress TextChanged
+        -- when the tick still matches (if TextChanged never fires, a later
+        -- real edit has a new tick and must not be swallowed).
+        local suppress_tick = self.suppress_editable_textchanged_tick
+        if suppress_tick ~= nil then
+          self.suppress_editable_textchanged_tick = nil
+          if vim.api.nvim_buf_get_changedtick(self.right_buf) == suppress_tick then
+            return
+          end
         end
         self:request_editable_right_refresh()
       end,
@@ -612,25 +630,55 @@ function Session:request_viewport_rerender()
   end, delay)
 end
 
+-- Debounced overview paint for CursorMoved (full render still paints immediately).
+function Session:request_overview_render()
+  if self.disposed or not self.overview_enabled then
+    return
+  end
+  local overview_cfg = config_mod.section(self.config, "ui", "overview")
+  local delay = tonumber(overview_cfg.debounce_ms)
+  if delay == nil then
+    delay = 32
+  end
+  ui.schedule_once(self, "overview_rerender_scheduled", function()
+    self:render_overviews()
+  end, delay)
+end
+
+-- Immediate re-diff after editable right text changed (also used after undo).
+function Session:refresh_editable_right()
+  if self.disposed or not (self.right and self.right.editable) then
+    return
+  end
+  -- Cancel any armed debounce so the deferred callback does not re-diff again.
+  ui.cancel_schedule_once(self, "editable_right_refresh_scheduled")
+  document.refresh_source_from_editable(self.right)
+  self:replace_sources({
+    left = self.left,
+    right = self.right,
+  }, {
+    preserve_view = true,
+    chunk_position = "preserve",
+    preferred_chunk = self.current_chunk,
+  })
+end
+
+-- Debounced re-diff for typing (TextChanged). Undo / InsertLeave can call
+-- refresh_editable_right() for an immediate model rebuild.
 function Session:request_editable_right_refresh()
   if self.disposed or not (self.right and self.right.editable) then
     return
   end
-  local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
-  ui.schedule_once(self, "editable_right_refresh_scheduled", function()
-    if not (self.right and self.right.editable) then
-      return
-    end
-    document.refresh_source_from_editable(self.right)
-    self:replace_sources({
-      left = self.left,
-      right = self.right,
-    }, {
-      preserve_view = true,
-      chunk_position = "preserve",
-      preferred_chunk = self.current_chunk,
-    })
-  end)
+  local ui_cfg = config_mod.section(self.config, "ui")
+  local delay = tonumber(ui_cfg.edit_refresh_debounce_ms)
+  if delay == nil then
+    delay = 150
+  end
+  -- Restart the timer on each keystroke so a sustained edit burst only
+  -- re-diffs after idle (schedule_once would fire mid-stream).
+  ui.reschedule_once(self, "editable_right_refresh_scheduled", function()
+    self:refresh_editable_right()
+  end, delay)
 end
 
 local function apply_viewport_toplines(self, left_topline, right_topline)
@@ -854,7 +902,12 @@ function Session:goto_document_edge(edge)
     self.current_chunk = 0
   end
   self:clear_active_chunk()
+  -- Viewport paint is non-structural and skips chrome; chunk index still
+  -- changed, so refresh status/overview explicitly for top/bottom position.
   self:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_line, right_line)
+  self:render_status_headers()
+  ui.cancel_schedule_once(self, "overview_rerender_scheduled")
+  self:render_overviews()
 
   if focused_win == self.left_win or focused_win == self.right_win then
     pcall(vim.api.nvim_set_current_win, focused_win)
@@ -1075,7 +1128,10 @@ function Session:replace_sources(sources, opts)
   elseif opts.chunk_position == "preserve" then
     if #self.view.chunks > 0 then
       self.current_chunk = math.max(1, math.min(opts.preferred_chunk or self.current_chunk or 1, #self.view.chunks))
-      self:highlight_active_chunk(self.view.chunks[self.current_chunk], { position_cursor = false })
+      self:highlight_active_chunk(self.view.chunks[self.current_chunk], {
+        position_cursor = false,
+        clip = self.last_render_clip or self.last_paint_clip,
+      })
     else
       self:clear_active_chunk()
     end
@@ -1092,51 +1148,130 @@ function Session:replace_sources(sources, opts)
   return true, nil
 end
 
-function Session:clear_active_chunk()
-  vim.api.nvim_buf_clear_namespace(self.left_buf, self.active_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.left_num_buf, self.active_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_buf, self.active_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.right_num_buf, self.active_ns, 0, -1)
-  vim.api.nvim_buf_clear_namespace(self.connector_buf, self.active_ns, 0, -1)
+local function clear_active_ns_range(buf, ns, row_min, row_max, full)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) or not ns then
+    return
+  end
+  if full or not row_min or not row_max or row_max < row_min then
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(buf, ns, math.max(0, row_min - 1), row_max)
+end
+
+function Session:clear_active_chunk(clip)
+  -- Full clear when no clip; viewport paints clear only the padded window so
+  -- a multi-thousand-row active chunk does not thrash the whole buffer.
+  local full = not clip
+  local left_min = clip and clip.left_min
+  local left_max = clip and clip.left_max
+  local right_min = clip and clip.right_min
+  local right_max = clip and clip.right_max
+  local conn_min = clip and clip.connector_min
+  local conn_max = clip and clip.connector_max
+  clear_active_ns_range(self.left_buf, self.active_ns, left_min, left_max, full)
+  clear_active_ns_range(self.left_num_buf, self.active_ns, left_min, left_max, full)
+  clear_active_ns_range(self.right_buf, self.active_ns, right_min, right_max, full)
+  clear_active_ns_range(self.right_num_buf, self.active_ns, right_min, right_max, full)
+  clear_active_ns_range(self.connector_buf, self.active_ns, conn_min, conn_max, full)
 end
 
 function Session:highlight_active_chunk(chunk, opts)
   opts = opts or {}
-  self:clear_active_chunk()
+  local clip = opts.clip
+  local prev_clip = opts.prev_clip
+  -- Union prev+cur clip for clear so marks do not accumulate off-screen.
+  -- Connector active marks use meta-index rows (same as historical paint);
+  -- clear them via meta_min/max, not left-row connector bounds.
+  local clear_clip = nil
+  if clip then
+    local meta_lo = clip.meta_min
+    local meta_hi = clip.meta_max
+    if prev_clip then
+      if prev_clip.meta_min then
+        meta_lo = math.min(meta_lo or prev_clip.meta_min, prev_clip.meta_min)
+      end
+      if prev_clip.meta_max then
+        meta_hi = math.max(meta_hi or prev_clip.meta_max, prev_clip.meta_max)
+      end
+    end
+    clear_clip = {
+      left_min = prev_clip and math.min(prev_clip.left_min or clip.left_min, clip.left_min) or clip.left_min,
+      left_max = prev_clip and math.max(prev_clip.left_max or clip.left_max, clip.left_max) or clip.left_max,
+      right_min = prev_clip and math.min(prev_clip.right_min or clip.right_min, clip.right_min) or clip.right_min,
+      right_max = prev_clip and math.max(prev_clip.right_max or clip.right_max, clip.right_max) or clip.right_max,
+      connector_min = meta_lo,
+      connector_max = meta_hi,
+    }
+  end
+  self:clear_active_chunk(clear_clip)
 
   local active_hl = "DiffBanditActiveChunk"
   local add_hl = vim.api.nvim_buf_add_highlight
+  local left_min = clip and clip.left_min
+  local left_max = clip and clip.left_max
+  local right_min = clip and clip.right_min
+  local right_max = clip and clip.right_max
 
-  -- Highlight using buffer-specific indices from metadata
-  for meta_idx = chunk.display_start, chunk.display_end do
+  local function left_ok(row)
+    return not clip or (row and row >= left_min and row <= left_max)
+  end
+  local function right_ok(row)
+    return not clip or (row and row >= right_min and row <= right_max)
+  end
+
+  -- Walk only chunk ∩ viewport meta ranges (or the full chunk when unclipped).
+  local function paint_meta(meta_idx)
     local meta = self.view.line_meta[meta_idx]
-    if meta then
-      -- Skip sides with strong backgrounds to avoid washing out colors.
-      -- Strength is PER SIDE: an embedded add row is a gap on the left but
-      -- real green content (and its gutter band) on the right — a single
-      -- per-row flag painted the overlay across the right gutter and
-      -- punched holes in the band above the wedge (and symmetrically over
-      -- the left delete background).
-      local left_strong = meta.kind ~= "context" and not meta.filler_left
-      local right_strong = meta.kind ~= "context" and not meta.filler_right
+    if not meta then
+      return
+    end
+    -- Skip sides with strong backgrounds to avoid washing out colors.
+    -- Strength is PER SIDE: an embedded add row is a gap on the left but
+    -- real green content (and its gutter band) on the right — a single
+    -- per-row flag painted the overlay across the right gutter and
+    -- punched holes in the band above the wedge (and symmetrically over
+    -- the left delete background).
+    local left_strong = meta.kind ~= "context" and not meta.filler_left
+    local right_strong = meta.kind ~= "context" and not meta.filler_right
 
-      -- Highlight left buffer if this metadata has a left line
-      if meta.left_index and not left_strong then
-        local row = meta.left_index - 1
-        add_hl(self.left_buf, self.active_ns, active_hl, row, 0, -1)
-        add_hl(self.left_num_buf, self.active_ns, active_hl, row, 0, -1)
-      end
+    if meta.left_index and not left_strong and left_ok(meta.left_index) then
+      local row = meta.left_index - 1
+      add_hl(self.left_buf, self.active_ns, active_hl, row, 0, -1)
+      add_hl(self.left_num_buf, self.active_ns, active_hl, row, 0, -1)
+    end
 
-      -- Highlight right buffer if this metadata has a right line
-      if meta.right_index and not right_strong then
-        local row = meta.right_index - 1
-        add_hl(self.right_buf, self.active_ns, active_hl, row, 0, -1)
-        add_hl(self.right_num_buf, self.active_ns, active_hl, row, 0, -1)
-      end
+    if meta.right_index and not right_strong and right_ok(meta.right_index) then
+      local row = meta.right_index - 1
+      add_hl(self.right_buf, self.active_ns, active_hl, row, 0, -1)
+      add_hl(self.right_num_buf, self.active_ns, active_hl, row, 0, -1)
+    end
 
-      if not (left_strong and right_strong) then
-        add_hl(self.connector_buf, self.active_ns, active_hl, meta_idx - 1, 0, -1)
+    -- Connector active overlay uses meta-index rows (display model), matching
+    -- the historical unclipped paint and connector buffer layout.
+    if not (left_strong and right_strong) then
+      add_hl(self.connector_buf, self.active_ns, active_hl, meta_idx - 1, 0, -1)
+    end
+  end
+
+  local ranges = clip and clip.meta_ranges
+  if ranges and #ranges > 0 then
+    for _, r in ipairs(ranges) do
+      local lo = math.max(chunk.display_start, r[1])
+      local hi = math.min(chunk.display_end, r[2])
+      for meta_idx = lo, hi do
+        paint_meta(meta_idx)
       end
+    end
+  else
+    local lo = chunk.display_start
+    local hi = chunk.display_end
+    if clip and clip.meta_min and clip.meta_max then
+      lo = math.max(lo, clip.meta_min)
+      hi = math.min(hi, clip.meta_max)
+    end
+    for meta_idx = lo, hi do
+      paint_meta(meta_idx)
     end
   end
 
@@ -1152,9 +1287,13 @@ function Session:highlight_active_chunk(chunk, opts)
     end
     vim.api.nvim_win_set_cursor(self.connector_win, { chunk.display_start, 0 })
   end
-  self:sync_gutter_viewports()
-  self:render_status_headers()
-  self:render_overviews()
+  if opts.sync_gutters ~= false then
+    self:sync_gutter_viewports()
+  end
+  if opts.render_chrome ~= false then
+    self:render_status_headers()
+    self:render_overviews()
+  end
 end
 
 function Session:goto_chunk(index)
@@ -1169,8 +1308,16 @@ function Session:goto_chunk(index)
   end
   self.current_chunk = index
   local chunk = self.view.chunks[self.current_chunk]
-  self:highlight_active_chunk(chunk)
+  -- Align first so last_render_clip matches the destination viewport, then
+  -- paint the active overlay only inside that clip (large hunks stay cheap).
   self:align_chunk_viewports(chunk)
+  self:highlight_active_chunk(chunk, {
+    clip = self.last_render_clip or self.last_paint_clip,
+    -- align_chunk_viewports already placed cursors and synced gutters.
+    position_cursor = false,
+    sync_gutters = false,
+    render_chrome = true,
+  })
 end
 
 function Session:load_queue_sources(index, step)
@@ -1567,7 +1714,10 @@ function Session:undo_edit_or_action()
       local before_tick = vim.api.nvim_buf_get_changedtick(self.right_buf)
       local ok = pcall(vim.cmd, "silent undo")
       if ok and vim.api.nvim_buf_get_changedtick(self.right_buf) ~= before_tick then
-        self:request_editable_right_refresh()
+        -- Record post-undo tick before re-diff so the TextChanged that follows
+        -- undo is a no-op; a later real edit advances the tick and is not swallowed.
+        self.suppress_editable_textchanged_tick = vim.api.nvim_buf_get_changedtick(self.right_buf)
+        self:refresh_editable_right()
         return
       end
     elseif not self.file_queue then

@@ -69,6 +69,9 @@ function M.from_pair(owner, id_suffix, pair, left_source, right_source, buffers,
   function renderer:render_status_headers() end
   function renderer:render_overviews() end
 
+  -- Assign merge_host before invalidate so content rebuilds clear the
+  -- host-level recovery latch (not only the brand-new pair's empty state).
+  renderer.merge_host = owner
   renderer:invalidate_render_caches()
   renderer:precompute_connector_core_width()
   return renderer

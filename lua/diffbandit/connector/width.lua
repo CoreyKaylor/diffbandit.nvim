@@ -36,6 +36,14 @@ function M.base(view, config)
   return M.minimum(config)
 end
 
+-- Viewport paint pad for session render mark loops: rows outside the window
+-- that still receive marks so a fling within one debounce tick does not flash
+-- unstyled cells. Connector solid-band projection is strict-window (no pad) —
+-- wedges and solid corridors stay viewport-aligned; only the paint clip uses
+-- this headroom.
+function M.viewport_clip_pad(left_height, right_height)
+  return math.max(200, 3 * math.max(left_height or 1, right_height or 1))
+end
 
 -- Pressure sizer: the live gutter width is computed ONCE per document (never
 -- while scrolling -- resizing mid-scroll is jarring) and defines the
