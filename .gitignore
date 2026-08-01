@@ -76,3 +76,6 @@ lazy-lock.json
 # IntelliJ oracle (dev-time): pinned jars + local corpus
 tools/intellij-oracle/lib/
 tools/corpus/
+
+# Demo recording scratch frames (regenerate with demo/record.sh)
+docs/demo/.frames/

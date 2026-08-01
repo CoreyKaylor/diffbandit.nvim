@@ -9,6 +9,11 @@ local defaults = {
     -- once-per-document pressure expansion (legacy behaviour).
     connector_width = 9,
     connector_max_width = 9,
+    -- When true, paint wedges as Powerline extra symbols (U+E0B8–E0BE) so
+    -- xterm.js/VHS fills the cell. Demo/recording only — normal use keeps
+    -- Unicode geometric wedges (U+25E2–25E5). Also: vim.g.diffbandit_cell_wedges
+    -- or DIFFBANDIT_CELL_WEDGES=1.
+    cell_wedges = false,
     right_number_padding = 2,
     scroll_debounce_ms = 16,
     -- Full re-diff after editable right-pane edits (separate from scroll).

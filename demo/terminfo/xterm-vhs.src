@@ -1,0 +1,8 @@
+# xterm-256color plus colored-underline capability for VHS/ttyd recordings.
+# Keeps semicolon truecolor heuristics; only adds Su/Setulc so Neovim emits
+# SGR 58 for guisp underlines that xterm.js already paints correctly.
+xterm-vhs|xterm-256color with underline colors (DiffBandit demos),
+	use=xterm-256color,
+	Su,
+	Smulx=\E[4\:%p1%dm,
+	setulc=\E[58\:2\:\:%p1%{65536}%/%d\:%p1%{256}%/%{255}%&%d\:%p1%{255}%&%d%;m,

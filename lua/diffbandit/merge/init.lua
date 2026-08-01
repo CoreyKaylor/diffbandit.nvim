@@ -1010,7 +1010,9 @@ function Merge:render_zero_range_delete_overlay(row, sides)
       row,
       number_pane_width - 1,
       "DiffBanditConnectorExpansionDelete",
-      "◤"
+      render_host.map_display_glyph("◤", {
+        cell_wedges = render_host.cell_wedges_enabled(self.config),
+      })
     )
   end
 
@@ -1028,7 +1030,9 @@ function Merge:render_zero_range_delete_overlay(row, sides)
       row,
       0,
       "DiffBanditConnectorExpansionDelete",
-      "◥"
+      render_host.map_display_glyph("◥", {
+        cell_wedges = render_host.cell_wedges_enabled(self.config),
+      })
     )
   end
 end

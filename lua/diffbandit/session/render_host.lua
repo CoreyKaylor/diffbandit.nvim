@@ -216,17 +216,56 @@ function M.right_number_text_end_col(self)
   return -1
 end
 
-function M.display_glyph(self, glyph)
-  if not self.mirror_connector_sides then
-    return glyph
+-- Geometric wedges (U+25E2–25E5) are font-drawn in xterm.js and leave a gap
+-- under VHS/ttyd. Powerline extra symbols E0B8/BA/BC/BE use xterm's custom
+-- cell-fill vectors. Enable only for demos: vim.g.diffbandit_cell_wedges,
+-- DIFFBANDIT_CELL_WEDGES=1, or ui.cell_wedges = true. Geometry logic keeps
+-- the Unicode codepoints; only paint goes through this map.
+local MIRRORED_WEDGES = {
+  ["◤"] = "◥",
+  ["◥"] = "◤",
+  ["◢"] = "◣",
+  ["◣"] = "◢",
+}
+
+-- U+E0BA lower-right, E0B8 lower-left, E0BC upper-left, E0BE upper-right.
+local CELL_WEDGES = {
+  ["◢"] = "",
+  ["◣"] = "",
+  ["◤"] = "",
+  ["◥"] = "",
+}
+
+function M.cell_wedges_enabled(config)
+  if vim.g.diffbandit_cell_wedges == true then
+    return true
   end
-  local mirrored = {
-    ["◤"] = "◥",
-    ["◥"] = "◤",
-    ["◢"] = "◣",
-    ["◣"] = "◢",
-  }
-  return mirrored[glyph] or glyph
+  local env = vim.env and vim.env.DIFFBANDIT_CELL_WEDGES
+  if env == "1" or env == "true" then
+    return true
+  end
+  local ui = (config or {}).ui or {}
+  return ui.cell_wedges == true
+end
+
+--- Map a route wedge for paint only. Mirror first (Unicode space), then
+--- optional Powerline cell-fill remap for VHS/xterm.js demos.
+function M.map_display_glyph(glyph, opts)
+  opts = opts or {}
+  if opts.mirror then
+    glyph = MIRRORED_WEDGES[glyph] or glyph
+  end
+  if opts.cell_wedges then
+    glyph = CELL_WEDGES[glyph] or glyph
+  end
+  return glyph
+end
+
+function M.display_glyph(self, glyph)
+  return M.map_display_glyph(glyph, {
+    mirror = self.mirror_connector_sides,
+    cell_wedges = M.cell_wedges_enabled(self.config),
+  })
 end
 
 function M.project_paths_for_toplines(self, paths, left_topline, right_topline, left_height, right_height)

@@ -1837,6 +1837,29 @@ if vim.fn.executable("git") == 1 then
   end
 
   do
+    local render_host = require("diffbandit.session.render_host")
+    assert_eq(render_host.map_display_glyph("◢", { cell_wedges = true }), "",
+      "cell_wedges should paint lower-right as Powerline E0BA")
+    assert_eq(render_host.map_display_glyph("◣", { cell_wedges = true }), "",
+      "cell_wedges should paint lower-left as Powerline E0B8")
+    assert_eq(render_host.map_display_glyph("◤", { cell_wedges = true }), "",
+      "cell_wedges should paint upper-left as Powerline E0BC")
+    assert_eq(render_host.map_display_glyph("◥", { cell_wedges = true }), "",
+      "cell_wedges should paint upper-right as Powerline E0BE")
+    assert_eq(render_host.map_display_glyph("◤", { mirror = true, cell_wedges = true }), "",
+      "mirror then cell_wedges: upper-left becomes upper-right Powerline")
+    assert_eq(render_host.map_display_glyph("◢", {}), "◢",
+      "default display should keep Unicode geometric wedges")
+    local old_g = vim.g.diffbandit_cell_wedges
+    vim.g.diffbandit_cell_wedges = true
+    assert_eq(render_host.cell_wedges_enabled({}), true,
+      "vim.g.diffbandit_cell_wedges should enable cell wedges")
+    vim.g.diffbandit_cell_wedges = old_g
+    assert_eq(render_host.cell_wedges_enabled({ ui = { cell_wedges = true } }), true,
+      "ui.cell_wedges config should enable cell wedges")
+  end
+
+  do
     local left = { "one", "two", "four" }
     local right = { "one", "TWO", "three", "four" }
     local pair = assert((diff_pair_mod.build(left, right, config)))

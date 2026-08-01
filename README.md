@@ -62,6 +62,44 @@ With `lazy.nvim`:
 }
 ```
 
+## Demo
+
+<h3>Diff view and connector routes</h3>
+
+Chunk navigation with `]c`, then scrolling one pane on its own: the routes
+re-project against the moving viewport while the other document holds still.
+
+<img src="docs/demo/01-diff.gif" alt="Two-way diff with connector gutter, chunk navigation, and independent scrolling" width="860">
+
+<h3>The right pane is a real document</h3>
+
+The destination side is an ordinary editable buffer with the language server
+attached — completion, diagnostics, and undo all work, and the diff recomputes
+underneath the edit.
+
+<img src="docs/demo/02-editable-lsp.gif" alt="Editing the right pane of a diff with LSP completion and diagnostics" width="860">
+
+<h3>Merge conflicts</h3>
+
+Local, result, and remote side by side; `]c` between conflicts, `>>` and `<<` to
+take a side, and `:w` to resolve and stage.
+
+<img src="docs/demo/03-merge.gif" alt="Three-way merge resolver taking a side per conflict" width="860">
+
+<h3>Commit panel</h3>
+
+Changed files with a live diff preview, `<Space>` to stage, and a commit message
+buffer that commits on write.
+
+<img src="docs/demo/04-commit-panel.gif" alt="Commit panel staging files and writing a commit" width="860">
+
+<h3>Folder diff</h3>
+
+Compare two trees, walk the changed entries, and drill into a file diff that
+returns to the tree on `q`.
+
+<img src="docs/demo/05-folder-diff.gif" alt="Recursive folder diff with drill-down into a changed file" width="860">
+
 ## Quick Start
 
 Compare two files:
@@ -129,56 +167,6 @@ Read-only source panes are syntax-aware but intentionally do not attach LSP
 diagnostics. The left side of two-way diffs and the local/remote sides of merge
 views keep their filetype and syntax highlighting, while warnings and
 completion remain focused on the editable target/result pane.
-
-## Screenshots
-
-### Diff Views
-
-<p>
-  <img src="screenshots/mixed_review.png" alt="Mixed review diff with connector gutter and overview markers" width="720">
-</p>
-
-<p>
-  <img src="screenshots/dense_routes.png" alt="Dense connector routing with non-overlapping paths" width="720">
-</p>
-
-<p>
-  <img src="screenshots/long_additions.png" alt="Long additions with expansion connectors and overview gutters" width="720">
-</p>
-
-### Git States
-
-<p>
-  <img src="screenshots/changes_file_git.png" alt="Changed Git file with status header" width="420">
-  <img src="screenshots/new_file.png" alt="New Git file diff" width="420">
-</p>
-
-<p>
-  <img src="screenshots/deleted_file.png" alt="Deleted Git file diff" width="420">
-  <img src="screenshots/renamed_file.png" alt="Renamed Git file diff" width="420">
-</p>
-
-<p>
-  <img src="screenshots/staged_file.png" alt="Staged Git file diff" width="420">
-</p>
-
-### Commit Panel
-
-<p>
-  <img src="screenshots/git_commit_amend.png" alt="Git commit panel with amend mode and live diff preview" width="720">
-</p>
-
-### Folder Diff
-
-<p>
-  <img src="screenshots/folder_diff.png" alt="Recursive folder comparison with aligned file trees and centered status gutter" width="720">
-</p>
-
-### Merge Conflicts
-
-<p>
-  <img src="screenshots/three_way_merge.png" alt="Three-way merge conflict resolver with local, editable result, and incoming panes" width="720">
-</p>
 
 ## Git Modes
 
