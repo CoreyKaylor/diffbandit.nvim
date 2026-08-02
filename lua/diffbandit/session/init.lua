@@ -930,12 +930,29 @@ function Session:goto_document_edge(edge)
   end
 end
 
+-- Remove DiffBandit paint marks from a buffer that may outlive the session
+-- (editable right / worktree buffers keep bufhidden=hide). Scratch panes are
+-- wiped on tab close, but clearing them here is harmless and keeps one path.
+function Session:clear_buffer_paint_namespaces(buf)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  for _, ns in ipairs({ self.ns, self.active_ns, self.extmark_ns, self.path_ns }) do
+    if ns then
+      pcall(vim.api.nvim_buf_clear_namespace, buf, ns, 0, -1)
+    end
+  end
+end
+
 function Session:dispose()
   if self.disposed then
     return
   end
   self.disposed = true
   self:clear_keymaps()
+  -- Editable right reuses the user's buffer; without this, band/intraline
+  -- extmarks stay visible after q returns to that buffer (issue #5).
+  self:clear_buffer_paint_namespaces(self.right_buf)
   document.cleanup_created_buffer(self.right and self.right.editable)
   state.unregister(self.tabpage)
   if self.autocmd_group then
@@ -1080,6 +1097,9 @@ function Session:replace_sources(sources, opts)
     set_buffer_options(self.right_buf, { bufhidden = "wipe" })
   end
   if old_right_buf ~= self.right_buf then
+    -- Detached right buffers (esp. editable worktree files) must not keep
+    -- DiffBandit band/sign marks after the session moves on.
+    self:clear_buffer_paint_namespaces(old_right_buf)
     document.cleanup_created_buffer(old_right_editable)
   end
   self.replacing_sources = previous_replacing_sources

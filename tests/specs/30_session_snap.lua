@@ -393,3 +393,50 @@ do
   session:close()
 end
 
+-- Suite 16e: closing a session that reuses an editable right buffer must
+-- clear DiffBandit paint namespaces so band/intraline highlights do not
+-- remain on the original buffer after q (GitHub issue #5).
+do
+  local user_buf = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_lines(user_buf, 0, -1, false, {
+    "alpha",
+    "beta",
+    "gamma",
+  })
+  local left = source_mod.from_lines({ "alpha", "gamma" }, nil, "left")
+  local right = source_mod.from_lines({ "alpha", "beta", "gamma" }, nil, "right")
+  right.editable = {
+    target = "buffer",
+    bufnr = user_buf,
+  }
+
+  local session = assert((Session.start({ left = left, right = right }, config)))
+  assert_eq(session.right_buf, user_buf, "Session should reuse the editable right buffer")
+
+  local namespaces = {
+    session.ns,
+    session.active_ns,
+    session.extmark_ns,
+  }
+  local function mark_count()
+    local total = 0
+    for _, ns in ipairs(namespaces) do
+      if ns then
+        total = total + #vim.api.nvim_buf_get_extmarks(user_buf, ns, 0, -1, {})
+      end
+    end
+    return total
+  end
+
+  assert_eq(mark_count() > 0, true,
+    "Editable right should receive DiffBandit paint marks while the session is open")
+
+  session:close()
+  assert_eq(vim.api.nvim_buf_is_valid(user_buf), true,
+    "Editable right buffer should survive session close")
+  assert_eq(mark_count(), 0,
+    "Closing the session should clear DiffBandit marks from the reusable buffer")
+
+  pcall(vim.api.nvim_buf_delete, user_buf, { force = true })
+end
+

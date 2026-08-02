@@ -1789,6 +1789,7 @@ function Merge:open_merge_file(index, opts)
   -- Clean up only after the window shows the new buffer: deleting a buffer
   -- that is still displayed closes its window.
   if old_result_buf ~= self.result_buf then
+    self:clear_result_paint_namespaces(old_result_buf)
     document.cleanup_created_buffer(old_result_editable, { discard_if_unchanged = true })
   end
   -- The outer source buffers are reused across file switches; rename them so
@@ -2077,6 +2078,34 @@ function Merge:focus_commit_panel_for_current_file()
   return init.commit_panel({ pathspecs = { self.path } })
 end
 
+-- Pair paint namespaces live on the shared result buffer (often the user's
+-- real file). Clear them when the merge session ends or detaches that buffer
+-- so highlights do not survive after q (same class of bug as issue #5).
+function Merge:clear_result_paint_namespaces(buf)
+  buf = buf or self.result_buf
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  local namespaces = { self.active_ns, self.ns }
+  for _, renderer in ipairs({ self.local_result_session, self.result_remote_session }) do
+    if renderer then
+      for _, ns in ipairs({
+        renderer.ns,
+        renderer.active_ns,
+        renderer.path_ns,
+        renderer.extmark_ns,
+      }) do
+        namespaces[#namespaces + 1] = ns
+      end
+    end
+  end
+  for _, ns in ipairs(namespaces) do
+    if ns then
+      pcall(vim.api.nvim_buf_clear_namespace, buf, ns, 0, -1)
+    end
+  end
+end
+
 function Merge:close(from_autocmd)
   if self.disposed then
     return
@@ -2093,6 +2122,7 @@ function Merge:close(from_autocmd)
     end
     self.render_timer = nil
   end
+  self:clear_result_paint_namespaces(self.result_buf)
   document.cleanup_created_buffer(self.result_editable, { discard_if_unchanged = true })
   state.unregister(self.tabpage)
   if not from_autocmd and self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
