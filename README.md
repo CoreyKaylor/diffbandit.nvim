@@ -563,6 +563,25 @@ The integration tests capture terminal output, including ANSI highlights, so
 they can verify connector geometry, backgrounds, underline spans, Git actions,
 commit panel behavior, binary diffs, and scrolling behavior.
 
+## Acknowledgments
+
+Huge thanks to [JetBrains](https://www.jetbrains.com/) for open-sourcing the
+diff engine that powers IntelliJ IDEA and the rest of their IDEs
+([`intellij-community`](https://github.com/JetBrains/intellij-community),
+Apache 2.0). DiffBandit ports that line- and word-level comparison pipeline to
+Lua so change blocks, boundary sliding, and intraline emphasis match what the
+IDE shows.
+
+The project is heavily inspired by the side-by-side diff experience in JetBrains
+IDEs: documents that keep their own shape and line numbers, a middle corridor
+that explains the relationship, and routing that stays readable as you scroll.
+A terminal is a different medium — fixed cells, no freeform canvas — but the
+goal has been to keep as much of that behavior as the medium allows,
+not to flatten it into a traditional unified or forced-alignment view.
+
+See [Diff matching](#diff-matching) for the technical mapping to the upstream
+engine.
+
 ## License
 
 diffbandit.nvim is licensed under the Apache License, Version 2.0. See
