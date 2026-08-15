@@ -531,6 +531,7 @@ diffbandit.git_compare_branches({})
 diffbandit.git_checkout("feature")
 diffbandit.merge("path/to/conflicted-file")
 diffbandit.commit_panel({})
+diffbandit.is_running()
 ```
 
 Hunk actions are also exposed as Lua functions:

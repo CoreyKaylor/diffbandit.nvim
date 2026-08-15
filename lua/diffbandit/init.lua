@@ -68,6 +68,10 @@ local function current_session()
   return state.sessions[vim.api.nvim_get_current_tabpage()]
 end
 
+function M.is_running()
+  return state.sessions[vim.api.nvim_get_current_tabpage()] ~= nil
+end
+
 local function current_panel()
   return state.panels[vim.api.nvim_get_current_tabpage()]
 end
