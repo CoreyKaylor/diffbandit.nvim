@@ -64,16 +64,118 @@ local function start_session(left_source, right_source, opts)
   return session
 end
 
-local function current_session()
-  return state.sessions[vim.api.nvim_get_current_tabpage()]
+local function live_session(tabpage)
+  local session = state.sessions[tabpage or vim.api.nvim_get_current_tabpage()]
+  if session and not session.disposed then
+    return session
+  end
+  return nil
 end
 
-function M.is_running()
-  return state.sessions[vim.api.nvim_get_current_tabpage()] ~= nil
+local function live_panel(tabpage)
+  local panel = state.panels[tabpage or vim.api.nvim_get_current_tabpage()]
+  if panel and not panel.disposed then
+    return panel
+  end
+  return nil
+end
+
+local function current_session()
+  return live_session()
 end
 
 local function current_panel()
-  return state.panels[vim.api.nvim_get_current_tabpage()]
+  return live_panel()
+end
+
+local CONTENT_BUF_FIELDS = {
+  "left_buf",
+  "right_buf",
+  "local_buf",
+  "result_buf",
+  "remote_buf",
+}
+
+local function host_owns_buf(host, bufnr)
+  if not host or host.disposed then
+    return false
+  end
+  for i = 1, #CONTENT_BUF_FIELDS do
+    if host[CONTENT_BUF_FIELDS[i]] == bufnr then
+      return true
+    end
+  end
+  local editable = host.right and host.right.editable
+  if editable and editable.bufnr == bufnr then
+    return true
+  end
+  local panel = host.panel
+  if panel and (panel.nav_buf == bufnr or panel.commit_buf == bufnr) then
+    return true
+  end
+  return false
+end
+
+local function any_live(map)
+  for _, host in pairs(map) do
+    if host and not host.disposed then
+      return true
+    end
+  end
+  return false
+end
+
+function M.has_session(tabpage)
+  return live_session(tabpage) ~= nil
+end
+
+function M.has_any_session()
+  return any_live(state.sessions)
+end
+
+function M.owns_buffer(bufnr)
+  bufnr = tonumber(bufnr)
+  if not bufnr then
+    return false
+  end
+  for _, session in pairs(state.sessions) do
+    if host_owns_buf(session, bufnr) then
+      return true
+    end
+  end
+  for _, panel in pairs(state.panels) do
+    if host_owns_buf(panel, bufnr) then
+      return true
+    end
+  end
+  return false
+end
+
+-- Tabpage handles and bufnrs are both integers, so a bare number is
+-- ambiguous. Use { tab = } / { buf = } or the named predicates.
+function M.is_running(query)
+  if query == nil then
+    return M.has_session()
+  end
+  if type(query) ~= "table" then
+    return false
+  end
+
+  local include_panel = query.panel == true
+  if query.any then
+    return M.has_any_session() or (include_panel and any_live(state.panels))
+  end
+  if query.buf ~= nil then
+    return M.owns_buffer(query.buf)
+  end
+  if query.tab ~= nil or include_panel then
+    local tab = query.tab
+    if tab == nil or tab == true or tab == 0 then
+      tab = vim.api.nvim_get_current_tabpage()
+    end
+    return M.has_session(tab) or (include_panel and live_panel(tab) ~= nil)
+  end
+  return false
 end
 
 local function call_current_session(method)

@@ -531,7 +531,18 @@ diffbandit.git_compare_branches({})
 diffbandit.git_checkout("feature")
 diffbandit.merge("path/to/conflicted-file")
 diffbandit.commit_panel({})
-diffbandit.is_running()
+
+-- Predicates. `is_running()` is the current tab (2-way, merge, or folder).
+-- Tabpage ids and bufnrs are both integers, so overloads take a table:
+if diffbandit.is_running() then end                          -- current tab
+if diffbandit.has_session() then end                         -- same, named
+if diffbandit.is_running({ tab = tabpage }) then end         -- that tab
+if diffbandit.has_any_session() then end                     -- any tab
+if diffbandit.is_running({ any = true }) then end            -- same
+if diffbandit.owns_buffer(bufnr) then end                    -- session/panel owns buf
+if diffbandit.is_running({ buf = bufnr }) then end           -- same
+if diffbandit.is_running({ panel = true }) then end          -- current tab, include commit_panel
+if diffbandit.is_running({ any = true, panel = true }) then end
 ```
 
 Hunk actions are also exposed as Lua functions:

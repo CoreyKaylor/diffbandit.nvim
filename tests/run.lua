@@ -36,6 +36,7 @@ local repo_root = vim.fn.fnamemodify(test_dir .. "/..", ":p"):gsub("/$", "")
 local specs = {
   "00_harness.lua",
   "10_connector.lua",
+  "15_running.lua",
   "20_git_merge.lua",
   "30_session_snap.lua",
   "35_render_recovery.lua",
