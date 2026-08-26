@@ -13,8 +13,8 @@ local keymaps = require("diffbandit.util.keymaps")
 local session_layout = require("diffbandit.session.layout")
 local render_host = require("diffbandit.session.render_host")
 local config_mod = require("diffbandit.config")
-local diff_mod = require("diffbandit.diff")
 local view_builder = require("diffbandit.diff.view")
+local diff_document = require("diffbandit.diff.document")
 
 local Session = {}
 Session.__index = Session
@@ -46,15 +46,25 @@ local get_win_view_topline = nvim.get_win_view_topline
 
 local set_buffer_options = nvim.set_buffer_options
 
--- Use source.text (already concatenated) rather than diff.pair.build, which
--- would re-run text.to_text on every line table and allocate unused metrics.
-local function build_view_for_sources(sources, config)
-  local hunks, err = diff_mod.compute_hunks(sources.left.text, sources.right.text, config.diff)
-  if err then
-    return nil, err
+local function apply_document_model(self, model, invalidate)
+  self.hunks = model.hunks
+  self.view = model.view
+  self.document_model = model
+  self.document_identity = model.identity
+  if invalidate ~= false then
+    self:invalidate_render_caches()
   end
-  local view = view_builder.build(sources.left.lines, sources.right.lines, hunks, config)
-  return hunks, view
+  if model.base_paths then
+    self.base_paths_cache = model.base_paths
+  end
+end
+
+local function build_document_for_sources(self, sources, config)
+  self.document_lru = self.document_lru or diff_document.new_lru()
+  return diff_document.get_or_build(sources, config, {
+    store = diff_document.resolve_store(self, sources),
+    lru = self.document_lru,
+  })
 end
 
 function Session:overview_marks(side)
@@ -81,21 +91,22 @@ end
 
 function Session.start(sources, config, opts)
   opts = opts or {}
-  local hunks, view = build_view_for_sources(sources, config)
-  if not hunks then
-    return nil, view
-  end
-
   local self = setmetatable({}, Session)
   self.id = state.next_session_id()
   self.config = config
-  self.left = sources.left
-  self.right = sources.right
-  self.hunks = hunks
-  self.view = view
-  self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
   self.file_queue = opts.queue
   self.file_queue_index = opts.queue and (opts.queue.index or 1) or nil
+  self.document_lru = diff_document.new_lru()
+  local model, err = build_document_for_sources(self, sources, config)
+  if not model then
+    return nil, err
+  end
+
+  self.left = sources.left
+  self.right = sources.right
+  apply_document_model(self, model, false)
+  local view = model.view
+  self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
   self.pending_file_boundary = nil
   self.right_number_padding = self.config.ui.right_number_padding or 2
   self.ns = vim.api.nvim_create_namespace("DiffBanditHighlights" .. self.id)
@@ -110,6 +121,9 @@ function Session.start(sources, config, opts)
   self.overview_width = self.overview_enabled and overview.width(self.config) or 0
   self.connector_width_cache = {}
   self:invalidate_render_caches()
+  if model.base_paths then
+    self.base_paths_cache = model.base_paths
+  end
   self.staged_chunk_states = actions.staged_chunk_states(self)
   self.status_enabled = status.enabled(self.config)
   self.panel_enabled = opts.panel == true
@@ -1060,10 +1074,25 @@ function Session:replace_sources(sources, opts)
     preserved_right_cursor = ok_right and right_cursor or { preserved_right_topline or 1, 0 }
   end
 
-  local hunks, view = build_view_for_sources(sources, self.config)
-  if not hunks then
-    return nil, view
+  local model, model_err
+  local same_live = self.left == (sources and sources.left)
+    and self.right == (sources and sources.right)
+    and self.document_model
+    and self.hunks
+    and self.view
+  local same_document = same_live
+  if same_live and sources.right and sources.right.editable then
+    same_document = diff_document.same_identity(self, sources, self.config)
   end
+  if same_document then
+    model = self.document_model
+  else
+    model, model_err = build_document_for_sources(self, sources, self.config)
+    if not model then
+      return nil, model_err
+    end
+  end
+  local view = model.view
 
   local old_right_editable = self.right and self.right.editable
   local old_right_buf = self.right_buf
@@ -1103,9 +1132,7 @@ function Session:replace_sources(sources, opts)
     document.cleanup_created_buffer(old_right_editable)
   end
   self.replacing_sources = previous_replacing_sources
-  self.hunks = hunks
-  self.view = view
-  self:invalidate_render_caches()
+  apply_document_model(self, model, not same_document)
   self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)
   assign_pane_metrics(self, sources, view)
   self:reset_pending_file_boundary()

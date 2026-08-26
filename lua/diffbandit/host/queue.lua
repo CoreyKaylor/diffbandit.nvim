@@ -1,5 +1,6 @@
 -- Shared file-queue helpers for Session, Merge, and CommitPanel hosts.
 local nvim = require("diffbandit.util.nvim")
+local diff_document = require("diffbandit.diff.document")
 local M = {}
 
 function M.load_sources(host, index, step)
@@ -13,7 +14,8 @@ function M.load_sources(host, index, step)
   while current >= 1 and current <= count do
     local loaded, err = queue.load(current)
     if loaded and loaded.left and loaded.right then
-      return { left = loaded.left, right = loaded.right }, current, nil
+      -- Return the cache entry as-is so a document model on it survives.
+      return loaded, current, nil
     end
     nvim.notify_warn("skipping " .. tostring(err or "unreadable git file"))
     current = current + step
@@ -60,11 +62,32 @@ function M.prefetch_neighbors(host, index, delay)
       return
     end
     local center = index or M.current_index(host) or 1
+    local neighbors = {}
     for _, neighbor in ipairs({ center - 1, center + 1 }) do
       if neighbor >= 1 and neighbor <= #(queue.entries or {}) then
-        pcall(queue.load, neighbor)
+        neighbors[#neighbors + 1] = neighbor
       end
     end
+    local i = 1
+    local function prefetch_one()
+      if host.disposed or host.prefetch_token ~= token then
+        return
+      end
+      local neighbor = neighbors[i]
+      if not neighbor then
+        return
+      end
+      i = i + 1
+      pcall(queue.load, neighbor)
+      local loaded = queue.source_cache and queue.source_cache[neighbor]
+      if loaded and loaded.left and loaded.right then
+        pcall(diff_document.get_or_build, loaded, host.config, { store = loaded })
+      end
+      if neighbors[i] then
+        vim.schedule(prefetch_one)
+      end
+    end
+    prefetch_one()
   end, delay or 20)
 end
 

@@ -126,9 +126,10 @@ local function block_sub_hunks(left_lines, right_lines, range)
   return subs, spans
 end
 
-local function compute_hunks_smart(left_text, right_text, opts)
-  local left_lines = split_lines(left_text)
-  local right_lines = split_lines(right_text)
+function M.compute_hunks_from_lines(left_lines, right_lines, opts)
+  left_lines = left_lines or {}
+  right_lines = right_lines or {}
+  opts = opts or {}
 
   local ok, ranges = pcall(smart_align.compare_lines, left_lines, right_lines, opts)
   if not ok then
@@ -156,7 +157,10 @@ local function compute_hunks_smart(left_text, right_text, opts)
 end
 
 function M.compute_hunks(left_text, right_text, opts)
-  return compute_hunks_smart(left_text, right_text, opts or {})
+  return M.compute_hunks_from_lines(
+    split_lines(left_text or ""),
+    split_lines(right_text or ""),
+    opts or {})
 end
 
 -- Compute intra-line emphasis spans for a pair of lines; returns lists of

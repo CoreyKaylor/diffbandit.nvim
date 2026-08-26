@@ -1856,7 +1856,7 @@ function Merge:goto_queue_file(index, chunk_position, opts)
   end
   queue_host.set_index(self, index)
   local Session = require("diffbandit.session")
-  local session, start_err = Session.start({ left = loaded.left, right = loaded.right }, self.config, {
+  local session, start_err = Session.start(loaded, self.config, {
     queue = queue,
     chunk_position = chunk_position or "top",
     panel = true,
