@@ -72,6 +72,20 @@ function M.reassert(host, buf)
   end
 end
 
+-- Plugins (gitsigns, LSP) often bind ]c/[d from BufEnter/LspAttach via
+-- vim.schedule, after the session already claimed the maps. Re-install on
+-- the next tick so DiffBandit keeps hunk/file navigation while the tab is open.
+function M.reassert_later(host, bufs)
+  vim.schedule(function()
+    if not host or host.disposed then
+      return
+    end
+    for i = 1, #(bufs or {}) do
+      M.reassert(host, bufs[i])
+    end
+  end)
+end
+
 function M.clear(host)
   if not host.keymap_backups then
     return

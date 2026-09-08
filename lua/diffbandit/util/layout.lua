@@ -55,6 +55,9 @@ function M.win_opts.source(winhl, overrides)
     cursorline = true,
     wrap = false,
     signcolumn = "no",
+    scrolloff = 0,
+    sidescrolloff = 0,
+    foldenable = false,
     winhl = winhl or M.winhl.source,
   }
   if overrides then
@@ -73,6 +76,8 @@ function M.win_opts.gutter(winhl)
     wrap = false,
     signcolumn = "no",
     foldcolumn = "0",
+    scrolloff = 0,
+    sidescrolloff = 0,
     winfixwidth = true,
     winhl = winhl or M.winhl.gutter,
   }

@@ -62,7 +62,7 @@ function M.get_window_height(win)
   return 0
 end
 
-function M.set_win_view_topline(win, topline)
+function M.set_win_view_topline(win, topline, opts)
   if not (win and vim.api.nvim_win_is_valid(win)) then
     return
   end
@@ -70,8 +70,11 @@ function M.set_win_view_topline(win, topline)
   local buf = vim.api.nvim_win_get_buf(win)
   local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
   local cursor_line = math.min(topline, line_count)
+  local preserve_cursor = opts and opts.preserve_cursor
   pcall(vim.api.nvim_win_call, win, function()
-    pcall(vim.api.nvim_win_set_cursor, win, { cursor_line, 0 })
+    if not preserve_cursor then
+      pcall(vim.api.nvim_win_set_cursor, win, { cursor_line, 0 })
+    end
     local view = vim.fn.winsaveview()
     view.topline = topline
     pcall(vim.fn.winrestview, view)

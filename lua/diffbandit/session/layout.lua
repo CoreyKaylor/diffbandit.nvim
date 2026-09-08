@@ -238,8 +238,8 @@ end
 -- Window-local options live per (window, buffer): displaying a different
 -- buffer in the window (editable worktree files swapped in by the file
 -- queue) silently reverts them to that buffer's defaults — 'wrap' coming
--- back on desyncs the pane's screen rows from its unwrappable gutters.
--- Re-apply after every right-buffer swap.
+-- back on desyncs the pane's screen rows from its unwrappable gutters,
+-- and 'scrolloff'/folds undo ]c alignment. Re-apply after every right-buffer swap.
 local function apply_right_source_window_options(session)
   local right_source_winhl = session.overview_enabled and layout.winhl.hidden_source or layout.winhl.source
   set_window_options(session.right_win, layout.win_opts.source(right_source_winhl, {

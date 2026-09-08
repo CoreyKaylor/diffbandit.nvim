@@ -2312,6 +2312,75 @@ do
   pcall(vim.api.nvim_buf_delete, right_buf, { force = true })
 end
 
+-- Git file-queue ]f then ]c keeps both panes on the chunk navigation anchors
+-- even when global scrolloff would otherwise shift add-hunk cursors independently.
+do
+  local function win_topline(win)
+    return vim.api.nvim_win_call(win, function()
+      return vim.fn.line("w0")
+    end)
+  end
+  local function many(n)
+    local lines = {}
+    for i = 1, n do
+      lines[i] = "line " .. i
+    end
+    return lines
+  end
+  local function with_inserts(n, at, count)
+    local lines = many(n)
+    for k = 1, count do
+      table.insert(lines, at, "insert-" .. k)
+    end
+    return lines
+  end
+  local repo = make_git_repo()
+  write_repo_file(repo, "first.txt", many(80))
+  write_repo_file(repo, "second.txt", many(90))
+  commit_baseline(repo)
+  write_repo_file(repo, "first.txt", with_inserts(80, 40, 8))
+  write_repo_file(repo, "second.txt", with_inserts(90, 55, 10))
+
+  local previous_scrolloff = vim.o.scrolloff
+  vim.o.scrolloff = 8
+  local queue = assert((git_mod.queue({ root = repo, mode = "unstaged" }, config.git)))
+  assert_eq(#(queue.entries or {}), 2, "Queue should include both modified files")
+  local loaded = assert((select(1, queue.load(1))))
+  local session = assert((Session.start({
+    left = loaded.left,
+    right = loaded.right,
+  }, config, {
+    queue = queue,
+    chunk_position = "top",
+  })))
+
+  session:goto_next_chunk()
+  local chunk = session.view.chunks[session.current_chunk]
+  local left_anchor, right_anchor = session:chunk_navigation_anchors(chunk)
+  local context = math.max(0, tonumber((config.navigation or {}).jump_context) or 0)
+  assert_eq(win_topline(session.left_win), math.max(1, left_anchor - context),
+    "First-file ]c should align the left pane")
+  assert_eq(win_topline(session.right_win), math.max(1, right_anchor - context),
+    "First-file ]c should align the right pane")
+
+  local first_index = session.file_queue_index or 1
+  session:goto_next_file()
+  assert_eq(session.file_queue_index, first_index + 1,
+    "]f should open the next git queue file")
+  assert_eq(session.current_chunk, 0, "]f should land at the top of the next file")
+  session:goto_next_chunk()
+  chunk = session.view.chunks[session.current_chunk]
+  left_anchor, right_anchor = session:chunk_navigation_anchors(chunk)
+  assert_eq(win_topline(session.left_win), math.max(1, left_anchor - context),
+    "]c after ]f should align the left pane")
+  assert_eq(win_topline(session.right_win), math.max(1, right_anchor - context),
+    "]c after ]f should align the right pane")
+
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.right_buf })
+  session:close()
+  vim.o.scrolloff = previous_scrolloff
+end
+
 -- Three-way merge gutters follow their content panes on scroll, matching the
 -- two-way session's owned gutter synchronization.
 do

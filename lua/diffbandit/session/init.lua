@@ -418,21 +418,23 @@ function Session:setup_autocmds()
   -- LSP configs commonly install buffer-local diagnostic maps ([d/]d) from
   -- LspAttach handlers; those fire after this session claimed a real file
   -- buffer and would shadow the document-navigation maps. Re-assert ours
-  -- after the handlers have run.
+  -- after the handlers have run. BufEnter covers git file-queue swaps where
+  -- gitsigns (and similar) bind ]c from a scheduled attach, not LspAttach.
+  local function reassert_source_maps(args)
+    if self.disposed then
+      return
+    end
+    if args.buf == self.left_buf or args.buf == self.right_buf then
+      keymaps.reassert_later(self, { args.buf })
+    end
+  end
   vim.api.nvim_create_autocmd("LspAttach", {
     group = augroup,
-    callback = function(args)
-      if self.disposed then
-        return
-      end
-      if args.buf == self.left_buf or args.buf == self.right_buf then
-        vim.schedule(function()
-          if not self.disposed then
-            keymaps.reassert(self, args.buf)
-          end
-        end)
-      end
-    end,
+    callback = reassert_source_maps,
+  })
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = augroup,
+    callback = reassert_source_maps,
   })
 
   if self.right and self.right.editable then
@@ -603,6 +605,7 @@ function Session:setup_keymaps()
       vim.api.nvim_set_current_win(self.left_win)
     end
   end)
+  keymaps.reassert_later(self, { self.left_buf, self.right_buf })
 end
 
 function Session:set_buffer_keymap(mode, buf, lhs, rhs, opts)
@@ -709,12 +712,12 @@ function Session:request_editable_right_refresh()
   end, delay)
 end
 
-local function apply_viewport_toplines(self, left_topline, right_topline)
-  set_win_view_topline(self.left_win, left_topline)
-  set_win_view_topline(self.left_num_win, left_topline)
-  set_win_view_topline(self.right_win, right_topline)
-  set_win_view_topline(self.right_num_win, right_topline)
-  set_win_view_topline(self.connector_win, left_topline or 1)
+local function apply_viewport_toplines(self, left_topline, right_topline, opts)
+  set_win_view_topline(self.left_win, left_topline, opts)
+  set_win_view_topline(self.left_num_win, left_topline, opts)
+  set_win_view_topline(self.right_win, right_topline, opts)
+  set_win_view_topline(self.right_num_win, right_topline, opts)
+  set_win_view_topline(self.connector_win, left_topline or 1, opts)
 end
 
 function Session:set_viewport_toplines(left_topline, right_topline)
@@ -744,6 +747,11 @@ function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topl
     pcall(vim.api.nvim_win_set_cursor, self.right_win, right_pair)
     pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_pair[1], 0 })
   end
+  -- nvim_win_set_cursor honors window-local 'scrolloff', which independently
+  -- shifts each pane (add/delete cursors are not the same offset from the
+  -- navigation anchors). Pin the intended toplines after cursor placement
+  -- without resetting the cursor column.
+  apply_viewport_toplines(self, left_topline, right_topline, { preserve_cursor = true })
   if opts.defer_render then
     -- The viewport (text, backgrounds, cursors) moves immediately; only the
     -- route overlay repaint rides the scroll debounce, so rapid navigation

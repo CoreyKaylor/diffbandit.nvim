@@ -474,21 +474,23 @@ function Merge:setup_autocmds()
   -- LSP configs commonly install buffer-local diagnostic maps ([d/]d) from
   -- LspAttach handlers; those fire after the merge claimed the real result
   -- buffer and would shadow the document-navigation maps. Re-assert ours
-  -- after the handlers have run.
+  -- after the handlers have run. BufEnter covers queue hops that swap the
+  -- result/source buffers under plugins that bind from a scheduled attach.
+  local function reassert_merge_maps(args)
+    if self.disposed then
+      return
+    end
+    if args.buf == self.local_buf or args.buf == self.result_buf or args.buf == self.remote_buf then
+      keymaps.reassert_later(self, { args.buf })
+    end
+  end
   vim.api.nvim_create_autocmd("LspAttach", {
     group = self.augroup,
-    callback = function(args)
-      if self.disposed then
-        return
-      end
-      if args.buf == self.local_buf or args.buf == self.result_buf or args.buf == self.remote_buf then
-        vim.schedule(function()
-          if not self.disposed then
-            keymaps.reassert(self, args.buf)
-          end
-        end)
-      end
-    end,
+    callback = reassert_merge_maps,
+  })
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = self.augroup,
+    callback = reassert_merge_maps,
   })
   -- The three content panes scroll independently; DiffBandit owns gutter
   -- synchronization (same contract as two-way sessions — no scrollbind).
@@ -830,6 +832,7 @@ function Merge:setup_keymaps()
       map(buf, keys.show_all, function() self:show_all() end)
     end
   end
+  keymaps.reassert_later(self, { self.local_buf, self.result_buf, self.remote_buf })
 end
 
 function Merge:status_text()
@@ -1470,16 +1473,16 @@ function Merge:source_row_for_result_row(side, result_row)
   return prior_source or next_source or result_row
 end
 
-function Merge:set_viewports(local_topline, result_topline, remote_topline)
-  set_win_view_topline(self.local_win, local_topline)
-  set_win_view_topline(self.local_num_win, local_topline)
-  set_win_view_topline(self.local_result_connector_win, local_topline)
-  set_win_view_topline(self.result_win, result_topline)
-  set_win_view_topline(self.result_left_num_win, result_topline)
-  set_win_view_topline(self.result_right_num_win, result_topline)
-  set_win_view_topline(self.remote_win, remote_topline)
-  set_win_view_topline(self.remote_num_win, remote_topline)
-  set_win_view_topline(self.result_remote_connector_win, remote_topline)
+function Merge:set_viewports(local_topline, result_topline, remote_topline, opts)
+  set_win_view_topline(self.local_win, local_topline, opts)
+  set_win_view_topline(self.local_num_win, local_topline, opts)
+  set_win_view_topline(self.local_result_connector_win, local_topline, opts)
+  set_win_view_topline(self.result_win, result_topline, opts)
+  set_win_view_topline(self.result_left_num_win, result_topline, opts)
+  set_win_view_topline(self.result_right_num_win, result_topline, opts)
+  set_win_view_topline(self.remote_win, remote_topline, opts)
+  set_win_view_topline(self.remote_num_win, remote_topline, opts)
+  set_win_view_topline(self.result_remote_connector_win, remote_topline, opts)
 end
 
 function Merge:rerender_pair_viewports(opts)
@@ -1522,6 +1525,8 @@ function Merge:align_hunk_item_viewports(item)
   pcall(vim.api.nvim_win_set_cursor, self.local_win, { local_cursor, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.result_win, { result_cursor, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.remote_win, { remote_cursor, 0 })
+  -- Cursor placement honors 'scrolloff'; pin the aligned toplines afterwards.
+  self:set_viewports(local_topline, result_topline, remote_topline, { preserve_cursor = true })
   self:rerender_pair_viewports()
 end
 
@@ -1592,6 +1597,7 @@ function Merge:snap_to_cursor()
   pcall(vim.api.nvim_win_set_cursor, self.local_win, pane_cursor(self.local_win, local_row))
   pcall(vim.api.nvim_win_set_cursor, self.result_win, pane_cursor(self.result_win, result_row))
   pcall(vim.api.nvim_win_set_cursor, self.remote_win, pane_cursor(self.remote_win, remote_row))
+  self:set_viewports(local_topline, result_topline, remote_topline, { preserve_cursor = true })
   self:rerender_pair_viewports()
 end
 
@@ -1646,6 +1652,7 @@ function Merge:goto_document_edge(edge)
   pcall(vim.api.nvim_win_set_cursor, self.local_win, { local_line, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.result_win, { result_line, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.remote_win, { remote_line, 0 })
+  self:set_viewports(local_topline, result_topline, remote_topline, { preserve_cursor = true })
   self:rerender_pair_viewports()
   self:render_headers()
 end

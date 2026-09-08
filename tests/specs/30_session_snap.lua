@@ -440,3 +440,124 @@ do
   pcall(vim.api.nvim_buf_delete, user_buf, { force = true })
 end
 
+-- Suite 16f: ]c alignment is scrolloff-proof, including after replace_sources
+-- (the ]f file-queue path). Add hunks put the right cursor one row below the
+-- navigation origin; without pinning toplines after set_cursor, scrolloff
+-- shifts the panes independently (GitHub issue #9).
+do
+  local function win_topline(win)
+    return vim.api.nvim_win_call(win, function()
+      return vim.fn.line("w0")
+    end)
+  end
+  local function lines_with_inserts(n, inserts)
+    local out = {}
+    for i = 1, n do
+      for _, ins in ipairs(inserts or {}) do
+        if ins.at == i then
+          for k = 1, ins.count do
+            out[#out + 1] = (ins.prefix or "ADD") .. k
+          end
+        end
+      end
+      out[#out + 1] = "base " .. i
+    end
+    return out
+  end
+  local function assert_jump_aligned(session, label)
+    local chunk = session.view.chunks[session.current_chunk]
+    assert(chunk, label .. ": expected an active chunk")
+    local left_anchor, right_anchor = session:chunk_navigation_anchors(chunk)
+    local context = math.max(0, tonumber((config.navigation or {}).jump_context) or 0)
+    assert_eq(win_topline(session.left_win), math.max(1, left_anchor - context),
+      label .. ": left topline should match the navigation anchor")
+    assert_eq(win_topline(session.right_win), math.max(1, right_anchor - context),
+      label .. ": right topline should match the navigation anchor")
+  end
+
+  local previous_scrolloff = vim.o.scrolloff
+  vim.o.scrolloff = 8
+  local left1 = lines_with_inserts(80, {})
+  local right1 = lines_with_inserts(80, {
+    { at = 5, count = 12, prefix = "A1-" },
+    { at = 40, count = 8, prefix = "A2-" },
+  })
+  local session = assert((Session.start({
+    left = source_mod.from_lines(left1, nil, "left"),
+    right = source_mod.from_lines(right1, nil, "right"),
+  }, config, { chunk_position = "top" })))
+
+  session:goto_next_chunk()
+  session:goto_next_chunk()
+  assert_jump_aligned(session, "Second ]c with scrolloff=8")
+
+  local left2 = lines_with_inserts(90, {})
+  local right2 = lines_with_inserts(90, {
+    { at = 8, count = 15, prefix = "B1-" },
+    { at = 55, count = 10, prefix = "B2-" },
+  })
+  assert((session:replace_sources({
+    left = source_mod.from_lines(left2, nil, "left"),
+    right = source_mod.from_lines(right2, nil, "right"),
+  }, { chunk_position = "top" })))
+  session:goto_next_chunk()
+  session:goto_next_chunk()
+  assert_jump_aligned(session, "]c after replace_sources (]f path) with scrolloff=8")
+
+  session:close()
+  vim.o.scrolloff = previous_scrolloff
+end
+
+-- Suite 16g: after an editable right-buffer swap, BufEnter re-asserts ]c so a
+-- gitsigns-style map cannot steal hunk navigation (GitHub issue #9).
+do
+  local function write_temp(lines)
+    local path = vim.fn.tempname() .. ".txt"
+    vim.fn.writefile(lines, path)
+    local buf = vim.fn.bufadd(path)
+    vim.fn.bufload(buf)
+    pcall(vim.api.nvim_set_option_value, "swapfile", false, { buf = buf })
+    return path, buf
+  end
+  local path1, buf1 = write_temp({ "one", "TWO", "three" })
+  local path2, buf2 = write_temp({ "alpha", "BETA", "gamma" })
+  local session = assert((Session.start({
+    left = source_mod.from_lines({ "one", "two", "three" }, nil, "left"),
+    right = source_mod.from_lines({ "one", "TWO", "three" }, path1, "right", {
+      editable = { target = "buffer", bufnr = buf1, path = path1 },
+    }),
+  }, config, { chunk_position = "top" })))
+  local session_cb = buffer_keymap_callback(session.right_buf, "n", "]c")
+  assert_eq(type(session_cb), "function",
+    "Session should map ]c on the first editable right buffer")
+
+  assert((session:replace_sources({
+    left = source_mod.from_lines({ "alpha", "beta", "gamma" }, nil, "left"),
+    right = source_mod.from_lines({ "alpha", "BETA", "gamma" }, path2, "right", {
+      editable = { target = "buffer", bufnr = buf2, path = path2 },
+    }),
+  }, { chunk_position = "top" })))
+  assert_eq(session.right_buf, buf2, "replace_sources should swap in the next editable buffer")
+  session_cb = buffer_keymap_callback(session.right_buf, "n", "]c")
+  assert_eq(type(session_cb), "function",
+    "Session should map ]c on the swapped right buffer")
+
+  local foreign = function() end
+  vim.keymap.set("n", "]c", foreign, { buffer = session.right_buf })
+  assert_eq(buffer_keymap_callback(session.right_buf, "n", "]c"), foreign,
+    "A gitsigns-style buffer map should shadow session ]c")
+
+  vim.api.nvim_exec_autocmds("BufEnter", { buffer = session.right_buf })
+  vim.wait(500, function()
+    return buffer_keymap_callback(session.right_buf, "n", "]c") == session_cb
+  end, 10)
+  assert_eq(buffer_keymap_callback(session.right_buf, "n", "]c"), session_cb,
+    "BufEnter should re-assert the session ]c map after a file-queue buffer swap")
+
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = buf1 })
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = buf2 })
+  session:close()
+  pcall(vim.api.nvim_buf_delete, buf1, { force = true })
+  pcall(vim.api.nvim_buf_delete, buf2, { force = true })
+end
+
