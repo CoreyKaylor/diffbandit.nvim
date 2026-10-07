@@ -9,12 +9,13 @@ CONTENTS                                                     *diffbandit*
   4. Default mappings                              |diffbandit-mappings|
   5. Folder diff                                   |diffbandit-folder-diff|
   6. Git diffs                                     |diffbandit-git|
-  7. Commit panel                                  |diffbandit-commit-panel|
-  8. Merge conflicts                               |diffbandit-merge|
-  9. Hunk actions                                  |diffbandit-hunk-actions|
- 10. Configuration                                 |diffbandit-configuration|
- 11. Lua API                                       |diffbandit-lua-api|
- 12. Testing                                       |diffbandit-testing|
+  7. Launcher                                      |diffbandit-launcher|
+  8. Commit panel                                  |diffbandit-commit-panel|
+  9. Merge conflicts                               |diffbandit-merge|
+ 10. Hunk actions                                  |diffbandit-hunk-actions|
+ 11. Configuration                                 |diffbandit-configuration|
+ 12. Lua API                                       |diffbandit-lua-api|
+ 13. Testing                                       |diffbandit-testing|
 
 ==============================================================================
 OVERVIEW                                            *diffbandit-overview*
@@ -118,6 +119,12 @@ COMMANDS                                            *diffbandit-commands*
 :DiffBanditMerge [path]
         Open a three-pane resolver for an unmerged Git conflict. If [path] is
         omitted, the current buffer path is used.
+
+                                                  *:DiffBanditLaunch*
+:DiffBanditLaunch
+        Entry point for the `bin/diffbandit` launcher; see
+        |diffbandit-launcher|. It reads its arguments from the environment
+        the script sets and refuses to run otherwise.
 
                                            *:DiffBanditToggleStageHunk*
 :DiffBanditToggleStageHunk
@@ -236,7 +243,8 @@ Git flags supported by |:DiffBanditGit|, |:DiffBanditGitCurrent|, and
   --all           Show staged and unstaged changes.
   --current       Scope the Git queue to the current file.
   --base {rev}    Compare all changes against {rev}.
-  --rev {spec}    Compare revisions. Supports A..B or A B forms.
+  --rev {spec}    Compare revisions. Supports A..B or A B forms; A...B
+                  compares B against the merge base of A and B.
   --no-untracked  Exclude untracked files.
   --              Treat remaining arguments as pathspecs.
 
@@ -276,6 +284,30 @@ with:
     },
   })
 <
+
+==============================================================================
+LAUNCHER                                            *diffbandit-launcher*
+
+`bin/diffbandit` opens DiffBandit for the repository in the current
+directory: the panel lists every changed file and selecting one opens its
+diff. `q` quits nvim, as does closing the last DiffBandit view. Link the
+script onto PATH as `diffbandit`, and as `git-diffbandit` for
+`git diffbandit`.
+
+Arguments follow `git diff`:
+>sh
+  diffbandit                    # working tree changes, with the panel
+  diffbandit --cached           # staged changes
+  diffbandit main               # working tree compared with main
+  diffbandit main feature       # read-only review, also main..feature
+  diffbandit main...feature     # review against the merge base
+  diffbandit show HEAD          # review a single commit
+  diffbandit main -- lua/       # cwd-relative pathspecs
+<
+The launcher uses your normal nvim config and runs |:DiffBanditLaunch|, so a
+lazy-loaded plugin should list that command among its load triggers.
+`DIFFBANDIT_NVIM_APPNAME` selects a dedicated config (`NVIM_APPNAME`) and
+`DIFFBANDIT_NVIM` the nvim executable.
 
 ==============================================================================
 COMMIT PANEL                                  *diffbandit-commit-panel*
@@ -520,6 +552,8 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.git_menu({})
   diffbandit.git_log({ all = true, max_count = 50 })
   diffbandit.git_commit("HEAD")
+  diffbandit.git_panel({})
+  diffbandit.launch({ "main...HEAD" })
   diffbandit.git_compare("main", "feature")
   diffbandit.git_compare_branches({})
   diffbandit.git_checkout("feature")

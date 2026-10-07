@@ -9,6 +9,9 @@ local State = {
   -- have been applied, and the ColorScheme-refresh augroup id.
   highlights_ready = false,
   theme_augroup = nil,
+  -- Set by the standalone launcher (bin/diffbandit): the panel's close key
+  -- quits nvim instead of only hiding the panel.
+  quit_on_close = false,
 }
 
 function State.set_config(user)

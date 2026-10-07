@@ -527,6 +527,41 @@ function M.commit_panel(opts)
   })
 end
 
+-- Working-tree changes with the commit panel, opened on the first file
+-- (unlike commit_panel(), which waits for a selection before showing a diff).
+function M.git_panel(opts)
+  local config = state.get_config()
+  ensure_highlights(config)
+  local queue, err = git_mod.queue(opts or {}, git_config_for(config))
+  if not queue then
+    return nil, err
+  end
+  local entry = queue.entries[1]
+  if entry.status == "U" then
+    queue.index = 1
+    return start_merge_for_entry(queue, entry, {
+      queue_index = 1,
+      panel = true,
+      panel_initial_selection = 1,
+    })
+  end
+  local loaded, load_err = load_queue_entry(queue, 1, 1)
+  if not loaded then
+    return nil, load_err
+  end
+  return start_session(loaded.left, loaded.right, {
+    queue = queue,
+    chunk_position = "top",
+    panel = true,
+    panel_initial_selection = queue.index,
+  })
+end
+
+-- Standalone entry point used by bin/diffbandit (see diffbandit.launcher).
+function M.launch(args, opts)
+  return require("diffbandit.launcher").launch(args, opts)
+end
+
 function M.git_file(path, opts)
   opts = vim.tbl_extend("force", {}, opts or {}, {
     scope = "current",

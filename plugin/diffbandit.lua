@@ -30,9 +30,10 @@ local function parse_git_args(args, defaults)
       opts.mode = "rev"
       local spec = args[i + 1]
       if spec and spec:find("%.%.") then
-        local left, right = spec:match("^(.-)%.%.(.+)$")
-        opts.base = left
-        opts.target = right
+        local left, dots, right = spec:match("^(.-)(%.%.%.?)(.*)$")
+        opts.base = left ~= "" and left or "HEAD"
+        opts.target = right ~= "" and right or "HEAD"
+        opts.merge_base = dots == "..." or nil
         i = i + 1
       else
         opts.base = args[i + 1]
@@ -243,6 +244,12 @@ end, {
   nargs = "+",
   complete = "dir",
   desc = "Open DiffBandit folder diff view",
+})
+
+vim.api.nvim_create_user_command("DiffBanditLaunch", function()
+  require("diffbandit.launcher").main()
+end, {
+  desc = "Run the bin/diffbandit launcher (reads $DIFFBANDIT_ARGV)",
 })
 
 local hunk_commands = {

@@ -180,6 +180,7 @@ completion remain focused on the editable target/result pane.
 :DiffBanditGit --current       " current file scope
 :DiffBanditGit --base main     " compare against a base revision
 :DiffBanditGit --rev main..HEAD
+:DiffBanditGit --rev main...HEAD " against the merge base of main and HEAD
 :DiffBanditGit --no-untracked
 :DiffBanditGit -- -- pathspec
 ```
@@ -204,6 +205,35 @@ Commit and branch review views are read-only Git queues. They reuse normal file
 and hunk navigation (`]f`/`[f`, `]c`/`[c`) but disable staging, discard, apply,
 and commit actions. Branch comparison defaults to a merge-base comparison; use
 `--direct` for an exact ref-to-ref comparison.
+
+## Standalone Launcher
+
+`bin/diffbandit` opens DiffBandit for the repository in the current directory,
+lazygit-style: one nvim with every changed file in the panel, where selecting a
+file opens its diff. `q` quits, as does closing the last DiffBandit view.
+
+```sh
+ln -s /path/to/diffbandit.nvim/bin/diffbandit ~/.local/bin/diffbandit
+ln -s /path/to/diffbandit.nvim/bin/diffbandit ~/.local/bin/git-diffbandit  # enables `git diffbandit`
+```
+
+Arguments follow `git diff`:
+
+```sh
+diffbandit                    # working tree changes, with the commit panel
+diffbandit --cached           # staged changes
+diffbandit main               # working tree compared with main
+diffbandit main feature       # read-only review, also main..feature
+diffbandit main...feature     # review against the merge base
+diffbandit show HEAD          # review a single commit
+diffbandit main -- lua/       # pathspecs, relative to the current directory
+```
+
+The launcher starts nvim with your normal config, so diffbandit.nvim must be
+installed there. It runs `:DiffBanditLaunch`, so a lazy-loaded plugin should
+list that command among its load triggers. Set `DIFFBANDIT_NVIM_APPNAME` to use
+a dedicated config (`NVIM_APPNAME`) or `DIFFBANDIT_NVIM` to pick the nvim
+executable.
 
 ## Default Keys
 
@@ -531,6 +561,8 @@ diffbandit.git_compare_branches({})
 diffbandit.git_checkout("feature")
 diffbandit.merge("path/to/conflicted-file")
 diffbandit.commit_panel({})
+diffbandit.git_panel({})             -- working-tree changes, panel open on the first file
+diffbandit.launch({ "main...HEAD" }) -- what bin/diffbandit runs (git diff-style args)
 
 -- Predicates. `is_running()` is the current tab (2-way, merge, or folder).
 -- Tabpage ids and bufnrs are both integers, so overloads take a table:

@@ -573,6 +573,14 @@ function M.queue(opts, config)
     end
     normalized.pathspecs = { relpath(root, target) }
   end
+  if normalized.mode == "rev" and normalized.merge_base then
+    local merge_base, merge_base_err = M.merge_base(root, normalized.base, normalized.target)
+    if not merge_base then
+      return nil, merge_base_err or "no merge base"
+    end
+    normalized.base = merge_base
+    normalized.merge_base = nil
+  end
   if normalized.mode == "all" and (normalized.base == nil or normalized.base == "HEAD") and not has_head(root) then
     normalized.base = empty_tree
     normalized.unborn_head = true
@@ -793,6 +801,14 @@ function M.merge_base(root, base, target)
   end
   output = vim.trim(output)
   return output ~= "" and output or nil, nil
+end
+
+-- True when rev names a commit-ish (used to tell revisions from pathspecs).
+function M.is_revision(root, rev)
+  if not rev or rev == "" or rev:sub(1, 1) == "-" then
+    return false
+  end
+  return git_exit_code(root, { "rev-parse", "--verify", "--quiet", rev .. "^{commit}" }) == 0
 end
 
 function M.compare_queue(root, base, target, opts, config)

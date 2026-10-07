@@ -1,0 +1,63 @@
+#!/bin/sh
+# Open DiffBandit for the git repository in the current directory.
+# Symlink this onto PATH as `diffbandit`, and as `git-diffbandit` to get
+# `git diffbandit`.
+
+usage() {
+  cat <<'EOF'
+usage: diffbandit [--cached] [--no-untracked] [<rev> [<rev>] | <a>..<b> | <a>...<b>] [--] [<path>...]
+       diffbandit show <rev> [--] [<path>...]
+
+  (no revision)   working tree changes, with the commit panel
+  --cached        staged changes
+  <rev>           working tree compared with <rev>
+  <a> <b>, <a>..<b>
+                  read-only review of <a> against <b>
+  <a>...<b>       read-only review of <b> against its merge base with <a>
+  show <rev>      read-only review of a single commit
+
+Environment:
+  DIFFBANDIT_NVIM          nvim executable (default: nvim)
+  DIFFBANDIT_NVIM_APPNAME  NVIM_APPNAME for a dedicated nvim config
+EOF
+}
+
+case "$1" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+
+if [ -n "$DIFFBANDIT_NVIM_APPNAME" ]; then
+  NVIM_APPNAME=$DIFFBANDIT_NVIM_APPNAME
+  export NVIM_APPNAME
+fi
+
+# Arguments travel through the environment (unit-separator joined) so nvim
+# never opens them as files.
+DIFFBANDIT_ARGV=
+if [ $# -gt 0 ]; then
+  DIFFBANDIT_ARGV=$(printf '%s\037' "$@")
+fi
+DIFFBANDIT_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/diffbandit.XXXXXX") || exit 1
+export DIFFBANDIT_ARGV DIFFBANDIT_ERRFILE
+trap 'rm -f "$DIFFBANDIT_ERRFILE"' EXIT
+
+# Prefer the command: lazy plugin managers load the plugin on its commands,
+# not on require().
+"${DIFFBANDIT_NVIM:-nvim}" -c 'lua
+  local ok, launcher
+  if vim.fn.exists(":DiffBanditLaunch") == 2 then
+    vim.cmd("DiffBanditLaunch")
+    return
+  end
+  ok, launcher = pcall(require, "diffbandit.launcher")
+  if ok then
+    launcher.main()
+  else
+    vim.fn.writefile({ "diffbandit: diffbandit.nvim is not installed in this nvim config" }, vim.env.DIFFBANDIT_ERRFILE)
+    vim.cmd("cquit 1")
+  end'
+status=$?
+if [ -s "$DIFFBANDIT_ERRFILE" ]; then
+  cat "$DIFFBANDIT_ERRFILE" >&2
+fi
+exit $status

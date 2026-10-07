@@ -4,6 +4,7 @@ local ui = require("diffbandit.util.ui")
 local config_mod = require("diffbandit.config")
 local layout = require("diffbandit.util.layout")
 local panel_api = require("diffbandit.host.panel_api")
+local state = require("diffbandit.state")
 
 local M = {}
 
@@ -1006,6 +1007,10 @@ function M.setup_keymaps(session)
     M.toggle_amend(session)
   end
   local close = function()
+    if state.quit_on_close then
+      pcall(vim.cmd, "confirm qall")
+      return
+    end
     M.close(session)
   end
 

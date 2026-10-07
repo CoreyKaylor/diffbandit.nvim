@@ -12,6 +12,7 @@
 :DiffBanditGitCurrent	diffbandit.txt	/*:DiffBanditGitCurrent*
 :DiffBanditGitLog	diffbandit.txt	/*:DiffBanditGitLog*
 :DiffBanditGitMenu	diffbandit.txt	/*:DiffBanditGitMenu*
+:DiffBanditLaunch	diffbandit.txt	/*:DiffBanditLaunch*
 :DiffBanditMerge	diffbandit.txt	/*:DiffBanditMerge*
 :DiffBanditStageHunk	diffbandit.txt	/*:DiffBanditStageHunk*
 :DiffBanditToggleStageHunk	diffbandit.txt	/*:DiffBanditToggleStageHunk*
@@ -36,6 +37,7 @@ diffbandit-folder-diff	diffbandit.txt	/*diffbandit-folder-diff*
 diffbandit-git	diffbandit.txt	/*diffbandit-git*
 diffbandit-hunk-actions	diffbandit.txt	/*diffbandit-hunk-actions*
 diffbandit-installation	diffbandit.txt	/*diffbandit-installation*
+diffbandit-launcher	diffbandit.txt	/*diffbandit-launcher*
 diffbandit-lua-api	diffbandit.txt	/*diffbandit-lua-api*
 diffbandit-mappings	diffbandit.txt	/*diffbandit-mappings*
 diffbandit-merge	diffbandit.txt	/*diffbandit-merge*
