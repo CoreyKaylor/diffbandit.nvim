@@ -429,9 +429,20 @@ function M.resize(session)
   if session.status_enabled then
     local overview_header_extra = session.overview_enabled and (session.overview_width + 1) or 0
     local center_fixed_width = session.left_number_pane_width + session.connector_core_width + session.right_number_pane_width
-    set_window_width(session.left_header_win, left_width + overview_header_extra)
-    set_window_width(session.center_header_win, center_fixed_width + 2)
-    set_window_width(session.right_header_win, right_width + overview_header_extra)
+    local center_header_width = center_fixed_width + 2
+    -- Image connectors shrink the core to an IntelliJ-sized divider; the
+    -- header row is its own split row, so keep the center header wide
+    -- enough for the compact status instead of truncating it.
+    local header_extra = 0
+    if session.connector_renderer == "kitty" then
+      local ok, lines = pcall(require("diffbandit.util.status").build, session)
+      local need = ok and lines and lines.center_compact and (vim.fn.strdisplaywidth(lines.center_compact) + 2) or 0
+      header_extra = math.max(0, math.min(need - center_header_width, left_width + right_width - 20))
+    end
+    local left_extra = math.floor(header_extra / 2)
+    set_window_width(session.left_header_win, left_width + overview_header_extra - left_extra)
+    set_window_width(session.center_header_win, center_header_width + header_extra)
+    set_window_width(session.right_header_win, right_width + overview_header_extra - (header_extra - left_extra))
     set_window_height(session.left_header_win, 1)
     set_window_height(session.center_header_win, 1)
     set_window_height(session.right_header_win, 1)

@@ -43,6 +43,7 @@ local specs = {
   "32_document_cache.lua",
   "35_render_recovery.lua",
   "40_oracle.lua",
+  "45_kitty.lua",
 }
 
 local map_entries = {}

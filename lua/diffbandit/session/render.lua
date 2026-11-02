@@ -8,9 +8,21 @@ local connector = require("diffbandit.connector")
 local diff_mod = require("diffbandit.diff")
 local connector_width = require("diffbandit.connector.width")
 local ui = require("diffbandit.util.ui")
+local kitty_canvas = require("diffbandit.kitty.canvas")
 
 local set_buffer_options = nvim.set_buffer_options
 local get_win_view_topline = nvim.get_win_view_topline
+
+-- Image (Kitty graphics) connector: bezier ribbons replace rails + wedges.
+local function kitty_mode(self)
+  return self.connector_renderer == "kitty"
+end
+
+-- The image renderer needs no lanes: an empty, successful plan keeps every
+-- downstream consumer (cache, recovery latch, path state) on its happy path.
+local function empty_route_plan()
+  return { routes = {}, hidden_routes = {}, success = true, strategy = "kitty" }
+end
 
 local M = {}
 
@@ -231,9 +243,10 @@ local function build_render_context(self)
   -- (navigation back and forth, debounced duplicate repaints) are free.
   local paths = self:base_paths()
   local win_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
-  local plan_cache_key = string.format("%s:%s:%d:%d:%d:%d",
+  local kitty = kitty_mode(self)
+  local plan_cache_key = string.format("%s:%s:%d:%d:%d:%d%s",
     tostring(left_topline), tostring(right_topline), left_height, win_height,
-    self.current_chunk or 0, self.connector_core_width or 0)
+    self.current_chunk or 0, self.connector_core_width or 0, kitty and ":k" or "")
   self.route_plan_cache = self.route_plan_cache or { n = 0 }
   local route_paths, route_plan
   local delete_origin_right_lines
@@ -300,92 +313,99 @@ local function build_render_context(self)
     -- Project first, then mint the deadline — projection is one of the two
     -- most expensive stages and must not debit the solver budget.
     route_paths = self:project_paths_for_viewport(paths)
-    deadline = ui.route_plan_deadline(budget_ms, budget_share)
+    if kitty then
+      -- Image connector: ribbons need no lanes or rails, so the solver (and
+      -- its wall-clock budget) is skipped entirely. A shared merge bag is
+      -- left untouched for the sibling pair.
+      route_plan = empty_route_plan()
+    else
+      deadline = ui.route_plan_deadline(budget_ms, budget_share)
 
-    local plan_layout = {
-      connector_core_width = self.connector_core_width,
-      viewport_topline = left_topline,
-      viewport_height = left_height,
-      max_route_backtrack_steps = 500,
-      -- deadline == 0 means exhausted shared bag (always abort). nil = no budget.
-      should_abort = (deadline ~= nil) and should_abort or nil,
-      -- The navigated chunk's connector is the one the user is looking at;
-      -- overflow pruning hides it only when no other candidate remains.
-      active_chunk_index = (self.current_chunk or 0) > 0 and self.current_chunk or nil,
-    }
-    route_plan = connector.plan_routes(route_paths, plan_layout)
-    if not route_plan.success and not (plan_layout.should_abort and plan_layout.should_abort()) then
-      -- Wide cores can make the fixed-width search tree thrash on viewports
-      -- that a narrower working width solves immediately — solvability is
-      -- NOT monotone in width. Try a few near-core widths first (the usual
-      -- cure for fixed-width thrash, often solving in one attempt), then
-      -- fall back to the upward width search from the minimum. Successful
-      -- narrower solutions get their edge-docked horizontals stretched out
-      -- to the real core edge; the gutter width itself never changes here.
-      local min_width = connector_width.minimum(self.config)
-      local core_plan = route_plan
-      for width = self.connector_core_width - 1, math.max(min_width, self.connector_core_width - 3), -1 do
-        if plan_layout.should_abort and plan_layout.should_abort() then
-          break
+      local plan_layout = {
+        connector_core_width = self.connector_core_width,
+        viewport_topline = left_topline,
+        viewport_height = left_height,
+        max_route_backtrack_steps = 500,
+        -- deadline == 0 means exhausted shared bag (always abort). nil = no budget.
+        should_abort = (deadline ~= nil) and should_abort or nil,
+        -- The navigated chunk's connector is the one the user is looking at;
+        -- overflow pruning hides it only when no other candidate remains.
+        active_chunk_index = (self.current_chunk or 0) > 0 and self.current_chunk or nil,
+      }
+      route_plan = connector.plan_routes(route_paths, plan_layout)
+      if not route_plan.success and not (plan_layout.should_abort and plan_layout.should_abort()) then
+        -- Wide cores can make the fixed-width search tree thrash on viewports
+        -- that a narrower working width solves immediately — solvability is
+        -- NOT monotone in width. Try a few near-core widths first (the usual
+        -- cure for fixed-width thrash, often solving in one attempt), then
+        -- fall back to the upward width search from the minimum. Successful
+        -- narrower solutions get their edge-docked horizontals stretched out
+        -- to the real core edge; the gutter width itself never changes here.
+        local min_width = connector_width.minimum(self.config)
+        local core_plan = route_plan
+        for width = self.connector_core_width - 1, math.max(min_width, self.connector_core_width - 3), -1 do
+          if plan_layout.should_abort and plan_layout.should_abort() then
+            break
+          end
+          local near_layout = vim.tbl_extend("force", {}, plan_layout, { connector_core_width = width })
+          local near_plan = connector.plan_routes(route_paths, near_layout)
+          if near_plan.success then
+            route_plan = connector.stretch_plan_to_core(near_plan, width, self.connector_core_width)
+            break
+          end
+          if near_plan.aborted then
+            -- Stretch narrow-core geometry to the real core before paint.
+            -- Prefer strictly more routes; on a tie keep the cacheable
+            -- deterministic plan over an aborted one with identical output.
+            local stretched = connector.stretch_plan_to_core(near_plan, width, self.connector_core_width)
+            if plan_route_count(stretched) > plan_route_count(core_plan) then
+              route_plan = stretched
+            else
+              route_plan = core_plan
+            end
+            break
+          end
         end
-        local near_layout = vim.tbl_extend("force", {}, plan_layout, { connector_core_width = width })
-        local near_plan = connector.plan_routes(route_paths, near_layout)
-        if near_plan.success then
-          route_plan = connector.stretch_plan_to_core(near_plan, width, self.connector_core_width)
-          break
-        end
-        if near_plan.aborted then
-          -- Stretch narrow-core geometry to the real core before paint.
-          -- Prefer strictly more routes; on a tie keep the cacheable
-          -- deterministic plan over an aborted one with identical output.
-          local stretched = connector.stretch_plan_to_core(near_plan, width, self.connector_core_width)
-          if plan_route_count(stretched) > plan_route_count(core_plan) then
-            route_plan = stretched
+        if not route_plan.success and not route_plan.aborted
+            and not (plan_layout.should_abort and plan_layout.should_abort()) then
+          -- Width-search step cap lives in required_connector_core_width_for_paths
+          -- (generous default; wall-clock abort still inherited).
+          local solved_width, retry_plan = connector.required_connector_core_width_for_paths(
+            route_paths,
+            min_width,
+            self.connector_core_width,
+            plan_layout)
+          if retry_plan.success then
+            route_plan = connector.stretch_plan_to_core(retry_plan, solved_width, self.connector_core_width)
+          elseif retry_plan.aborted and solved_width then
+            local stretched = connector.stretch_plan_to_core(retry_plan, solved_width, self.connector_core_width)
+            if plan_route_count(stretched) > plan_route_count(route_plan) then
+              route_plan = stretched
+            end
           else
-            route_plan = core_plan
-          end
-          break
-        end
-      end
-      if not route_plan.success and not route_plan.aborted
-          and not (plan_layout.should_abort and plan_layout.should_abort()) then
-        -- Width-search step cap lives in required_connector_core_width_for_paths
-        -- (generous default; wall-clock abort still inherited).
-        local solved_width, retry_plan = connector.required_connector_core_width_for_paths(
-          route_paths,
-          min_width,
-          self.connector_core_width,
-          plan_layout)
-        if retry_plan.success then
-          route_plan = connector.stretch_plan_to_core(retry_plan, solved_width, self.connector_core_width)
-        elseif retry_plan.aborted and solved_width then
-          local stretched = connector.stretch_plan_to_core(retry_plan, solved_width, self.connector_core_width)
-          if plan_route_count(stretched) > plan_route_count(route_plan) then
-            route_plan = stretched
-          end
-        else
-          if plan_route_count(retry_plan) > plan_route_count(route_plan) then
-            route_plan = retry_plan
+            if plan_route_count(retry_plan) > plan_route_count(route_plan) then
+              route_plan = retry_plan
+            end
           end
         end
       end
+
+      -- Clock expired with an incomplete plan: cascade (near-width / width
+      -- search) may never have run. Treat as degraded so we do not cache a
+      -- time-truncated bounded-hidden core and replay it forever at idle.
+      if not route_plan.success and deadline ~= nil and should_abort() then
+        cascade_time_truncated = true
+      end
+
+      -- plan_routes mutates hide/planned flags on the shared paths. Multi-plan
+      -- selection may keep an earlier plan while a discarded solve left its
+      -- flags behind — re-apply the chosen plan so paint matches segments.
+      connector.apply_plan_path_state(route_paths, route_plan)
+
+      -- Debit shared remaining-ms bag immediately after cascade selection so
+      -- underline/solid-index prep does not drain the sibling pair's budget.
+      ui.route_plan_budget_release(budget_share, deadline)
     end
-
-    -- Clock expired with an incomplete plan: cascade (near-width / width
-    -- search) may never have run. Treat as degraded so we do not cache a
-    -- time-truncated bounded-hidden core and replay it forever at idle.
-    if not route_plan.success and deadline ~= nil and should_abort() then
-      cascade_time_truncated = true
-    end
-
-    -- plan_routes mutates hide/planned flags on the shared paths. Multi-plan
-    -- selection may keep an earlier plan while a discarded solve left its
-    -- flags behind — re-apply the chosen plan so paint matches segments.
-    connector.apply_plan_path_state(route_paths, route_plan)
-
-    -- Debit shared remaining-ms bag immediately after cascade selection so
-    -- underline/solid-index prep does not drain the sibling pair's budget.
-    ui.route_plan_budget_release(budget_share, deadline)
 
     -- Underline / solid-band helpers ride the same viewport cache.
     local underline_layout = {
@@ -1019,8 +1039,12 @@ local function render_connector_backgrounds(self, ctx)
     end
   end
 
+  -- Image connector: the ribbon's tapered end draws the insertion line in
+  -- the wedge column, so the cell underline spacers there are skipped.
+  local kitty = kitty_mode(self)
+
   local function add_origin_core_underline(origin_row, row, meta)
-    if meta.origin == "add" then
+    if meta.origin == "add" and not kitty then
       if row < 0 or row >= ctx.connector_height then
         return
       end
@@ -1104,7 +1128,7 @@ local function render_connector_backgrounds(self, ctx)
         right_num_hl = "DiffBanditLineNumberRight"
       end
 
-      if is_delete_origin then
+      if is_delete_origin and not kitty then
         -- "combine" keeps the number pane's own background (e.g. a change
         -- band) under the underline spacer so the origin underline decorates
         -- the row instead of punching a dark cell into it.
@@ -1160,7 +1184,11 @@ local function render_route_backgrounds(self, ctx)
     end
   end
   -- Solid change corridor: one multi-row hl_eol extmark per solid range
-  -- (not one mark per row over the pad-extended window).
+  -- (not one mark per row over the pad-extended window). The image connector
+  -- paints the whole band (curved) itself.
+  if kitty_mode(self) then
+    return
+  end
   local conn_lo = ctx.left_row_min or 1
   local conn_hi = math.min(ctx.left_row_max or ctx.connector_height, ctx.connector_height)
   for _, p in ipairs(ctx.route_paths) do
@@ -1448,6 +1476,12 @@ local function render_route_glyphs(self, ctx)
   clear_ns_range(self.connector_buf, self.path_ns, connector_min, connector_max, full)
   clear_ns_range(self.right_num_buf, self.path_ns, right_min, right_max, full)
 
+  -- Image connector: ribbons + wedge-column placeholders replace every glyph
+  -- below (rails, underline runs, change wedges, add/delete triangles).
+  if kitty_mode(self) then
+    return kitty_canvas.paint(self, ctx)
+  end
+
   -- Paint only the current clip (not the union) — clear already covers the
   -- previous clip so stale marks are gone.
   local cur = ctx.paint_clip
@@ -1656,8 +1690,13 @@ function M.render(session)
   end
 
   t0 = timing and perf_now() or 0
-  render_route_glyphs(session, ctx)
+  local kitty_timings = render_route_glyphs(session, ctx)
   mark("paint_routes", t0)
+  if stages and kitty_timings then
+    stages.kitty_curves = kitty_timings.curves
+    stages.kitty_raster = kitty_timings.raster
+    stages.kitty_transmit = kitty_timings.transmit
+  end
 
   -- One clip field for ns + path clears; commit after both have unioned with
   -- the previous frame so neither clear loses the prior range mid-render.
@@ -1677,15 +1716,21 @@ function M.render(session)
     if perf_should_log(session) then
       local warn_ms = tonumber(perf_config(session).budget_warn_ms) or 8
       if stages.total >= warn_ms then
+        local kitty_part = ""
+        if stages.kitty_raster then
+          kitty_part = string.format(" [kitty curves=%.1f raster=%.1f transmit=%.1f]",
+            stages.kitty_curves or 0, stages.kitty_raster or 0, stages.kitty_transmit or 0)
+        end
         vim.notify(string.format(
-          "diffbandit render %.1fms (struct=%s context=%.1f set_lines=%.1f clear=%.1f bg=%.1f routes=%.1f)",
+          "diffbandit render %.1fms (struct=%s context=%.1f set_lines=%.1f clear=%.1f bg=%.1f routes=%.1f)%s",
           stages.total,
           ctx.write_structural and "yes" or "no",
           stages.context or 0,
           stages.set_lines or 0,
           stages.clear_ns or 0,
           stages.paint_bg or 0,
-          stages.paint_routes or 0
+          stages.paint_routes or 0,
+          kitty_part
         ), vim.log.levels.DEBUG)
       end
     end

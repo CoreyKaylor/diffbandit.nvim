@@ -16,6 +16,7 @@ local ui = require("diffbandit.util.ui")
 local view_builder = require("diffbandit.diff.view")
 local connector_width = require("diffbandit.connector.width")
 local config_mod = require("diffbandit.config")
+local kitty = require("diffbandit.kitty")
 
 local Merge = {}
 Merge.__index = Merge
@@ -110,13 +111,34 @@ function Merge.start(data, config, opts)
   self.panel_message_lines = opts.panel_message_lines
   self.panel_amend = opts.panel_amend == true
   self.disposed = false
+  -- Optional Kitty graphics connectors (one image per pair, see
+  -- pair_renderer). A late "auto" probe answer or a runtime terminal error
+  -- flips both pairs by rebuilding them.
+  kitty.attach(self, {
+    on_change = function()
+      if not self.disposed then
+        self:render({ force_pair_rebuild = true })
+      end
+    end,
+    refresh = function()
+      if self.disposed then
+        return
+      end
+      for _, pair in ipairs({ self.local_result_session, self.result_remote_session }) do
+        if pair then
+          pair.last_viewport_render_key = nil
+        end
+      end
+      self:render({ force_viewport = true })
+    end,
+  })
   -- Visibility toggles for focus mode ("local" is a Lua keyword, hence _pane
   -- suffixes). The result pane is never hideable; panel visibility is also
   -- mirrored in self.panel.visible by panel_mod.
   self.hidden = { panel = false, local_pane = false, remote_pane = false }
   self.status_enabled = config_mod.section(self.config, "ui", "status").enabled ~= false
   self.merge_context = git.merge_context(self.root)
-  self.connector_width = connector_width.minimum(self.config)
+  self.connector_width = kitty.min_core_width(self)
 
   local ft = source_mod.detect_filetype(self.path)
   local result_path = git.abs_path(self.root, self.path)
@@ -1215,7 +1237,7 @@ function Merge:render(opts)
   self.connector_width = math.max(
     local_result and local_result.connector_core_width or 0,
     result_remote and result_remote.connector_core_width or 0,
-    connector_width.minimum(self.config)
+    kitty.min_core_width(self)
   )
   if local_result then
     local_result.connector_core_width = self.connector_width
@@ -2118,6 +2140,7 @@ function Merge:close(from_autocmd)
     return
   end
   self.disposed = true
+  kitty.detach(self)
   self:clear_keymaps()
   if self.augroup then
     pcall(vim.api.nvim_del_augroup_by_id, self.augroup)

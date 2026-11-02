@@ -4,6 +4,7 @@
 local connector_width = require("diffbandit.connector.width")
 local config_mod = require("diffbandit.config")
 local render_host = require("diffbandit.session.render_host")
+local kitty_canvas = require("diffbandit.kitty.canvas")
 
 local M = {}
 
@@ -72,6 +73,14 @@ function M.from_pair(owner, id_suffix, pair, left_source, right_source, buffers,
   -- Assign merge_host before invalidate so content rebuilds clear the
   -- host-level recovery latch (not only the brand-new pair's empty state).
   renderer.merge_host = owner
+  -- Image connector: the owner resolved the renderer; each pair keeps one
+  -- terminal image id across pair rebuilds (keyed by side).
+  renderer.connector_renderer = owner.connector_renderer
+  owner.kitty_states = owner.kitty_states or {}
+  if renderer.connector_renderer == "kitty" then
+    owner.kitty_states[id_suffix] = owner.kitty_states[id_suffix] or kitty_canvas.new_state()
+    renderer.kitty_state = owner.kitty_states[id_suffix]
+  end
   renderer:invalidate_render_caches()
   renderer:precompute_connector_core_width()
   return renderer

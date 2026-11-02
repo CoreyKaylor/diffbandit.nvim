@@ -15,6 +15,7 @@ local render_host = require("diffbandit.session.render_host")
 local config_mod = require("diffbandit.config")
 local view_builder = require("diffbandit.diff.view")
 local diff_document = require("diffbandit.diff.document")
+local kitty = require("diffbandit.kitty")
 
 local Session = {}
 Session.__index = Session
@@ -136,6 +137,27 @@ function Session.start(sources, config, opts)
   self.return_to = opts.return_to
   self.preserve_right_buffer_lines = self.right.editable ~= nil
   self.suppress_right_context_highlights = self.right.editable ~= nil
+
+  -- Optional Kitty graphics connector: resolves "kitty" or "cells" now and
+  -- flips later if an "auto" probe answers (or the terminal rejects images).
+  kitty.attach(self, {
+    on_change = function()
+      if self.disposed then
+        return
+      end
+      self:invalidate_render_caches()
+      self:precompute_connector_core_width()
+      self.last_viewport_render_key = nil
+      self:rerender_for_viewport()
+    end,
+    refresh = function()
+      if self.disposed then
+        return
+      end
+      self.last_viewport_render_key = nil
+      self:rerender_for_viewport()
+    end,
+  })
 
   self:open_layout()
   if self.panel_enabled then
@@ -971,6 +993,7 @@ function Session:dispose()
     return
   end
   self.disposed = true
+  kitty.detach(self)
   self:clear_keymaps()
   -- Editable right reuses the user's buffer; without this, band/intraline
   -- extmarks stay visible after q returns to that buffer (issue #5).

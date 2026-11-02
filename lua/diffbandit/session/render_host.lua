@@ -281,13 +281,20 @@ function M.project_paths_for_viewport(self, paths)
 end
 
 function M.precompute_connector_core_width(self)
-  local viewport_rows = vim.api.nvim_win_is_valid(self.left_win)
-      and vim.api.nvim_win_get_height(self.left_win) or nil
-  local required_core = connector.pressure_core_width(
-    self:base_paths(),
-    connector_width.base(self.view, self.config),
-    connector_width.maximum(self.config),
-    viewport_rows)
+  local required_core
+  if self.connector_renderer == "kitty" then
+    -- Image ribbons have no lanes, so rail pressure does not apply: the
+    -- core is IntelliJ divider-sized (stable across documents and files).
+    required_core = require("diffbandit.kitty").core_width(self.config)
+  else
+    local viewport_rows = vim.api.nvim_win_is_valid(self.left_win)
+        and vim.api.nvim_win_get_height(self.left_win) or nil
+    required_core = connector.pressure_core_width(
+      self:base_paths(),
+      connector_width.base(self.view, self.config),
+      connector_width.maximum(self.config),
+      viewport_rows)
+  end
   if required_core ~= self.connector_core_width then
     self.connector_core_width = required_core
     if type(self.resize_layout) == "function" then

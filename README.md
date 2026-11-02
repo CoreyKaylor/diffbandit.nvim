@@ -19,6 +19,9 @@ documents without distorting either one.
 - Independent source scrolling with synchronized line-number panes.
 - Connector routes for additions, deletions, changes, mixed hunks, and
   scroll-clipped regions.
+- Smooth bezier connector ribbons in terminals that support the Kitty graphics
+  protocol (Ghostty, Kitty, Rex, …), detected automatically with a fallback to
+  the cell renderer everywhere else.
 - Editable right-side target buffers for file, buffer, and Git worktree diffs,
   with normal Neovim writes, undo, syntax, LSP diagnostics, and completion.
 - Read-only source panes keep filetype-driven syntax highlighting without
@@ -48,6 +51,9 @@ documents without distorting either one.
   commit panel.
 - tmux only for running the integration test suite.
 - Nerd Fonts are optional.
+- Image connectors need Neovim 0.12+ (`nvim_ui_send`), `termguicolors`, and a
+  terminal with Kitty graphics + Unicode placeholder support. LuaJIT `ffi` and
+  the system `libz` are used when present for speed and compression.
 
 ## Installation
 
@@ -493,6 +499,16 @@ require("diffbandit").setup({
     connector_width = 9,
     connector_max_width = 9,
     scroll_debounce_ms = 16,
+    -- "auto" | "kitty" | "cells" (see Image connectors below).
+    connector_renderer = "auto",
+    kitty = {
+      transmission = "auto", -- "auto" | "file" | "direct"
+      compress = true,
+      probe_timeout_ms = 300,
+      max_image_px = 4000000,
+      cell_px = nil, -- { w, h } override; measured via the tty, else a 20x40 (HiDPI) estimate
+      divider_width = 1.45, -- curve width in line heights (IntelliJ's 24px divider)
+    },
     split_blend = 0.3,
     overview = {
       enabled = true,
@@ -529,6 +545,46 @@ require("diffbandit").setup({
 Theme colors are derived from the active colorscheme's diff highlight groups.
 Use `ui.theme.colors` for semantic color overrides, or `ui.theme.highlights` to
 override specific `DiffBandit*` highlight groups.
+
+### Image connectors (Kitty graphics)
+
+With `ui.connector_renderer = "auto"` (the default), DiffBandit probes the
+terminal for the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+when a diff opens. It sends a capability query followed by a device-attributes
+sentinel, so detection never depends on terminal names. When the terminal
+answers, each connector is drawn as an anti-aliased image of filled bezier
+ribbons between the two panes, modelled on IntelliJ's diff divider. The curve
+also replaces the wedge glyphs in the number-pane edge columns. Otherwise the
+cell renderer is used, unchanged.
+
+- The image is shown through Unicode placeholder cells in a small, static,
+  non-focusable float laid over the gutter from one wedge column to the other.
+  The float covers the window separators, so ribbons run unbroken from the
+  number panes through the connector. Its text never changes while scrolling:
+  only the image does. It follows splits and resizes and closes with its pane.
+- Sizing follows IntelliJ's side-by-side divider (24px beside a ~16.5px
+  line, so about 1.45 line heights). The connector core shrinks to the fewest
+  cells that hold a curve that wide. The band runs flat across the number-pane
+  edge columns and curves only in the middle, using IntelliJ's control points
+  (30%/70%), 2px insertion lines and 1px strokes. `ui.kitty.divider_width`
+  (in line heights) makes it wider. Unlike IntelliJ, the active chunk keeps an
+  outline.
+- Without a pixel size from the tty (common under multiplexers and SSH), images
+  are rasterized at a 20x40 HiDPI cell estimate and scaled down by the terminal.
+  Set `ui.kitty.cell_px` to match your font exactly.
+- Repaints ride the same debounced viewport path as the cell renderer. The rail
+  solver is skipped entirely, and an image is re-sent only when the ribbon
+  geometry, size, or theme changes.
+- Images go through a temp file when the terminal can read one (local), and as
+  zlib-compressed chunked data otherwise (SSH, remote multiplexers).
+- `"kitty"` forces the image renderer and `"cells"` disables it. You can also
+  set `vim.g.diffbandit_connector_renderer` or
+  `DIFFBANDIT_CONNECTOR_RENDERER`. Inside tmux, auto mode uses cells.
+- If the terminal rejects an image later, every open view falls back to cells.
+
+`DIFFBANDIT_PERF=1` adds `kitty curves/raster/transmit` stage timings to the
+render log. `tools/bench_kitty.lua` compares repaint cost against the cell
+renderer.
 
 ### Diff matching
 

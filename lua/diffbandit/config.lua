@@ -23,6 +23,28 @@ local defaults = {
     -- instead of hanging on pathological dense projections. 0 disables.
     -- One shared deadline covers the initial plan plus width retries.
     route_plan_budget_ms = 25,
+    -- Connector renderer. "auto" probes the terminal for the Kitty graphics
+    -- protocol (Ghostty, Kitty, Rex, …) and draws smooth bezier ribbons as an
+    -- image when supported, falling back to cell glyphs otherwise. "kitty"
+    -- forces the image renderer; "cells" always uses glyphs. Also:
+    -- vim.g.diffbandit_connector_renderer or DIFFBANDIT_CONNECTOR_RENDERER.
+    connector_renderer = "auto",
+    kitty = {
+      -- "auto" uses temp files when the terminal can read them (local),
+      -- else chunked direct transmission (SSH / remote multiplexers).
+      transmission = "auto",
+      -- zlib-compress direct transmissions (o=z) when libz is available.
+      compress = true,
+      probe_timeout_ms = 300,
+      -- Pixel cap per connector image; larger viewports render at reduced
+      -- resolution and the terminal scales them up.
+      max_image_px = 4000000,
+      -- { w, h } cell size override in pixels (default: measured).
+      cell_px = nil,
+      -- Curve width in line heights (IntelliJ's 24px divider ≈ 1.45 lines).
+      -- The connector core shrinks to the fewest cells that hold it.
+      divider_width = 1.45,
+    },
     -- Optional render stage timing (also enabled by DIFFBANDIT_PERF=1).
     -- When log is true (or env set), paints slower than budget_warn_ms are
     -- reported via vim.notify; values live on session._last_render_perf.

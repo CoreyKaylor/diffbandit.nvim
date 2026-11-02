@@ -36,6 +36,32 @@ function M.base(view, config)
   return M.minimum(config)
 end
 
+-- Image (Kitty) connector sizing, modelled on IntelliJ's side-by-side diff
+-- divider: DiffSplitter uses Registry "diff.divider.width" = 24 logical px
+-- beside a ~16.5px editor line, i.e. ~1.45 line heights. The curve spans
+-- exactly that many pixels; the core gets the fewest cells that, together
+-- with the two window separators it sits between, hold the curve.
+M.KITTY_DIVIDER_LINES = 1.45
+-- IntelliJ logical px per editor line (13pt font, default line spacing);
+-- converts its 1px/2px stroke constants into terminal cell pixels.
+M.INTELLIJ_LINE_PX = 16.5
+
+local function kitty_ui(config)
+  return ui_config(config).kitty or {}
+end
+
+--- Curve width in image pixels for a cell size { w, h }.
+function M.kitty_divider_px(config, cell)
+  local lines = tonumber(kitty_ui(config).divider_width) or M.KITTY_DIVIDER_LINES
+  return math.max(cell.w, lines * cell.h)
+end
+
+--- Connector core width (cells) for the image renderer.
+function M.kitty_core(config, cell)
+  local px = M.kitty_divider_px(config, cell)
+  return math.max(1, math.ceil(px / cell.w - 1e-9) - 2)
+end
+
 -- Viewport paint pad for session render mark loops: rows outside the window
 -- that still receive marks so a fling within one debounce tick does not flash
 -- unstyled cells. Connector solid-band projection is strict-window (no pad) —
