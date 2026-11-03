@@ -61,9 +61,10 @@ Connectors draw as smooth, anti-aliased bezier ribbons (modelled on IntelliJ's
 diff divider) in terminals with the Kitty graphics protocol and Unicode
 placeholders:
 
-- Ghostty (tested)
+- Ghostty
 - Kitty
-- any other terminal implementing both
+- Rex
+- anything based on libghostty
 
 Detection is automatic (Neovim 0.12+). Everywhere else, including tmux,
 iTerm2, and Terminal.app, the cell renderer draws the same routes with Unicode
