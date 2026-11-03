@@ -499,8 +499,12 @@ do
     cfg.ui.connector_renderer = "kitty"
     cfg.ui.kitty.cell_px = { 10, 20 }
     cfg.ui.perf = { enabled = true, log = false, budget_warn_ms = 1e9 }
+    -- Layout/connector specs use the one-column hunk strip; the code-shape
+    -- overview (the default) has its own specs.
+    cfg.ui.overview.code_shape = false
     return cfg
   end
+  assert_eq(config.ui.overview.code_shape, true, "diff-view overviews draw the code shape by default")
 
   local function fixture_lines()
     local left, right = {}, {}
@@ -561,10 +565,15 @@ do
     assert_eq(session.connector_renderer, "kitty", "forced kitty mode")
     assert_eq(st ~= nil, true, "session owns a canvas state")
     assert_eq(count_matching(",i=" .. st.id .. ","), st.transmits, "every transmit targets our image id")
-    assert_eq(count_matching("\27_Ga=T,U=1,f=32,"), st.transmits, "every transmit is a virtual (placeholder) placement")
+    -- The overview strips are images too (one per side).
+    local all_transmits = st.transmits
+    for _, mm in pairs(session.minimaps or {}) do
+      all_transmits = all_transmits + ((mm:image_state() or {}).transmits or 0)
+    end
+    assert_eq(count_matching("\27_Ga=T,U=1,f=32,"), all_transmits, "every transmit is a virtual (placeholder) placement")
     assert_eq(st.transmits >= 1, true, "image transmitted")
     if require("diffbandit.kitty.zlib").available() then
-      assert_eq(count_matching(",o=z,"), st.transmits, "direct transmissions are zlib-compressed")
+      assert_eq(count_matching(",o=z,"), all_transmits, "direct transmissions are zlib-compressed")
     end
     local hl = vim.api.nvim_get_hl(0, { name = st.hl, link = false })
     assert_eq(hl.fg, st.id, "placeholder highlight fg encodes the image id")
@@ -846,6 +855,475 @@ do
     reset_detect()
   end
 
+  -- ------------------------------------------------------------------
+  -- image overview: pixel-resolution overview strips
+  -- ------------------------------------------------------------------
+  do
+    local ov_raster = require("diffbandit.kitty.overview_raster")
+    local spans = ov_raster.spans({
+      { line = 10, kind = "change" }, { line = 11, kind = "change" }, { line = 12, kind = "change" },
+      { line = 14, kind = "delete" },
+      { line = 15, kind = "delete", current = true }, { line = 16, kind = "delete", current = true },
+    })
+    assert_eq(#spans, 3, "contiguous same-kind lines merge; the current flag splits spans")
+    assert_eq(spans[1].first == 10 and spans[1].last == 12 and spans[1].kind == "change", true, "change span 10-12")
+    assert_eq(spans[2].first == 14 and spans[2].last == 14 and not spans[2].current, true, "delete line 14")
+    assert_eq(spans[3].first == 15 and spans[3].last == 16 and spans[3].current, true, "current span 15-16")
+
+    local RED, GREEN, BLUE, WHITE = { 200, 0, 0 }, { 0, 200, 0 }, { 0, 0, 200 }, { 255, 255, 255 }
+    local pal = { delete = { fill = RED }, add = { fill = GREEN }, change = { fill = BLUE }, outline = WHITE }
+    local spec = { line_count = 1000, cols = 1, rows = 50, cell_w = 10, cell_h = 20, palette = pal }
+    local function px(bytes, w, x, y)
+      local i = (y * w + x) * 4 + 1
+      return { bytes:byte(i, i + 3) }
+    end
+    local function opaque_rows(bytes, w, h, x, rgb)
+      local n = 0
+      for y = 0, h - 1 do
+        local p = px(bytes, w, x, y)
+        if p[1] == rgb[1] and p[2] == rgb[2] and p[3] == rgb[3] and p[4] == 255 then
+          n = n + 1
+        end
+      end
+      return n
+    end
+
+    -- Two one-line hunks 10 lines apart share one cell row (1000 lines over
+    -- 50 rows = 20 lines per row) but stay two separate marks in pixels.
+    local bytes, w, h = ov_raster.render(ov_raster.spans({
+      { line = 101, kind = "add" }, { line = 111, kind = "add" },
+    }), spec)
+    assert_eq(w == 10 and h == 1000 and #bytes == w * h * 4, true, "1x50 cells at 10x20 px -> 10x1000 RGBA")
+    local m = ov_raster.metrics(spec)
+    assert_eq(m.inset, 1, "1px transparent inset at 10px cells")
+    assert_eq(m.min_px, 2, "one-line hunks get at least 2px")
+    assert_eq(opaque_rows(bytes, w, h, 5, GREEN), 4, "both one-line hunks drawn at their minimum height")
+    assert_eq(px(bytes, w, 5, 100)[4], 255, "hunk at line 101 sits at y=100")
+    assert_eq(px(bytes, w, 5, 105)[4], 0, "transparent gap between hunks in the same cell row")
+    assert_eq(px(bytes, w, 5, 110)[4], 255, "hunk at line 111 sits at y=110")
+    assert_eq(px(bytes, w, 0, 100)[4], 0, "inset column stays transparent for other chunks")
+
+    -- Current chunk: outlined in the inset columns and one px above/below.
+    bytes = ov_raster.render(ov_raster.spans({
+      { line = 501, kind = "change", current = true }, { line = 502, kind = "change", current = true },
+      { line = 503, kind = "change", current = true },
+    }), spec)
+    local edge = px(bytes, w, 0, 501)
+    assert_eq(edge[1] == 255 and edge[4] == 255, true, "current chunk outline in the left inset column")
+    edge = px(bytes, w, 9, 501)
+    assert_eq(edge[1] == 255 and edge[4] == 255, true, "current chunk outline in the right inset column")
+    local above = px(bytes, w, 5, 499)
+    assert_eq(above[1] == 255 and above[4] == 255, true, "outline one px above the chunk")
+    local body = px(bytes, w, 5, 501)
+    assert_eq(body[3] == 200 and body[1] == 0, true, "chunk body keeps its kind colour")
+
+    -- Session integration: one image per overview strip.
+    reset_detect()
+    local session = start_session(kitty_config())
+    session:render()
+    local lst, rst = session.minimaps.left:image_state(), session.minimaps.right:image_state()
+    assert_eq(lst ~= nil and rst ~= nil, true, "both overview strips own an image")
+    assert_ne(lst.id, rst.id, "overview strips use distinct image ids")
+    assert_ne(lst.id, session.kitty_state.id, "overview ids differ from the connector's")
+    assert_eq(lst.transmits >= 1 and rst.transmits >= 1, true, "overview images transmitted")
+    local height = vim.api.nvim_win_get_height(session.left_win)
+    local lines = vim.api.nvim_buf_get_lines(session.left_overview_buf, 0, -1, false)
+    assert_eq(#lines, height, "one placeholder line per overview row")
+    assert_eq(lines[1], protocol.placeholder_run(0, 0, 1), "overview row 0 addresses image row 0")
+    assert_eq(lines[height], protocol.placeholder_run(height - 1, 0, 1), "last overview row addresses the last image row")
+    assert_eq(#lst.last_spans, 2, "left strip: the delete and the change on the left")
+
+    local function row_groups(buf)
+      local rows = {}
+      for _, mk in ipairs(vim.api.nvim_buf_get_extmarks(buf, session.minimaps.left.ns, 0, -1, { details = true })) do
+        rows[mk[2] + 1] = mk[4].hl_group
+      end
+      return rows
+    end
+    local groups = row_groups(session.left_overview_buf)
+    for r = 1, height do
+      assert_eq(type(groups[r]) == "string" and groups[r]:find(lst.hl, 1, true) == 1, true,
+        "every overview row carries an image placeholder group (row " .. r .. ")")
+    end
+    assert_eq(vim.api.nvim_get_hl(0, { name = lst.hl .. "Viewport", link = false }).fg, lst.id,
+      "viewport band keeps the image id as foreground")
+    local ov = require("diffbandit.util.overview")
+    local left_count = #session.view.left
+    local function expected_band()
+      return ov.viewport_rows({
+        first = vim.fn.line("w0", session.left_win), last = vim.fn.line("w$", session.left_win),
+      }, left_count, height)
+    end
+    local function check_band(label)
+      local first, last = expected_band()
+      local cursor_row = ov.row_for_line(vim.api.nvim_win_get_cursor(session.left_win)[1], left_count, height)
+      for r = 1, height do
+        local want = lst.hl
+        if r == cursor_row then
+          want = lst.hl .. "Cursor"
+        elseif r >= first and r <= last then
+          want = lst.hl .. "Viewport"
+        end
+        assert_eq(groups[r], want, label .. " (row " .. r .. ")")
+      end
+      return first, last
+    end
+    local first, last = check_band("band + cursor rows")
+    assert_eq(groups[1], lst.hl .. "Cursor", "cursor row (line 1) uses the cursor background")
+    assert_eq(first == 1 and last < height, true, "band covers the top rows only")
+
+    -- Scrolling moves the band without re-sending any image.
+    local before_l, before_r = lst.transmits, rst.transmits
+    vim.api.nvim_win_set_cursor(session.left_win, { 250, 0 })
+    session:render_overviews()
+    groups = row_groups(session.left_overview_buf)
+    first = check_band("band follows the scroll")
+    assert_eq(first > 1 and groups[1] == lst.hl, true, "band left the top after scrolling down")
+    assert_eq(lst.transmits == before_l and rst.transmits == before_r, true, "scrolling never re-sends overview images")
+
+    -- A theme change re-sends both strips.
+    require("diffbandit.kitty").invalidate(session.minimaps.left)
+    require("diffbandit.kitty").invalidate(session.minimaps.right)
+    session:render_overviews()
+    assert_eq(lst.transmits == before_l + 1 and rst.transmits == before_r + 1, true, "invalidate re-sends overview images")
+
+    local lid, rid = lst.id, rst.id
+    session:close()
+    assert_eq(count_matching(protocol.delete(lid)) == 1 and count_matching(protocol.delete(rid)) == 1, true,
+      "closing the session deletes both overview images")
+    reset_detect()
+
+    -- ui.overview.renderer = "cells" keeps the cell overview under kitty.
+    local cfg = kitty_config()
+    cfg.ui.overview.renderer = "cells"
+    session = start_session(cfg)
+    session:render()
+    assert_eq(session.connector_renderer, "kitty", "connector still uses the image renderer")
+    assert_eq(session.minimaps.left:image_state() == nil and session.minimaps.right:image_state() == nil, true,
+      "no overview images with renderer = cells")
+    assert_eq(vim.api.nvim_buf_get_lines(session.left_overview_buf, 0, 1, false)[1], " ", "cell overview text")
+    session:close()
+    reset_detect()
+  end
+
+  -- ------------------------------------------------------------------
+  -- overview wishlist: scale, search, selection, code shape, mouse
+  -- ------------------------------------------------------------------
+  do
+    local ov = require("diffbandit.util.overview")
+    local ov_raster = require("diffbandit.kitty.overview_raster")
+    local ov_syntax = require("diffbandit.util.overview_syntax")
+    local minimap_mouse = require("diffbandit.minimap.mouse")
+
+    -- Minimum reduction: short files stop stretching.
+    assert_eq(ov.map_lines(100, 50, 0), 100, "no minimum reduction: the file fills the strip")
+    assert_eq(ov.map_lines(100, 50, 4), 200, "min_reduction 4 over 50 rows represents 200 lines")
+    assert_eq(ov.map_lines(1000, 50, 4), 1000, "long files are unaffected")
+    assert_eq(ov.row_for_line(100, 200, 50), 25, "last line of a short file lands mid-strip")
+    assert_eq(ov.min_reduction({}, false), 0, "auto: hunk overview always fills")
+    assert_eq(ov.min_reduction({}, true, { w = 10, h = 20 }, 1), 10,
+      "auto: code shape draws characters twice as tall as wide")
+    assert_eq(ov.min_reduction({ min_reduction = 3 }, true, { w = 10, h = 20 }, 1), 3,
+      "explicit min_reduction wins")
+    -- Click mapping: overview row -> source line.
+    assert_eq(ov.line_for_row(1, 300, 300, 19), 8, "row 1 maps to the line at its middle")
+    assert_eq(ov.line_for_row(3, 300, 300, 19), 40, "row 3")
+    assert_eq(ov.line_for_row(50, 100, 200, 50), 100, "rows past a short file clamp to its last line")
+    for _, line in ipairs({ 1, 37, 150, 300 }) do
+      local row = ov.row_for_line(line, 300, 19)
+      assert_eq(ov.row_for_line(ov.line_for_row(row, 300, 300, 19), 300, 19), row, "click row round-trips " .. line)
+    end
+
+    -- Search matches honour ignorecase/smartcase.
+    local saved_ic, saved_scs = vim.o.ignorecase, vim.o.smartcase
+    vim.o.ignorecase, vim.o.smartcase = true, true
+    local hits = ov.search_lines({ "Foo", "foo", "bar" }, "foo")
+    assert_eq(#hits == 2 and hits[1] == 1 and hits[2] == 2, true, "lowercase pattern ignores case")
+    hits = ov.search_lines({ "Foo", "foo", "bar" }, "Foo")
+    assert_eq(#hits == 1 and hits[1] == 1, true, "smartcase: uppercase makes the search case-sensitive")
+    assert_eq(#ov.search_lines({ "a(" }, "\\("), 0, "invalid patterns match nothing")
+    vim.o.ignorecase, vim.o.smartcase = saved_ic, saved_scs
+
+    -- Code shape text runs.
+    local D, K = { 1, 1, 1 }, { 9, 9, 9 }
+    local runs = ov_syntax.line_runs("\tab  c", nil, D, 4, 100)
+    assert_eq(#runs == 2 and runs[1][1] == 4 and runs[1][2] == 6 and runs[2][1] == 8 and runs[2][2] == 9, true,
+      "tabs expand, blanks split runs: " .. vim.inspect(runs))
+    runs = ov_syntax.line_runs("ab", { [1] = K }, D, 4, 100)
+    assert_eq(#runs == 2 and runs[1][3] == K and runs[2][3] == D, true, "a colour change splits a run")
+    runs = ov_syntax.line_runs("é x", nil, D, 4, 100)
+    assert_eq(runs[2][1], 2, "a UTF-8 sequence takes one column")
+    runs = ov_syntax.line_runs("abcdef", nil, D, 4, 3)
+    assert_eq(#runs == 1 and runs[1][2] == 3, true, "columns past the strip are dropped")
+    do
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "local x = 'str'" })
+      vim.bo[buf].filetype = "lua"
+      local has_parser = pcall(vim.treesitter.get_parser, buf, "lua")
+      local built = ov_syntax.build({ "local x = 'str'" }, { buf = buf, max_cols = 50 })
+      if has_parser then
+        assert_eq(built.source, "treesitter", "lua buffers colour the code shape from treesitter")
+        local first, last = built.runs[1][1], built.runs[1][#built.runs[1]]
+        assert_eq(first[3] ~= nil and last[3] ~= nil, true, "runs carry colours")
+      end
+      assert_eq(ov_syntax.build({ "x y" }, { max_cols = 50 }).source, "plain", "no buffer: plain Normal colour")
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+
+    -- Raster: search ticks, code text, map_lines.
+    local RED, GREEN, YEL = { 200, 0, 0 }, { 0, 200, 0 }, { 250, 250, 0 }
+    local pal = { add = { fill = GREEN }, delete = { fill = RED }, change = { fill = RED }, search = YEL }
+    local function px(bytes, w, x, y)
+      local i = (y * w + x) * 4 + 1
+      return { bytes:byte(i, i + 3) }
+    end
+    local bytes, w = ov_raster.render({}, {
+      line_count = 1000, cols = 1, rows = 50, cell_w = 10, cell_h = 20, palette = pal, search_lines = { 501 },
+    })
+    local tick = px(bytes, w, 8, 500)
+    assert_eq(tick[1] == 250 and tick[4] == 255, true, "search match: tick on the right half")
+    assert_eq(px(bytes, w, 2, 500)[4], 0, "search tick leaves the left half clear")
+
+    bytes, w = ov_raster.render({}, {
+      line_count = 50, map_lines = 50, cols = 4, rows = 5, cell_w = 10, cell_h = 20, palette = pal,
+      code = { runs = { [1] = { { 0, 3, RED } }, [2] = { { 2, 4, GREEN } } } },
+    })
+    local p = px(bytes, w, 1, 0)
+    assert_eq(p[1] == 200 and p[4] == 230, true, "code: line 1 text at x=inset: " .. vim.inspect(p))
+    assert_eq(px(bytes, w, 4, 0)[4], 0, "code: past the run is clear")
+    assert_eq(px(bytes, w, 1, 1)[4], 0, "code: gap row under 2px lines")
+    p = px(bytes, w, 3, 2)
+    assert_eq(p[2] == 200 and p[4] == 230, true, "code: line 2 text starts at its column")
+
+    bytes, w = ov_raster.render({}, {
+      line_count = 50, cols = 4, rows = 5, cell_w = 10, cell_h = 20, palette = pal, search_lines = { 10 },
+      code = { runs = {} },
+    })
+    p = px(bytes, w, 20, 18)
+    assert_eq(p[1] == 250 and p[4] == 153, true, "code: search match is a translucent band: " .. vim.inspect(p))
+
+    bytes, w = ov_raster.render(ov_raster.spans({ { line = 50, kind = "add" } }), {
+      line_count = 50, map_lines = 100, cols = 1, rows = 5, cell_w = 10, cell_h = 20, palette = pal,
+    })
+    assert_eq(px(bytes, w, 5, 49)[4] == 255 and px(bytes, w, 5, 60)[4] == 0, true,
+      "map_lines 100: the last of 50 lines sits mid-strip")
+
+    -- Session: code shape widens the overview image.
+    reset_detect()
+    local cfg = kitty_config()
+    cfg.ui.overview.code_shape = true
+    cfg.ui.overview.focus_follow = false -- both full width (focus-follow below)
+    local session = start_session(cfg)
+    session:render()
+    assert_eq(session.overview_width, 12, "code shape: 12-cell overview")
+    assert_eq(vim.api.nvim_win_get_width(session.left_overview_win), 12, "overview window resized")
+    local lmm, rmm = session.minimaps.left, session.minimaps.right
+    local lst = lmm:image_state()
+    local line1 = vim.api.nvim_buf_get_lines(session.left_overview_buf, 0, 1, false)[1]
+    assert_eq(line1, protocol.placeholder_run(0, 0, 12), "placeholders span the code-shape width")
+    assert_eq(lmm.code_cache ~= nil and #lmm.code_cache.runs, #session.view.left, "code runs built for every left line")
+    local st = lmm:state()
+    assert_eq(st.map_lines, math.max(#session.view.left, st.height * 10), "code shape: auto min reduction")
+
+    -- Edits keep the previous code shape, then rebuild once typing pauses.
+    do
+      local rst0 = rmm:image_state()
+      local cached = rmm.code_cache
+      local sent_before = rst0.transmits
+      session.config.ui.overview.code_debounce_ms = 30
+      vim.bo[session.right_buf].modifiable = true
+      vim.api.nvim_buf_set_lines(session.right_buf, 0, 1, false, { "edited" })
+      session:render_overviews()
+      assert_eq(rmm.code_cache, cached, "an edit keeps the previous code shape at first")
+      assert_eq(rst0.transmits, sent_before, "no re-send while typing")
+      assert_eq(wait_for(function()
+        return rmm.code_cache ~= cached and rst0.transmits == sent_before + 1
+      end, 1000), true, "code shape rebuilt and re-sent after the pause")
+    end
+
+    -- Search matches re-send the image once; cursor moves don't.
+    local saved_hls = vim.o.hlsearch
+    vim.o.hlsearch = true
+    vim.fn.setreg("/", "changed")
+    vim.v.hlsearch = 1
+    local rst = rmm:image_state()
+    local before = rst.transmits
+    session:render_overviews()
+    st = rmm:state()
+    assert_eq(#st.search_lines == 2 and st.search_lines[1] == 5, true, "right search matches: " .. vim.inspect(st.search_lines))
+    assert_eq(rst.transmits, before + 1, "new search matches re-send the image")
+    session:render_overviews()
+    assert_eq(rst.transmits, before + 1, "unchanged matches do not re-send")
+    vim.v.hlsearch = 0
+    session:render_overviews()
+    assert_eq(#rmm:state().search_lines, 0, ":nohlsearch hides matches")
+    vim.o.hlsearch = saved_hls
+    vim.fn.setreg("/", "")
+
+    -- Visual selection rows use the selection background.
+    local height = vim.api.nvim_win_get_height(session.left_win)
+    require("diffbandit.kitty.overview").paint(lmm, "map", {
+      buf = session.left_overview_buf, ns = lmm.ns, marks = {}, line_count = 300,
+      rows = height, cols = 12, overlays = { selection = { first = 3, last = 5 }, band = { first = 1, last = 8 } },
+    })
+    local groups = {}
+    for _, mk in ipairs(vim.api.nvim_buf_get_extmarks(session.left_overview_buf, lmm.ns, 0, -1, { details = true })) do
+      groups[mk[2] + 1] = mk[4].hl_group
+    end
+    assert_eq(groups[4], lst.hl .. "Selection", "selection rows show the selection background")
+    assert_eq(groups[7], lst.hl .. "Viewport", "viewport band outside the selection")
+    assert_eq(vim.api.nvim_get_hl(0, { name = lst.hl .. "Selection", link = false }).fg, lst.id,
+      "selection group keeps the image id")
+    local ovl = ov.row_overlays({ line_count = 300, height = 30, selection = { first = 100, last = 40 } }, cfg.ui.overview)
+    assert_eq(ovl.selection.first == 4 and ovl.selection.last == 10, true, "selection rows normalise a reversed range")
+
+    -- Mouse, through window events only (no maps on the source buffers).
+    local ovwin = session.left_overview_win
+    assert_eq(minimap_mouse.minimap_for(ovwin), lmm, "overview window routed to its minimap")
+    minimap_mouse.on_enter(ovwin, true, 3)
+    local want = ov.line_for_row(3, #session.view.left, st.map_lines, st.height)
+    assert_eq(vim.api.nvim_win_get_cursor(session.left_win)[1], want, "click moves the pane to the row's line")
+    assert_eq(lmm.dragging, true, "a click starts a drag")
+    vim.api.nvim_set_current_win(ovwin) -- keyboard entry (no click)
+    assert_eq(wait_for(function()
+      return vim.api.nvim_get_current_win() == session.left_win
+    end), true, "entering the overview by keyboard bounces to its pane")
+    local w0 = vim.fn.line("w0", session.left_win)
+    vim.api.nvim_win_call(ovwin, function()
+      vim.cmd("normal! 3\5") -- what a wheel over the split does to it
+    end)
+    assert_eq(vim.fn.line("w0", ovwin), 4, "the strip itself scrolled")
+    minimap_mouse.on_scrolled(ovwin)
+    assert_eq(vim.fn.line("w0", ovwin), 1, "the strip snaps back to its top")
+    minimap_mouse.on_wheel(ovwin, 1)
+    assert_eq(vim.fn.line("w0", session.left_win), w0 + 3, "a wheel step over the strip scrolls the pane")
+    local function has_map(buf, lhs)
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+        if m.lhs == lhs then
+          return true
+        end
+      end
+      return false
+    end
+    assert_eq(has_map(session.left_overview_buf, "<LeftDrag>"), true, "drag map lives on the strip's own buffer")
+    assert_eq(has_map(session.left_buf, "<LeftMouse>"), false, "no mouse maps on the source buffers")
+    session:close()
+    assert_eq(minimap_mouse.minimap_for(ovwin), nil, "closing the session unregisters its strips")
+    reset_detect()
+
+    -- Squeezed code shape: runs built for more columns than fit become
+    -- fractional pixels with partial coverage.
+    do
+      local RED2 = { 200, 0, 0 }
+      local spec = { line_count = 10, cols = 1, rows = 1, cell_w = 10, cell_h = 20, palette = {},
+        code = { columns = 24, runs = { [1] = { { 0, 12, RED2 } }, [2] = { { 0, 1, RED2 } } } } }
+      local m = ov_raster.metrics(spec)
+      assert_eq(m.char_px, (10 - 2 * m.inset) / 24, "24 columns squeezed into the strip's inner width")
+      local sq, sw = ov_raster.render({}, spec)
+      local function a(x, y)
+        return sq:byte((y * sw + x) * 4 + 4)
+      end
+      assert_eq(a(m.inset, 0) > 200 and a(m.inset + 3, 0) > 200 and a(m.inset + 5, 0) == 0, true,
+        "a 12-column run fills half the squeezed width")
+      assert_eq(a(m.inset, 2) > 0 and a(m.inset, 2) < 100, true, "a one-column run is a partially covered pixel")
+    end
+
+    -- Focus-follow: the focused pane's strip is full width, the other
+    -- compact; focus moving swaps them without rebuilding the code shape.
+    do
+      reset_detect()
+      local fcfg = kitty_config()
+      fcfg.ui.overview.code_shape = true
+      local fsession = start_session(fcfg)
+      fsession:render()
+      assert_eq(fsession.overview_expanded_side, "right", "the editable right side starts expanded")
+      assert_eq(vim.api.nvim_win_get_width(fsession.right_overview_win), 12, "right strip full width")
+      assert_eq(vim.api.nvim_win_get_width(fsession.left_overview_win), 4, "left strip compact")
+      local fl, fr = fsession.minimaps.left, fsession.minimaps.right
+      assert_eq(vim.api.nvim_buf_get_lines(fsession.left_overview_buf, 0, 1, false)[1],
+        protocol.placeholder_run(0, 0, 4), "compact strip placeholders")
+      local left_pane = vim.api.nvim_win_get_width(fsession.left_win)
+      local right_pane = vim.api.nvim_win_get_width(fsession.right_win)
+      local code_before = fl.code_cache
+      local sent_before = fl:image_state().transmits
+      vim.api.nvim_set_current_win(fsession.left_win) -- WinEnter
+      assert_eq(fsession.overview_expanded_side, "left", "focus on the left pane expands its strip")
+      assert_eq(vim.api.nvim_win_get_width(fsession.left_overview_win), 12, "left strip now full width")
+      assert_eq(vim.api.nvim_win_get_width(fsession.right_overview_win), 4, "right strip now compact")
+      assert_eq(vim.api.nvim_win_get_width(fsession.left_win), left_pane, "left pane keeps its width")
+      assert_eq(vim.api.nvim_win_get_width(fsession.right_win), right_pane, "right pane keeps its width")
+      assert_eq(fl.code_cache, code_before, "swapping sizes reuses the code shape")
+      assert_eq(fl:image_state().transmits, sent_before + 1, "the expanded strip re-rasterizes once")
+      assert_eq(fr.code_cache.columns, fl.code_cache.columns, "both strips share the full-width columns")
+      vim.api.nvim_set_current_win(fsession.left_win)
+      assert_eq(fl:image_state().transmits, sent_before + 1, "re-entering the same pane changes nothing")
+      vim.api.nvim_set_current_win(fsession.right_win)
+      assert_eq(vim.api.nvim_win_get_width(fsession.right_overview_win), 12, "back to the right")
+
+      -- Keyboard entry into a strip continues the window cycle (it used to
+      -- bounce back to the strip's own pane, trapping <C-w>w).
+      vim.api.nvim_set_current_win(fsession.right_overview_win)
+      assert_eq(vim.wait(500, function()
+        return vim.api.nvim_get_current_win() == fsession.left_win
+      end, 10), true, "<C-w>w from the right pane through its strip reaches the left pane")
+      vim.api.nvim_set_current_win(fsession.right_win)
+
+      -- A re-diff of the same sources (typing in the editable right) keeps
+      -- the code shape until the debounce rebuilds it.
+      local shape = fr.code_cache
+      assert_eq(shape ~= nil, true, "right strip has a code shape")
+      fsession:refresh_editable_right()
+      fr:render()
+      assert_eq(fr.code_cache, shape, "same-source re-diff keeps the code shape")
+
+      -- A click that changes panes resizes them only after the release.
+      local mouse_mod = require("diffbandit.minimap.mouse")
+      local saved_mouse = vim.o.mouse
+      vim.o.mouse = ""
+      local ran = false
+      vim.api.nvim_feedkeys(vim.keycode("<LeftMouse>"), "xt", false)
+      mouse_mod.when_released(function()
+        ran = true
+      end)
+      assert_eq(ran, false, "layout change waits while the button is down")
+      vim.api.nvim_feedkeys(vim.keycode("<LeftRelease>"), "xt", false)
+      assert_eq(vim.wait(200, function()
+        return ran
+      end, 5), true, "layout change runs after the release")
+      vim.o.mouse = saved_mouse
+      fsession:close()
+      reset_detect()
+    end
+
+    -- Cells: search block and selection band.
+    local ccfg = vim.deepcopy(config)
+    session = start_session(ccfg)
+    session:render()
+    local buf = session.left_overview_buf
+    local cns = session.minimaps.left.ns
+    ov.render_side(buf, cns, {
+      marks = {}, line_count = 300, height = 20, search_lines = { 160 }, selection = { first = 30, last = 45 },
+      diagnostics = { { line = 10, severity = 2 }, { line = 12, severity = 1 } },
+    }, ccfg.ui.overview)
+    local search_row, sel_rows, diag = nil, 0, nil
+    for _, mk in ipairs(vim.api.nvim_buf_get_extmarks(buf, cns, 0, -1, { details = true })) do
+      local d = mk[4]
+      if d.virt_text and d.virt_text[1][1] == "▐" then
+        search_row = mk[2] + 1
+      elseif d.virt_text and d.virt_text[1][1] == "▌" then
+        diag = { row = mk[2] + 1, hl = d.virt_text[1][2] }
+      elseif d.hl_group == "DiffBanditOverviewSelection" then
+        sel_rows = sel_rows + 1
+      end
+    end
+    assert_eq(search_row, ov.row_for_line(160, 300, 20), "cells: search match as a right-half block")
+    assert_eq(sel_rows, 2, "cells: selection rows")
+    assert_eq(diag.row == 1 and diag.hl == "DiffBanditOverviewDiagError", true,
+      "cells: the most severe diagnostic of a row as a left-half block")
+    session:close()
+    reset_detect()
+  end
+
   do
     -- Cells fallback: default auto in a headless (no TUI) Neovim is today's
     -- renderer, untouched — glyphs present, nothing written to a terminal.
@@ -868,6 +1346,17 @@ do
     end
     assert_eq(route_marks > 0, true, "cells mode still paints its route cells")
     assert_eq(placeholders, 0, "cells mode paints no image placeholders")
+    -- The cell overview shades the visible range (viewport band).
+    local band_rows, last_band = 0, 0
+    for _, mk in ipairs(vim.api.nvim_buf_get_extmarks(session.left_overview_buf, session.minimaps.left.ns, 0, -1,
+      { details = true })) do
+      if mk[4].hl_group == "DiffBanditOverviewViewport" then
+        band_rows = band_rows + 1
+        last_band = math.max(last_band, mk[2] + 1)
+      end
+    end
+    local ov_height = vim.api.nvim_win_get_height(session.left_win)
+    assert_eq(band_rows > 0 and last_band < ov_height, true, "cell overview draws a viewport band over the visible rows")
     session:close()
     reset_detect()
   end

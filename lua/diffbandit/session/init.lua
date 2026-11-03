@@ -16,6 +16,10 @@ local config_mod = require("diffbandit.config")
 local view_builder = require("diffbandit.diff.view")
 local diff_document = require("diffbandit.diff.document")
 local kitty = require("diffbandit.kitty")
+local Minimap = require("diffbandit.minimap")
+local minimap_placement = require("diffbandit.minimap.placement")
+local minimap_providers = require("diffbandit.minimap.providers")
+local minimap_mouse = require("diffbandit.minimap.mouse")
 
 local Session = {}
 Session.__index = Session
@@ -113,13 +117,17 @@ function Session.start(sources, config, opts)
   self.ns = vim.api.nvim_create_namespace("DiffBanditHighlights" .. self.id)
   self.active_ns = vim.api.nvim_create_namespace("DiffBanditActive" .. self.id)
   self.path_ns = vim.api.nvim_create_namespace("DiffBanditConnectorPaths" .. self.id)
-  self.overview_ns = vim.api.nvim_create_namespace("DiffBanditOverview" .. self.id)
   self.autocmd_group = nil
   self.disposed = false
 
   assign_pane_metrics(self, sources, view)
-  self.overview_enabled = overview.enabled(self.config)
-  self.overview_width = self.overview_enabled and overview.width(self.config) or 0
+  self.overview_enabled = overview.enabled(config_mod.section(self.config, "ui", "overview"))
+  -- Provisional (cells) width; fixed up once the Kitty renderer resolves.
+  self.overview_width = self.overview_enabled and overview.width(config_mod.section(self.config, "ui", "overview")) or 0
+  self.left_overview_width, self.right_overview_width = self.overview_width, self.overview_width
+  -- The focused side's code-shape strip is full width, the other compact;
+  -- the editable right side starts focused.
+  self.overview_expanded_side = self.overview_expanded_side or "right"
   self.connector_width_cache = {}
   self:invalidate_render_caches()
   if model.base_paths then
@@ -149,6 +157,12 @@ function Session.start(sources, config, opts)
       self:precompute_connector_core_width()
       self.last_viewport_render_key = nil
       self:rerender_for_viewport()
+      -- Viewport-only paints skip the overview; it switches renderer too,
+      -- and the code-shape image is wider than the cell overview.
+      if self:update_overview_widths() then
+        self:resize_layout()
+      end
+      self:render_overviews()
     end,
     refresh = function()
       if self.disposed then
@@ -156,10 +170,16 @@ function Session.start(sources, config, opts)
       end
       self.last_viewport_render_key = nil
       self:rerender_for_viewport()
+      for _, mm in pairs(self.minimaps or {}) do
+        mm:refresh_images()
+      end
     end,
   })
+  -- The overview widths depend on the resolved renderer (code shape).
+  self:update_overview_widths()
 
   self:open_layout()
+  self:create_minimaps()
   if self.panel_enabled then
     panel_mod.attach(self, {
       initial_selection = self.panel_initial_selection,
@@ -215,52 +235,128 @@ function Session:resize_layout()
   session_layout.resize(self)
 end
 
-function Session:render_overviews()
+-- Overview gutters: two managed minimaps (minimap/), one per pane, drawn
+-- into the layout's sidecar splits. They own their triggers (cursor, scroll,
+-- mode, search), images and mouse; the session repaints them on full renders
+-- (hunks or the current chunk changed).
+function Session:overview_options()
+  return config_mod.section(self.config, "ui", "overview")
+end
+
+-- Strip width of `side` (or the full width when nil). With the code shape
+-- and ui.overview.focus_follow, only the focused side's strip is full width;
+-- the other is compact (the same code shape, squeezed).
+function Session:overview_strip_width(side)
   if not self.overview_enabled then
+    return 0
+  end
+  local opts = self:overview_options()
+  local renderer = overview.renderer(opts, self.connector_renderer)
+  local width = Minimap.width_for(opts, renderer)
+  if side and overview.code_shape(opts, renderer) and opts.focus_follow ~= false
+      and side ~= self.overview_expanded_side then
+    width = math.max(2, math.min(width, tonumber(opts.compact_width) or 4))
+  end
+  return width
+end
+
+--- Recompute both strip widths; true when either changed.
+function Session:update_overview_widths()
+  local left, right = self:overview_strip_width("left"), self:overview_strip_width("right")
+  local changed = left ~= self.left_overview_width or right ~= self.right_overview_width
+  self.left_overview_width, self.right_overview_width = left, right
+  self.overview_width = math.max(left, right)
+  return changed
+end
+
+--- Give `side`'s overview the full width (focus moved to that pane); the
+--- other side's strip turns compact and the panes re-balance.
+function Session:expand_overview(side)
+  if self.disposed or self.overview_expanded_side == side then
     return
   end
-  if not (
-        self.left_overview_buf
-        and self.right_overview_buf
-        and self.left_overview_win
-        and self.right_overview_win
-        and vim.api.nvim_buf_is_valid(self.left_overview_buf)
-        and vim.api.nvim_buf_is_valid(self.right_overview_buf)
-        and vim.api.nvim_win_is_valid(self.left_overview_win)
-        and vim.api.nvim_win_is_valid(self.right_overview_win)
-      ) then
+  self.overview_expanded_side = side
+  if not self.minimaps or not self:update_overview_widths() then
     return
   end
+  self:resize_layout()
+  self:render_overviews()
+  -- The panes moved: the connector follows on WinResized; repaint routes.
+  self.last_viewport_render_key = nil
+  self:request_viewport_rerender()
+end
 
-  local left_height = math.max(1, vim.api.nvim_win_get_height(self.left_win))
-  local right_height = math.max(1, vim.api.nvim_win_get_height(self.right_win))
-  local left_cursor = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_cursor(self.left_win)[1] or 1
-  local right_cursor = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_cursor(self.right_win)[1] or 1
+-- Resizing the panes in the middle of a click or drag would move the text
+-- under the mouse (the selection lands columns off): wait for the release.
+function Session:expand_overview_after_click(side)
+  minimap_mouse.when_released(function()
+    self:expand_overview(side)
+  end)
+end
 
-  set_buffer_options(self.left_overview_buf, { modifiable = true })
-  set_buffer_options(self.right_overview_buf, { modifiable = true })
-  overview.render_side_with_marks(
-    self.left_overview_buf,
-    self.overview_ns,
-    self:overview_marks("left"),
-    #((self.view or {}).left or {}),
-    left_height,
-    left_cursor,
-    self.current_chunk,
-    self.config
-  )
-  overview.render_side_with_marks(
-    self.right_overview_buf,
-    self.overview_ns,
-    self:overview_marks("right"),
-    #((self.view or {}).right or {}),
-    right_height,
-    right_cursor,
-    self.current_chunk,
-    self.config
-  )
-  set_buffer_options(self.left_overview_buf, { modifiable = false })
-  set_buffer_options(self.right_overview_buf, { modifiable = false })
+-- Focus landed on chrome (gutters, headers, overview strips): continue the
+-- window cycle into the source pane other than the last one used.
+function Session:leave_chrome()
+  if self.disposed then
+    return
+  end
+  local target
+  if self.last_source_side == "left" then
+    target = self.right_win
+  elseif self.last_source_side == "right" then
+    target = self.left_win
+  else
+    target = self.right_win
+  end
+  if target and vim.api.nvim_win_is_valid(target) then
+    pcall(vim.api.nvim_set_current_win, target)
+  end
+end
+
+function Session:create_minimaps()
+  if not self.overview_enabled or self.minimaps then
+    return
+  end
+  self.minimaps = {}
+  for _, side in ipairs({ "left", "right" }) do
+    self.minimaps[side] = Minimap.new({
+      config = self.config,
+      options = self:overview_options(),
+      target = function()
+        return side == "left" and self.left_win or self.right_win
+      end,
+      placement = minimap_placement.managed(function()
+        return self[side .. "_overview_win"]
+      end, function()
+        return self[side .. "_overview_buf"]
+      end),
+      provider = minimap_providers.session_side(self, side),
+      width = function()
+        return self[side .. "_overview_width"] or self.overview_width
+      end,
+      -- The layout closes the panes; the session closes its minimaps.
+      on_target_closed = function() end,
+      -- The session sizes the strips from its own renderer; one source of
+      -- truth, so the width and the paint never disagree after a flip.
+      renderer_host = self,
+      on_keyboard_enter = function()
+        self:leave_chrome()
+      end,
+    })
+  end
+end
+
+function Session:render_overviews()
+  for _, mm in pairs(self.minimaps or {}) do
+    mm:render()
+  end
+end
+
+function Session:close_minimaps()
+  for _, mm in pairs(self.minimaps or {}) do
+    mm:close()
+  end
+  self.minimaps = nil
 end
 
 function Session:get_scroll_padding()
@@ -354,34 +450,27 @@ function Session:setup_autocmds()
       if win == self.left_win then
         self.last_source_win = self.left_win
         self.last_source_side = "left"
+        self:expand_overview_after_click("left")
       elseif win == self.right_win then
         if self.right and self.right.editable then
           document.ensure_language_features(self.right_buf, self.right.filetype)
         end
         self.last_source_win = self.right_win
         self.last_source_side = "right"
+        self:expand_overview_after_click("right")
       elseif win == self.left_num_win
-          or win == self.left_overview_win
           or win == self.connector_win
           or win == self.right_num_win
-          or win == self.right_overview_win
           or win == self.left_header_win
           or win == self.center_header_win
-          or win == self.right_header_win then
+          or win == self.right_header_win
+          or ((win == self.left_overview_win or win == self.right_overview_win)
+            and not minimap_mouse.minimap_for(win)) then
+        -- Overview strips with the mouse enabled are handled by
+        -- minimap/mouse (a click jumps; keyboard entry calls
+        -- leave_chrome through on_keyboard_enter).
         vim.schedule(function()
-          if not self.disposed then
-            local target
-            if self.last_source_side == "left" then
-              target = self.right_win
-            elseif self.last_source_side == "right" then
-              target = self.left_win
-            else
-              target = self.right_win
-            end
-            if target and vim.api.nvim_win_is_valid(target) then
-              pcall(vim.api.nvim_set_current_win, target)
-            end
-          end
+          self:leave_chrome()
         end)
       end
     end,
@@ -418,7 +507,6 @@ function Session:setup_autocmds()
       self.last_source_win = self.left_win
       self.last_source_side = "left"
       self:sync_from_left()
-      self:request_overview_render()
     end,
   })
 
@@ -433,7 +521,6 @@ function Session:setup_autocmds()
       self.last_source_win = self.right_win
       self.last_source_side = "right"
       self:sync_from_right()
-      self:request_overview_render()
     end,
   })
 
@@ -680,21 +767,6 @@ function Session:request_viewport_rerender()
   local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
   ui.schedule_once(self, "viewport_rerender_scheduled", function()
     self:rerender_for_viewport()
-  end, delay)
-end
-
--- Debounced overview paint for CursorMoved (full render still paints immediately).
-function Session:request_overview_render()
-  if self.disposed or not self.overview_enabled then
-    return
-  end
-  local overview_cfg = config_mod.section(self.config, "ui", "overview")
-  local delay = tonumber(overview_cfg.debounce_ms)
-  if delay == nil then
-    delay = 32
-  end
-  ui.schedule_once(self, "overview_rerender_scheduled", function()
-    self:render_overviews()
   end, delay)
 end
 
@@ -964,7 +1036,6 @@ function Session:goto_document_edge(edge)
   -- changed, so refresh status/overview explicitly for top/bottom position.
   self:set_viewport_toplines_preserve_cursors(left_topline, right_topline, left_line, right_line)
   self:render_status_headers()
-  ui.cancel_schedule_once(self, "overview_rerender_scheduled")
   self:render_overviews()
 
   if focused_win == self.left_win or focused_win == self.right_win then
@@ -993,6 +1064,7 @@ function Session:dispose()
     return
   end
   self.disposed = true
+  self:close_minimaps()
   kitty.detach(self)
   self:clear_keymaps()
   -- Editable right reuses the user's buffer; without this, band/intraline
@@ -1084,6 +1156,14 @@ end
 function Session:replace_sources(sources, opts)
   opts = opts or {}
   self:clear_keymaps()
+  -- A new document builds its code-shape overview at once; a re-diff of
+  -- the same sources (typing in the editable right) keeps the shape and
+  -- rebuilds it after code_debounce_ms.
+  if not (sources and sources.left == self.left and sources.right == self.right) then
+    for _, mm in pairs(self.minimaps or {}) do
+      mm:reset_code()
+    end
+  end
   if sources and sources.right and sources.right.editable then
     local acquired, acquire_err = document.acquire_buffer(sources.right.editable)
     if acquired then

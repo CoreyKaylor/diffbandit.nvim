@@ -8,6 +8,7 @@
 local canvas = require("diffbandit.kitty.canvas")
 local connector_width = require("diffbandit.connector.width")
 local detect = require("diffbandit.kitty.detect")
+local kitty_overview = require("diffbandit.kitty.overview")
 
 local M = {}
 
@@ -109,8 +110,10 @@ function M.attach(host, opts)
   return host.connector_renderer
 end
 
---- Drop the terminal images a host owns (single canvas or merge pair slots).
+--- Drop the terminal images a host owns (single canvas or merge pair slots,
+--- overview strips).
 function M.release(host)
+  kitty_overview.destroy(host)
   canvas.destroy(host)
   for slot, st in pairs(host.kitty_states or {}) do
     canvas.destroy_state(st)
@@ -120,6 +123,7 @@ end
 
 function M.invalidate(host)
   canvas.invalidate(host)
+  kitty_overview.invalidate(host)
   for _, st in pairs(host.kitty_states or {}) do
     st.last_key = nil
   end

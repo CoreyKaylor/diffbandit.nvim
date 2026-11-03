@@ -37,8 +37,14 @@ documents without distorting either one.
   and resolve-on-write staging.
 - Recursive folder comparison with efficient external digest checks and child
   file diffs that return to the folder view.
-- One-column overview gutters that show changed regions proportionally across
-  each document.
+- A minimap for your ordinary editor windows (`:DiffBanditMinimap`): git hunks
+  against the index, diagnostics, search matches, the visible range, and, with
+  image connectors, the code's shape in syntax colours.
+- Overview gutters (minimaps) that show changed regions proportionally across
+  each document, with the visible range, visual selection, and search matches.
+  Click or drag in them to jump, and scroll the pane with the wheel. With image
+  connectors they are drawn at pixel resolution, so every hunk keeps its own
+  mark, and can show the code's shape in syntax colours.
 - Binary file support through a read-only hex comparison view.
 - Theme-friendly semantic colors derived from the active colorscheme, with
   optional overrides.
@@ -194,6 +200,30 @@ Read-only source panes are syntax-aware but intentionally do not attach LSP
 diagnostics. The left side of two-way diffs and the local/remote sides of merge
 views keep their filetype and syntax highlighting, while warnings and
 completion remain focused on the editable target/result pane.
+
+## Editor Minimap
+
+The diff view's overview gutters are also available as a minimap in ordinary
+editor windows. `:DiffBanditMinimap` toggles it for the current window
+(`:DiffBanditMinimap open|close`, or `require("diffbandit").minimap(action)`),
+and `minimap.auto = true` opens it for every eligible window.
+
+- It is a float over the window's right edge, so it never changes your window
+  layout. It covers the last few text columns, and hides when the window is
+  narrower than `minimap.min_window_width`.
+- It shows hunks of the buffer against the git index, computed by DiffBandit
+  (no gitsigns needed). Hunks update shortly after edits and when the index
+  changes (write, buffer enter, focus return). The hunk under the cursor is
+  outlined.
+- It also shows diagnostics (warnings and errors by default), search matches,
+  the visual selection, the visible range and the cursor line.
+- With image connectors it draws the code's shape in syntax colours, 12 cells
+  wide. Otherwise it is a one-column cell strip.
+- Click or drag in it to jump, and scroll the window with the wheel over it.
+  It adds no mappings to your buffers: clicks are handled when they enter the
+  minimap, which hands focus back on release.
+- Help, quickfix and other special buffers, excluded filetypes, floats, and
+  DiffBandit's own tabs are skipped.
 
 ## Git Modes
 
@@ -533,10 +563,21 @@ require("diffbandit").setup({
       image_colorspace = "auto", -- "srgb" | "display-p3" (auto: P3 for Ghostty on macOS)
     },
     split_blend = 0.3,
-    overview = {
+    overview = { -- the diff view's overview gutters
       enabled = true,
       width = 1,
       cursor = true,
+      viewport = true, -- shade the rows covering the visible range
+      renderer = "auto", -- "auto" (image when the connector is) | "cells"
+      min_reduction = nil, -- lines per row below which short files stop stretching (nil = auto)
+      search = true, -- show 'hlsearch' matches
+      selection = true, -- show the visual selection
+      mouse = true, -- click/drag to jump, wheel to scroll the pane
+      code_shape = true, -- image renderer: draw the code's shape in syntax colours (false: hunk strip)
+      code_width = 12, -- overview width (cells) with code_shape
+      focus_follow = true, -- code shape: only the focused pane's strip is full width
+      compact_width = 4, -- the other pane's strip: the same shape, squeezed
+      code_debounce_ms = 400, -- rebuild the code shape once edits pause
     },
     status = {
       enabled = true,
@@ -564,6 +605,34 @@ require("diffbandit").setup({
   },
 })
 ```
+
+The editor minimap (`:DiffBanditMinimap`) has its own section with the same
+rendering options as `ui.overview`:
+
+```lua
+require("diffbandit").setup({
+  minimap = {
+    auto = false, -- open for every eligible window
+    renderer = "auto", -- "auto" (image when supported) | "cells"
+    width = 1, -- cell-strip width
+    code_shape = true, -- image: draw the code's shape in syntax colours
+    code_width = 12,
+    min_reduction = nil,
+    viewport = true,
+    cursor = true,
+    search = true,
+    selection = true,
+    mouse = true,
+    git = true, -- hunks against the git index
+    git_debounce_ms = 300,
+    diagnostics = { enabled = true, min_severity = "warn" },
+    min_window_width = 60,
+    exclude_filetypes = { "help", "qf", "netrw", "gitcommit", "gitrebase" },
+    zindex = 20,
+  },
+})
+```
+
 
 Theme colors are derived from the active colorscheme's diff highlight groups.
 Use `ui.theme.colors` for semantic color overrides, or `ui.theme.highlights` to
@@ -614,6 +683,39 @@ cell renderer is used, unchanged.
   set `vim.g.diffbandit_connector_renderer` or
   `DIFFBANDIT_CONNECTOR_RENDERER`. Inside tmux, auto mode uses cells.
 - If the terminal rejects an image later, every open view falls back to cells.
+- The overview gutters become images too (`ui.overview.renderer = "auto"`).
+  In the cell overview a long file squeezes several hunks into one cell row.
+  The image gives each hunk its own mark at its exact position, about 20x
+  the vertical resolution. One-line hunks stay at least 2px tall, and the
+  current chunk is outlined. The viewport band and cursor row are cell
+  backgrounds showing through the image, so scrolling never re-sends it.
+  Set `ui.overview.renderer = "cells"` to keep the cell overview.
+- By default (`ui.overview.code_shape = true`) the image overview is a code
+  minimap (`code_width` cells, ~120 columns at 1px per character, 2px on
+  HiDPI); set it to `false` for the one-column hunk strip. Each
+  line's text is drawn in its treesitter colours, falling back to legacy
+  syntax for files up to 3000 lines and to the Normal colour otherwise. Hunks
+  are bands behind the text and search matches are translucent bands. Short
+  files are not stretched: by default characters are twice as tall as wide
+  (`ui.overview.min_reduction` sets lines per row explicitly). While you edit,
+  the previous shape stays until typing pauses for `code_debounce_ms`.
+- Only the focused pane's code minimap is full width (`code_width`); the other
+  pane's is `compact_width` cells, the same shape squeezed horizontally. The
+  editable right side starts focused. When focus moves to the other pane the
+  two strips swap sizes and the layout shifts over. The panes keep equal
+  widths, and the shape is not rebuilt. Set `ui.overview.focus_follow = false`
+  to keep both strips full width.
+
+#### Overview interaction
+
+Both renderers shade the visible range, show the visual selection as a row
+band, and mark search matches while `'hlsearch'` is active (a right-half block
+in cells, a tick in the image). Click or drag in an overview to centre that
+spot in its pane, and use the mouse wheel over it to scroll the pane. Clicks
+resolve to the cell row under the mouse because Neovim reports no pixel
+positions. Set `ui.overview.min_reduction` (lines per row) to stop short files
+from stretching to fill the strip. The overview never scrolls: long files are
+always shown whole.
 
 `DIFFBANDIT_PERF=1` adds `kitty curves/raster/transmit` stage timings to the
 render log. `tools/bench_kitty.lua` compares repaint cost against the cell
@@ -652,6 +754,7 @@ diffbandit.merge("path/to/conflicted-file")
 diffbandit.commit_panel({})
 diffbandit.git_panel({})             -- working-tree changes, panel open on the first file
 diffbandit.launch({ "main...HEAD" }) -- what bin/diffbandit runs (git diff-style args)
+diffbandit.minimap("toggle")         -- editor minimap: "toggle" | "open" | "close"
 
 -- Predicates. `is_running()` is the current tab (2-way, merge, or folder).
 -- Tabpage ids and bufnrs are both integers, so overloads take a table:

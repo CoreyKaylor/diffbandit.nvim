@@ -67,6 +67,16 @@ end
 --- Ribbon palette from the theme-derived connector groups (respects user
 --- highlight overrides): band fill = DiffBanditConnector<Kind>.bg, active
 --- border = DiffBanditConnector<Kind>Line.fg.
+--- A highlight colour ({r,g,b} or nil) in the image colour space.
+function M.image_rgb(config, name, field, space)
+  local rgb = hl_rgb(name, field)
+  space = space or color.image_colorspace(config)
+  if rgb and space == "display-p3" then
+    return color.srgb_to_display_p3(rgb)
+  end
+  return rgb
+end
+
 function M.palette(config)
   local palette = {}
   local space = color.image_colorspace(config)
@@ -192,6 +202,8 @@ local function transmit(host, st, bytes, width, height, layout)
   st.transmits = st.transmits + 1
   return detect.send(table.concat(chunks))
 end
+-- layout = { cols, rows }: the placement size in cells.
+M.transmit = transmit
 
 -- --- canvas float ---------------------------------------------------------
 --

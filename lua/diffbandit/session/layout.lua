@@ -14,6 +14,14 @@ local set_window_height = nvim.set_window_height
 
 local M = {}
 
+
+-- Overview strip width of one side: the focused side's strip can be wide
+-- while the other is compact (session.left/right_overview_width); hosts
+-- without per-side widths use session.overview_width for both.
+local function overview_width(session, side)
+  return session[side .. "_overview_width"] or session.overview_width or 0
+end
+
 local function create_buffers(session)
   -- Create buffers with basic options first (avoid bufhidden=wipe until in windows)
   local left_buf = vim.api.nvim_create_buf(false, true)
@@ -169,7 +177,7 @@ local function open_windows(session)
         split = "right",
         win = panel_nav_win,
       })
-      left_overview_win = open_sidecar_win(session.left_overview_buf, left_win, "left", session.overview_width)
+      left_overview_win = open_sidecar_win(session.left_overview_buf, left_win, "left", overview_width(session, "left"))
     end
     panel_commit_win = vim.api.nvim_open_win(session.panel.commit_buf, false, {
       split = "below",
@@ -187,7 +195,7 @@ local function open_windows(session)
       split = "below",
       win = left_header_win,
     })
-    left_overview_win = open_sidecar_win(session.left_overview_buf, left_win, "left", session.overview_width)
+    left_overview_win = open_sidecar_win(session.left_overview_buf, left_win, "left", overview_width(session, "left"))
 
     center_header_win = open_status_win(session.center_header_buf, left_header_win, "right")
     right_header_win = open_status_win(session.right_header_buf, center_header_win, "right")
@@ -199,14 +207,14 @@ local function open_windows(session)
     left_num_win = open_gutter_win(session.left_num_buf, left_win, session.left_number_pane_width)
     connector_win = open_gutter_win(session.connector_buf, left_num_win, session.connector_core_width)
     right_num_win = open_gutter_win(session.right_num_buf, connector_win, session.right_number_pane_width)
-    right_overview_win = open_sidecar_win(session.right_overview_buf, right_win, "right", session.overview_width)
+    right_overview_win = open_sidecar_win(session.right_overview_buf, right_win, "right", overview_width(session, "right"))
   else
     if not session.panel_enabled then
       left_win = vim.api.nvim_get_current_win()
       vim.api.nvim_win_set_buf(left_win, session.left_buf)
     end
     if not left_overview_win then
-      left_overview_win = open_sidecar_win(session.left_overview_buf, left_win, "left", session.overview_width)
+      left_overview_win = open_sidecar_win(session.left_overview_buf, left_win, "left", overview_width(session, "left"))
     end
     right_win = vim.api.nvim_open_win(session.right_buf, false, {
       split = "right",
@@ -216,7 +224,7 @@ local function open_windows(session)
     left_num_win = open_gutter_win(session.left_num_buf, left_win, session.left_number_pane_width)
     connector_win = open_gutter_win(session.connector_buf, left_num_win, session.connector_core_width)
     right_num_win = open_gutter_win(session.right_num_buf, connector_win, session.right_number_pane_width)
-    right_overview_win = open_sidecar_win(session.right_overview_buf, right_win, "right", session.overview_width)
+    right_overview_win = open_sidecar_win(session.right_overview_buf, right_win, "right", overview_width(session, "right"))
   end
 
   session.left_win = left_win
@@ -250,10 +258,10 @@ end
 local function apply_window_options(session)
   set_window_options(session.left_win, layout.win_opts.source())
 
-  for _, win in ipairs({ session.left_overview_win, session.right_overview_win }) do
+  for side, win in pairs({ left = session.left_overview_win, right = session.right_overview_win }) do
     if win then
       set_window_options(win, layout.win_opts.gutter(layout.winhl.overview))
-      set_window_width(win, session.overview_width)
+      set_window_width(win, overview_width(session, side))
     end
   end
 
@@ -393,13 +401,13 @@ function M.resize(session)
 
   local function apply_fixed_widths()
     if session.left_overview_win then
-      set_window_width(session.left_overview_win, session.overview_width)
+      set_window_width(session.left_overview_win, overview_width(session, "left"))
     end
     set_window_width(session.left_num_win, session.left_number_pane_width)
     set_window_width(session.connector_win, session.connector_core_width)
     set_window_width(session.right_num_win, session.right_number_pane_width)
     if session.right_overview_win then
-      set_window_width(session.right_overview_win, session.overview_width)
+      set_window_width(session.right_overview_win, overview_width(session, "right"))
     end
   end
 
@@ -412,7 +420,8 @@ function M.resize(session)
   local separator_width = #valid_windows - 1
   total_width = total_width + separator_width
 
-  local overview_fixed_width = (session.overview_enabled and (session.overview_width * 2) or 0)
+  local overview_fixed_width = session.overview_enabled
+      and (overview_width(session, "left") + overview_width(session, "right")) or 0
   local fixed_width = session.left_number_pane_width + session.connector_core_width
     + session.right_number_pane_width + overview_fixed_width
   local content_width = total_width - fixed_width - separator_width
@@ -427,7 +436,8 @@ function M.resize(session)
   apply_fixed_widths()
 
   if session.status_enabled then
-    local overview_header_extra = session.overview_enabled and (session.overview_width + 1) or 0
+    local left_header_extra = session.overview_enabled and (overview_width(session, "left") + 1) or 0
+    local right_header_extra = session.overview_enabled and (overview_width(session, "right") + 1) or 0
     local center_fixed_width = session.left_number_pane_width + session.connector_core_width + session.right_number_pane_width
     local center_header_width = center_fixed_width + 2
     -- Image connectors shrink the core to an IntelliJ-sized divider; the
@@ -440,9 +450,9 @@ function M.resize(session)
       header_extra = math.max(0, math.min(need - center_header_width, left_width + right_width - 20))
     end
     local left_extra = math.floor(header_extra / 2)
-    set_window_width(session.left_header_win, left_width + overview_header_extra - left_extra)
+    set_window_width(session.left_header_win, left_width + left_header_extra - left_extra)
     set_window_width(session.center_header_win, center_header_width + header_extra)
-    set_window_width(session.right_header_win, right_width + overview_header_extra - (header_extra - left_extra))
+    set_window_width(session.right_header_win, right_width + right_header_extra - (header_extra - left_extra))
     set_window_height(session.left_header_win, 1)
     set_window_height(session.center_header_win, 1)
     set_window_height(session.right_header_win, 1)

@@ -911,6 +911,18 @@ function M.read_index(root, path)
   return read_blob(root, ":" .. path)
 end
 
+--- Async index blob: callback(text | nil, err) on the main loop. nil text
+--- means the path is not in the index (untracked) or git failed.
+function M.read_index_async(root, path, callback)
+  return git_async(root, { "show", "--no-ext-diff", ":" .. path }, function(ok, err, output)
+    if ok then
+      callback(output or "", nil)
+    else
+      callback(nil, err)
+    end
+  end)
+end
+
 function M.read_head(root, path, base)
   return read_blob(root, (base or "HEAD") .. ":" .. path)
 end

@@ -39,7 +39,9 @@ Core features:
 - Optional commit panel with file staging and commit message entry.
 - Merge conflict group with a local/result/remote resolver.
 - Recursive folder comparison using external digest commands.
-- One-column overview gutters at the outer document edges.
+- Overview gutters (minimaps) at the outer document edges: visible range,
+  visual selection and search matches; click/drag to jump, wheel to scroll.
+  Pixel resolution and an optional code-shape minimap with image connectors.
 - Read-only binary hex comparison view.
 - Theme-friendly colors derived from the active colorscheme.
 
@@ -73,6 +75,14 @@ COMMANDS                                            *diffbandit-commands*
                                                  *:DiffBanditBuffers*
 :DiffBanditBuffers {left-bufnr} {right-bufnr}
         Open a DiffBandit view comparing two loaded buffers.
+
+                                                 *:DiffBanditMinimap*
+:DiffBanditMinimap [toggle|open|close]
+        Toggle (default), open or close the minimap of the current window: a
+        float over its right edge with git hunks against the index,
+        diagnostics, search matches, the visual selection and the visible
+        range; the code's shape in syntax colours with image connectors.
+        Click or drag to jump, wheel to scroll. See |diffbandit-minimap|.
 
                                              *:DiffBanditFolderDiff*
 :DiffBanditFolderDiff {left-folder} {right-folder}
@@ -498,6 +508,27 @@ Common configuration:
         enabled = true,
         width = 1,
         cursor = true,
+        -- Shade the rows covering the visible range.
+        viewport = true,
+        -- "auto": draw the overview as a pixel-resolution image whenever
+        -- the connector uses the Kitty image renderer; "cells": never.
+        renderer = "auto",
+        -- Lines per row below which short files stop stretching.
+        -- nil = auto (fill; code shape: characters twice as tall as wide).
+        min_reduction = nil,
+        search = true,     -- 'hlsearch' matches
+        selection = true,  -- visual selection
+        mouse = true,      -- click/drag to jump, wheel to scroll the pane
+        -- Image renderer only: draw each line's text in syntax colours
+        -- (false: the one-column hunk strip).
+        code_shape = true,
+        code_width = 12,
+        -- Code shape: only the focused pane's strip is code_width wide; the
+        -- other is compact_width (the same shape, squeezed). Focus moving
+        -- to a pane swaps them. false: both full width.
+        focus_follow = true,
+        compact_width = 4,
+        code_debounce_ms = 400,
       },
       status = {
         enabled = true,
@@ -538,6 +569,32 @@ and DiffChange highlight groups. Use ui.theme.colors for semantic color
 overrides, or ui.theme.highlights to override specific DiffBandit* groups.
 
 ==============================================================================
+EDITOR MINIMAP                                       *diffbandit-minimap*
+
+The minimap of ordinary editor windows shares the diff view's overview
+renderer. Configure it under `minimap`:
+>
+  minimap = {
+    auto = false,          -- open for every eligible window
+    renderer = "auto",     -- "auto" (image when supported) | "cells"
+    width = 1,             -- cell-strip width
+    code_shape = true,     -- image: code shape in syntax colours
+    code_width = 12,
+    min_reduction = nil,
+    viewport = true, cursor = true, search = true, selection = true,
+    mouse = true,
+    git = true,            -- hunks against the git index
+    git_debounce_ms = 300,
+    diagnostics = { enabled = true, min_severity = "warn" },
+    min_window_width = 60,
+    exclude_filetypes = { "help", "qf", "netrw", "gitcommit", "gitrebase" },
+    zindex = 20,
+  }
+<
+It is a float over the window's right edge (the layout never changes; the
+last text columns are covered) and adds no mappings to your buffers. Special
+buffers, excluded filetypes, floats and DiffBandit's own tabs are skipped.
+
 LUA API                                              *diffbandit-lua-api*
 
 >
@@ -554,6 +611,7 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.git_commit("HEAD")
   diffbandit.git_panel({})
   diffbandit.launch({ "main...HEAD" })
+  diffbandit.minimap("toggle")   -- "toggle" | "open" | "close"
   diffbandit.git_compare("main", "feature")
   diffbandit.git_compare_branches({})
   diffbandit.git_checkout("feature")

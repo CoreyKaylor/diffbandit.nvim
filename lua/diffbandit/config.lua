@@ -71,6 +71,33 @@ local defaults = {
       enabled = true,
       width = 1,
       cursor = true,
+      -- Shade the rows covering the visible range of the pane.
+      viewport = true,
+      -- "auto" draws the overview as a pixel-resolution image whenever the
+      -- connector uses the Kitty image renderer (every hunk gets its own
+      -- mark instead of sharing a cell row); "cells" always uses cells.
+      renderer = "auto",
+      -- Lines per overview row below which a short file stops stretching
+      -- and takes only the top of the strip. nil = auto: always fill for
+      -- the hunk overview; for code shape, characters twice as tall as wide.
+      min_reduction = nil,
+      -- Show search matches ('hlsearch' active) and the visual selection.
+      search = true,
+      selection = true,
+      -- Click/drag in the overview to jump, mouse wheel to scroll the pane.
+      mouse = true,
+      -- Image renderer only: draw each line's text shape in syntax colours
+      -- (treesitter, else legacy syntax), code_width cells wide. Set false
+      -- for the one-column hunk strip (the cell renderer always uses it).
+      code_shape = true,
+      code_width = 12,
+      -- Code shape: only the focused pane's strip is code_width wide; the
+      -- other pane's is compact_width (the same shape, squeezed). Focus
+      -- moving to a pane swaps them. false: both full width.
+      focus_follow = true,
+      compact_width = 4,
+      -- Edits rebuild the code shape once typing pauses this long.
+      code_debounce_ms = 400,
       -- CursorMoved overview repaint (marks already cached; cursor glyph moves).
       debounce_ms = 32,
     },
@@ -209,6 +236,37 @@ local defaults = {
       show_all = "gza",
       close = "q",
     },
+  },
+  -- Minimap for ordinary editor windows (:DiffBanditMinimap). A float on
+  -- the window's right edge; same rendering as the diff view's overview
+  -- (ui.overview), with git hunks against the index and diagnostics.
+  minimap = {
+    -- Open for every eligible window automatically (else per command).
+    auto = false,
+    -- "auto": a pixel image when the terminal supports Kitty graphics (as
+    -- resolved for ui.connector_renderer); "cells": a cell strip.
+    renderer = "auto",
+    -- Cell-strip width; the image draws the code's shape code_width wide.
+    width = 1,
+    code_shape = true,
+    code_width = 12,
+    min_reduction = nil,
+    viewport = true,
+    cursor = true,
+    search = true,
+    selection = true,
+    mouse = true,
+    debounce_ms = 32,
+    code_debounce_ms = 400,
+    -- Hunks against the git index, refreshed this long after edits.
+    git = true,
+    git_debounce_ms = 300,
+    -- Diagnostics at least this severe ("error" | "warn" | "info" | "hint").
+    diagnostics = { enabled = true, min_severity = "warn" },
+    -- Windows narrower than this get no minimap.
+    min_window_width = 60,
+    exclude_filetypes = { "help", "qf", "netrw", "gitcommit", "gitrebase" },
+    zindex = 20,
   },
 }
 

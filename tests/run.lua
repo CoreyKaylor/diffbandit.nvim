@@ -44,6 +44,7 @@ local specs = {
   "35_render_recovery.lua",
   "40_oracle.lua",
   "45_kitty.lua",
+  "55_minimap.lua",
 }
 
 local map_entries = {}

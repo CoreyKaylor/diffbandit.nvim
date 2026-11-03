@@ -107,6 +107,21 @@ end, {
   desc = "Open DiffBandit diff view for two files",
 })
 
+vim.api.nvim_create_user_command("DiffBanditMinimap", function(opts)
+  local action = opts.fargs[1] or "toggle"
+  if action ~= "toggle" and action ~= "open" and action ~= "close" then
+    nvim.notify_error("usage: DiffBanditMinimap [toggle|open|close]")
+    return
+  end
+  diffbandit.minimap(action)
+end, {
+  nargs = "?",
+  complete = function()
+    return { "toggle", "open", "close" }
+  end,
+  desc = "Toggle the DiffBandit minimap for the current window",
+})
+
 vim.api.nvim_create_user_command("DiffBanditBuffers", function(opts)
   local args = opts.fargs
   if #args < 2 then

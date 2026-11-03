@@ -50,7 +50,26 @@ function M.setup(opts)
   highlights.apply(config)
   configure_theme_refresh(config)
   state.highlights_ready = true
+  -- The editor minimap loads only when wanted: minimap.auto, or once it is
+  -- in use (setup again re-reads the config).
+  if (config.minimap or {}).auto or package.loaded["diffbandit.minimap.editor"] then
+    require("diffbandit.minimap.editor").setup()
+  end
   return config
+end
+
+--- Minimap for an ordinary editor window: action = "toggle" | "open" |
+--- "close" (default toggle), win = window id (default current).
+function M.minimap(action, win)
+  local editor = require("diffbandit.minimap.editor")
+  ensure_highlights(state.get_config())
+  action = action or "toggle"
+  if action == "open" then
+    return editor.open(win)
+  elseif action == "close" then
+    return editor.close(win)
+  end
+  return editor.toggle(win)
 end
 
 local function start_session(left_source, right_source, opts)

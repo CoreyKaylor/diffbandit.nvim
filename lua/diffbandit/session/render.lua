@@ -1704,8 +1704,6 @@ function M.render(session)
 
   if not viewport_only then
     session:render_status_headers()
-    -- Full render paints overviews immediately; cancel any armed CursorMoved debounce.
-    ui.cancel_schedule_once(session, "overview_rerender_scheduled")
     session:render_overviews()
   end
 

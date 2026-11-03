@@ -17,6 +17,10 @@ local base_defaults = {
   DiffBanditAccentText = { link = "Identifier" },
   DiffBanditOverviewContext = { link = "Normal" },
   DiffBanditOverviewCursor = { link = "CursorLineNr" },
+  DiffBanditOverviewViewport = { link = "CursorLine" },
+  DiffBanditOverviewCursorBand = { link = "Visual" },
+  DiffBanditOverviewSearch = { link = "Search" },
+  DiffBanditOverviewSelection = { link = "Visual" },
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
 }
@@ -341,6 +345,22 @@ local function apply_diff_variants(config)
     sp = normal_fg,
     bold = true,
   })
+  -- Visible-range band, and the image overview's cursor row (a background:
+  -- image placeholder cells cannot carry an underline).
+  local viewport_bg = blend_color(normal_bg, normal_fg, 0.12)
+  apply_group("DiffBanditOverviewViewport", { bg = viewport_bg, fg = viewport_bg })
+  apply_group("DiffBanditOverviewCursorBand", { bg = blend_color(normal_bg, normal_fg, 0.4) })
+  -- Search matches (fg: a right-half block in cells, a tick in the image)
+  -- and the visual selection (a row background).
+  local search_color = color_to_number(adopt_diff_colors("Search").bg) or blend_color(normal_bg, 0xE5C07B, 0.85)
+  apply_group("DiffBanditOverviewSearch", { fg = search_color })
+  local visual_bg = color_to_number(adopt_diff_colors("Visual").bg) or blend_color(normal_bg, normal_fg, 0.25)
+  apply_group("DiffBanditOverviewSelection", { bg = visual_bg, fg = visual_bg })
+  local diag_fallback = { Error = 0xE06C75, Warn = 0xE5C07B, Info = 0x61AFEF, Hint = 0x56B6C2 }
+  for name, fallback in pairs(diag_fallback) do
+    local fg = color_to_number(adopt_diff_colors("Diagnostic" .. name).fg) or fallback
+    apply_group("DiffBanditOverviewDiag" .. name, { fg = fg })
+  end
 
   -- Variants for line numbers with diff backgrounds (for visual text overlay)
   local line_number_fg = get_foreground_color("LineNr", "#808080")
