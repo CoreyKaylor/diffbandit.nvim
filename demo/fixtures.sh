@@ -65,17 +65,20 @@ write_luarc "$DEMO_ROOT/merge"
 
 cp "$SRC/merge/retry.base.lua" "$DEMO_ROOT/merge/retry.lua"
 cp "$SRC/merge/budget.base.lua" "$DEMO_ROOT/merge/budget.lua"
+cp "$SRC/merge/queue.base.lua" "$DEMO_ROOT/merge/queue.lua"
 git -C "$DEMO_ROOT/merge" add -A
 git -C "$DEMO_ROOT/merge" commit --quiet -m "Add retry and budget policy"
 
 git -C "$DEMO_ROOT/merge" checkout --quiet -b feature
 cp "$SRC/merge/retry.remote.lua" "$DEMO_ROOT/merge/retry.lua"
 cp "$SRC/merge/budget.remote.lua" "$DEMO_ROOT/merge/budget.lua"
+cp "$SRC/merge/queue.remote.lua" "$DEMO_ROOT/merge/queue.lua"
 git -C "$DEMO_ROOT/merge" commit --quiet -am "Raise limits and add jitter backoff"
 
 git -C "$DEMO_ROOT/merge" checkout --quiet main
 cp "$SRC/merge/retry.local.lua" "$DEMO_ROOT/merge/retry.lua"
 cp "$SRC/merge/budget.local.lua" "$DEMO_ROOT/merge/budget.lua"
+cp "$SRC/merge/queue.local.lua" "$DEMO_ROOT/merge/queue.lua"
 git -C "$DEMO_ROOT/merge" commit --quiet -am "Tune retry policy for slow upstreams"
 
 # Expected to fail -- that failure IS the fixture.
@@ -83,10 +86,12 @@ if git -C "$DEMO_ROOT/merge" merge --quiet feature >/dev/null 2>&1; then
   echo "fixtures: merge/ was expected to conflict but merged cleanly" >&2
   exit 1
 fi
-if ! git -C "$DEMO_ROOT/merge" show :1:retry.lua >/dev/null 2>&1; then
-  echo "fixtures: merge/ has no stage-1 entry for retry.lua" >&2
-  exit 1
-fi
+for f in retry.lua queue.lua; do
+  if ! git -C "$DEMO_ROOT/merge" show ":1:$f" >/dev/null 2>&1; then
+    echo "fixtures: merge/ has no stage-1 entry for $f" >&2
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # repo/ -- clean history plus dirty worktree (clip 04)

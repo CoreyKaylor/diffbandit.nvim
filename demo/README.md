@@ -82,7 +82,9 @@ semicolon truecolor (correct under xterm.js) and adds green underlines.
 `demo/fixtures.sh` builds `/tmp/diffbandit-demo/` from scratch:
 
 - `pair/` — two versions of a small Lua module (clips 01, 02)
-- `merge/` — a git repo genuinely mid-conflict (clip 03)
+- `merge/` — a git repo genuinely mid-conflict (clip 03; `queue.lua` drives the
+  Ghostty-only clip 06, whose two sides reshape the same regions differently so
+  the left and right connector ribbons diverge)
 - `repo/` — clean history plus a dirty worktree (clip 04)
 - `folder-left/`, `folder-right/` — two trees to compare (clip 05)
 
@@ -149,3 +151,40 @@ Two behaviours worth remembering, both learned the hard way:
   so `>>`/`<<` are no-ops there. Press `]c` first.
 - In the folder view `]c` moves the selection between changed rows, but pressing
   it once past the last changed row opens that file's diff.
+
+## Ghostty recordings (Kitty-graphics connectors) — experimental
+
+VHS cannot show the image connector (xterm.js has no Kitty graphics), so
+`demo/ghostty/` records in a real Ghostty window instead:
+
+```bash
+demo/ghostty/record.sh                    # every tape, keyframe mode
+demo/ghostty/record.sh 03 04              # some tapes (prefix match)
+demo/ghostty/record.sh --both 01          # keyframe + realtime, to compare
+```
+
+Output goes to `docs/demo/ghostty/<tape>.<mode>.gif`, stills to
+`docs/demo/.frames/ghostty-*`.
+
+- `ghostty.conf` — pinned font/size/theme; launched with
+  `--config-default-files=false`, so the user's Ghostty config never leaks in.
+  The command is passed through a generated config file, not `-e`, because
+  Ghostty asks for confirmation before running a command given via `open … -e`.
+- `tapes/*.lua` — the tape is Lua run *inside* nvim by `runner.lua`
+  (`nvim_input` + timers). Headers: `-- cwd: <dir>` and optional
+  `-- size: <cols>x<rows>`. Waits use editor/plugin state —
+  `t.kitty_ready(n)`, `t.lsp_attached(name)`, `t.completion_visible`,
+  `t.problems(pred)`, or `t.screen_has(pattern)` (VHS `Wait+Screen`).
+  Steps whose result lands asynchronously (debounced re-diff, git) pass a
+  longer `{ settle = ms }`.
+- `keyframe` mode — one `screencapture -l` of the window per visible change,
+  taken once two consecutive captures match; durations come from the tape, so
+  output is the same every run and wait time never shows.
+  `t.burst(ms)` samples continuously for animations nvim drives itself.
+- `realtime` mode — `winrec.swift` films only that window with
+  ScreenCaptureKit while the tape runs live; near-duplicate frames
+  (HEVC noise) are dropped at encode time.
+
+Needs macOS with a logged-in GUI session, Ghostty, `swiftc`, `ffmpeg`, and
+Screen Recording permission for the terminal running the script. It cannot run
+in CI.
