@@ -105,10 +105,12 @@ underneath the edit.
 
 <h3>Merge conflicts</h3>
 
-Local, result, and remote side by side; `]c` between conflicts, `>>` and `<<` to
-take a side, and `:w` to resolve and stage.
+Local, result, and remote side by side, each side reshaping the same code
+differently. `]c` walks the changes; `>>`, `<<`, and `gb` take local, remote, or
+both per conflict; `gA` applies the non-conflicting changes; `:w` resolves and
+stages.
 
-<img src="docs/demo/ghostty/03-merge.keyframe.gif" alt="Three-way merge resolver taking a side per conflict" width="860">
+<img src="docs/demo/ghostty/06-merge-geometry.keyframe.gif" alt="Three-way merge taking local, remote, and both sides per conflict, then applying non-conflicting changes" width="860">
 
 <h3>Commit panel</h3>
 
