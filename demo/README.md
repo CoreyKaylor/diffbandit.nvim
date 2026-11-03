@@ -1,8 +1,10 @@
 # Demo recordings
 
 The GIFs embedded in the top-level `README.md` are generated, not hand-recorded.
-Each one is a [VHS](https://github.com/charmbracelet/vhs) tape: a script that
-drives a real Neovim in an embedded terminal and renders the result.
+They come from the Ghostty tapes in `demo/ghostty/` (see the end of this file),
+which show the Kitty-graphics connector. The VHS tapes below record the same
+clips with the cell renderer: each is a [VHS](https://github.com/charmbracelet/vhs)
+tape, a script that drives a real Neovim in an embedded terminal.
 
 ```bash
 demo/record.sh                # render all clips into docs/demo/

@@ -55,6 +55,21 @@ documents without distorting either one.
   terminal with Kitty graphics + Unicode placeholder support. LuaJIT `ffi` and
   the system `libz` are used when present for speed and compression.
 
+## Rendering
+
+Connectors draw as smooth, anti-aliased bezier ribbons (modelled on IntelliJ's
+diff divider) in terminals with the Kitty graphics protocol and Unicode
+placeholders:
+
+- Ghostty (tested)
+- Kitty
+- any other terminal implementing both
+
+Detection is automatic (Neovim 0.12+). Everywhere else, including tmux,
+iTerm2, and Terminal.app, the cell renderer draws the same routes with Unicode
+glyphs.
+Details and options: [Image connectors](#image-connectors-kitty-graphics).
+
 ## Installation
 
 With `lazy.nvim`:
@@ -70,12 +85,15 @@ With `lazy.nvim`:
 
 ## Demo
 
+Recorded in Ghostty, so connectors render as bezier ribbons (see
+[Rendering](#rendering)).
+
 <h3>Diff view and connector routes</h3>
 
-Chunk navigation with `]c`, then scrolling one pane on its own: the routes
+Chunk navigation with `]c`, then scrolling one pane on its own: the ribbons
 re-project against the moving viewport while the other document holds still.
 
-<img src="docs/demo/01-diff.gif" alt="Two-way diff with connector gutter, chunk navigation, and independent scrolling" width="860">
+<img src="docs/demo/ghostty/01-diff.keyframe.gif" alt="Two-way diff with connector gutter, chunk navigation, and independent scrolling" width="860">
 
 <h3>The right pane is a real document</h3>
 
@@ -83,28 +101,28 @@ The destination side is an ordinary editable buffer with the language server
 attached — completion, diagnostics, and undo all work, and the diff recomputes
 underneath the edit.
 
-<img src="docs/demo/02-editable-lsp.gif" alt="Editing the right pane of a diff with LSP completion and diagnostics" width="860">
+<img src="docs/demo/ghostty/02-editable-lsp.keyframe.gif" alt="Editing the right pane of a diff with LSP completion and diagnostics" width="860">
 
 <h3>Merge conflicts</h3>
 
 Local, result, and remote side by side; `]c` between conflicts, `>>` and `<<` to
 take a side, and `:w` to resolve and stage.
 
-<img src="docs/demo/03-merge.gif" alt="Three-way merge resolver taking a side per conflict" width="860">
+<img src="docs/demo/ghostty/03-merge.keyframe.gif" alt="Three-way merge resolver taking a side per conflict" width="860">
 
 <h3>Commit panel</h3>
 
 Changed files with a live diff preview, `<Space>` to stage, and a commit message
 buffer that commits on write.
 
-<img src="docs/demo/04-commit-panel.gif" alt="Commit panel staging files and writing a commit" width="860">
+<img src="docs/demo/ghostty/04-commit-panel.keyframe.gif" alt="Commit panel staging files and writing a commit" width="860">
 
 <h3>Folder diff</h3>
 
 Compare two trees, walk the changed entries, and drill into a file diff that
 returns to the tree on `q`.
 
-<img src="docs/demo/05-folder-diff.gif" alt="Recursive folder diff with drill-down into a changed file" width="860">
+<img src="docs/demo/ghostty/05-folder-diff.keyframe.gif" alt="Recursive folder diff with drill-down into a changed file" width="860">
 
 ## Quick Start
 
