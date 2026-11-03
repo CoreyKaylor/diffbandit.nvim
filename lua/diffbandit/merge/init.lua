@@ -1942,27 +1942,10 @@ function Merge:replace_result_region(region_index, replacement)
   local next_lines = text.replace_range(current, region.result_start, region.result_count, replacement)
   self:set_result_buffer_lines(next_lines)
   local delta = #(replacement or {}) - (region.result_count or 0)
-  region.result_count = #(replacement or {})
+  merge_model.resize_region(region, #(replacement or {}))
   self:update_region_offsets(region_index, delta)
   self:render()
   return true
-end
-
-function Merge:update_current_conflict_from_pair_hunk(hunk, replacement)
-  if self.current_conflict <= 0 then
-    return
-  end
-  local region = self.conflicts[self.current_conflict]
-  if not region then
-    return
-  end
-  local old_count = region.result_count or 0
-  if old_count ~= (hunk.right.count or 0) and not (old_count == 0 and (hunk.right.count or 0) == 0) then
-    return
-  end
-  region.result_start = hunk.right.start
-  region.result_count = #(replacement or {})
-  self:update_region_offsets(self.current_conflict, region.result_count - old_count)
 end
 
 function Merge:focused_hunk_for_side(side)
@@ -1989,7 +1972,7 @@ function Merge:accept_pair_hunk(side)
     local replacement = hunk_lines(self.local_lines, selected.local_hunk.left)
     vim.list_extend(replacement, hunk_lines(self.remote_lines, selected.remote_hunk.left))
     self.delete_result = false
-    self:update_current_conflict_from_pair_hunk(selected.local_hunk, replacement)
+    merge_model.track_result_edit(self.conflicts, selected.result_start, selected.result_count or 0, #replacement)
     return self:replace_result_range(selected.result_start, selected.result_count or 0, replacement)
   end
 
@@ -1999,7 +1982,7 @@ function Merge:accept_pair_hunk(side)
   end
   local replacement = hunk_lines(ctx.source_lines, hunk.left)
   self.delete_result = false
-  self:update_current_conflict_from_pair_hunk(hunk, replacement)
+  merge_model.track_result_edit(self.conflicts, hunk.right.start, hunk.right.count, #replacement)
   return self:replace_result_range(hunk.right.start, hunk.right.count, replacement)
 end
 
@@ -2045,12 +2028,26 @@ function Merge:accept(side)
 end
 
 function Merge:apply_non_conflicting()
+  -- Base line numbers are stale once a conflict was resolved or the result
+  -- edited, so place each hunk against the current result (see model).
   local lines = logical_buffer_lines(self.result_buf)
-  for _, item in ipairs(self.non_conflicting or {}) do
-    lines = text.replace_range(lines, item.base_start, item.base_count, item.replacement)
+  local plan = merge_model.plan_non_conflicting(self.base_lines, lines, self.non_conflicting, self.config)
+  if #plan.edits == 0 then
+    nvim.notify_info("no non-conflicting changes left to apply")
+    return false
+  end
+  -- Bottom-to-top, so each edit's rows are still valid when it applies;
+  -- conflict regions below it follow the line delta.
+  for _, edit in ipairs(plan.edits) do
+    lines = text.replace_range(lines, edit.start, edit.count, edit.replacement)
+    merge_model.track_result_edit(self.conflicts, edit.start, edit.count, #edit.replacement)
   end
   self:set_result_buffer_lines(lines)
-  nvim.notify_info("applied non-conflicting changes")
+  if plan.skipped > 0 then
+    nvim.notify_info(string.format("applied non-conflicting changes (%d already in the result)", plan.skipped))
+  else
+    nvim.notify_info("applied non-conflicting changes")
+  end
   self:render()
   return true
 end

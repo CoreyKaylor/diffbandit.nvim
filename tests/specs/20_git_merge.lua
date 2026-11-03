@@ -2454,3 +2454,91 @@ do
   merge_session:close()
 end
 
+
+-- ==============================================================================
+-- Merge: apply non-conflicting changes against an edited result
+-- ==============================================================================
+-- gA used to splice each hunk at its BASE line numbers into the current
+-- result. After a conflict resolution changed the line count above a hunk it
+-- landed at the wrong rows (and a second gA duplicated every hunk).
+do
+  local text_mod = require("diffbandit.util.text")
+  local base = { "a", "b", "c", "d", "e", "f", "g", "h" }
+  local local_lines = { "a", "b1", "b2", "c", "d", "L", "e", "f", "g", "h" }
+  local remote_lines = { "a", "B", "c", "d", "e", "f", "G", "h" }
+  local conflicts, non_conflicting = merge_model_mod.build_regions(base, local_lines, remote_lines, {})
+  assert_eq(#conflicts, 1, "fixture: line b conflicts")
+  assert_eq(#non_conflicting, 2, "fixture: local insert after d + remote change of g")
+
+  local function apply(result)
+    local plan = merge_model_mod.plan_non_conflicting(base, result, non_conflicting, {})
+    for _, edit in ipairs(plan.edits) do
+      result = text_mod.replace_range(result, edit.start, edit.count, edit.replacement)
+    end
+    return result, plan
+  end
+
+  local pristine = apply(vim.deepcopy(base))
+  assert_eq(table.concat(pristine, ","), "a,b,c,d,L,e,f,G,h",
+    "non-conflicting hunks apply at base rows to an untouched result")
+
+  -- Conflict resolved with local first: b -> b1,b2 shifts everything by +1.
+  local resolved = { "a", "b1", "b2", "c", "d", "e", "f", "g", "h" }
+  local applied, plan = apply(resolved)
+  assert_eq(table.concat(applied, ","), "a,b1,b2,c,d,L,e,f,G,h",
+    "non-conflicting hunks follow a conflict resolution that changed the line count")
+  assert_eq(plan.skipped, 0, "nothing was in the result yet")
+
+  local again, replan = apply(applied)
+  assert_eq(table.concat(again, ","), "a,b1,b2,c,d,L,e,f,G,h",
+    "applying non-conflicting changes twice must not duplicate them")
+  assert_eq(#replan.edits, 0, "second apply has nothing to do")
+  assert_eq(replan.skipped, 2, "both hunks are recognised as already applied")
+end
+
+-- ==============================================================================
+-- Merge: conflict regions track result edits
+-- ==============================================================================
+-- Accepting a pair hunk only updated region rows when it exactly covered the
+-- current conflict, so a partial accept (or a non-conflicting >>/<<) left
+-- every later conflict pointing at stale rows; and filling an empty
+-- (insertion) region kept its "after row N" start, off by one.
+do
+  local region = { result_start = 5, result_count = 0 }
+  merge_model_mod.resize_region(region, 3)
+  assert_eq(region.result_start, 6, "filling an insertion region starts at its first new row")
+  assert_eq(region.result_count, 3, "filled region count")
+  merge_model_mod.resize_region(region, 0)
+  assert_eq(region.result_start, 5, "emptying a region returns to the after-row anchor")
+
+  local function regions()
+    return {
+      { result_start = 2, result_count = 1 },   -- row 2
+      { result_start = 5, result_count = 0 },   -- insertion after row 5
+      { result_start = 8, result_count = 2 },   -- rows 8-9
+    }
+  end
+  local function spans(rs)
+    local out = {}
+    for i, r in ipairs(rs) do
+      out[i] = r.result_start .. "+" .. r.result_count
+    end
+    return table.concat(out, " ")
+  end
+
+  local rs = regions()
+  merge_model_mod.track_result_edit(rs, 3, 0, 2) -- insert 2 rows after row 3
+  assert_eq(spans(rs), "2+1 7+0 10+2", "an insertion above shifts later regions only")
+
+  rs = regions()
+  merge_model_mod.track_result_edit(rs, 8, 0, 3) -- insert 3 rows after row 8 (inside rows 8-9)
+  assert_eq(spans(rs), "2+1 5+0 8+5", "a partial accept inside a region grows that region")
+
+  rs = regions()
+  merge_model_mod.track_result_edit(rs, 5, 0, 4) -- fill the insertion region
+  assert_eq(spans(rs), "2+1 6+4 12+2", "filling an insertion region moves its start and shifts later ones")
+
+  rs = regions()
+  merge_model_mod.track_result_edit(rs, 8, 2, 0) -- delete rows 8-9 (the whole region)
+  assert_eq(spans(rs), "2+1 5+0 7+0", "deleting a whole region leaves an after-row anchor")
+end
