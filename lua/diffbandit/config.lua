@@ -44,6 +44,14 @@ local defaults = {
       -- Curve width in line heights (IntelliJ's 24px divider ≈ 1.45 lines).
       -- The connector core shrinks to the fewest cells that hold it.
       divider_width = 1.45,
+      -- Insertion line (add/delete taper end) in line-height fractions,
+      -- matched to the terminal underline it continues: thickness, and the
+      -- gap between its bottom and the row boundary. Tune per font.
+      insertion_line = { thickness = 1 / 18, offset = 1 / 18 },
+      -- Colour space of image pixels: "auto" (Display P3 for Ghostty on
+      -- macOS, which shows image pixels unconverted but converts text from
+      -- sRGB), "srgb", or "display-p3".
+      image_colorspace = "auto",
     },
     -- Optional render stage timing (also enabled by DIFFBANDIT_PERF=1).
     -- When log is true (or env set), paints slower than budget_warn_ms are

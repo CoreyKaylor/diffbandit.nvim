@@ -28,6 +28,7 @@ local retransmit_listeners = {}
 local owned_ids = {}
 local sink_override = nil
 local env_override = nil
+local measure_override = nil
 local response_group = nil
 
 local function notify(status)
@@ -371,19 +372,35 @@ local function measure_cell()
   pcall(ffi.cdef, "int ioctl(int fd, unsigned long request, ...);")
   pcall(ffi.cdef, "int open(const char *path, int flags, ...);")
   pcall(ffi.cdef, "int close(int fd);")
+  pcall(ffi.cdef, "int isatty(int fd);")
   local request = ffi.os == "OSX" and 0x40087468 or 0x5413
+  local function query(fd)
+    local ws = ffi.new("struct diffbandit_winsize")
+    if ffi.C.ioctl(fd, request, ws) ~= 0 or ws.ws_col == 0 or ws.ws_row == 0
+        or ws.ws_xpixel == 0 or ws.ws_ypixel == 0 then
+      return nil
+    end
+    return { w = math.floor(ws.ws_xpixel / ws.ws_col), h = math.floor(ws.ws_ypixel / ws.ws_row) }
+  end
   local ok, size = pcall(function()
+    -- Since Neovim 0.10 the editor runs as an `--embed` server under the TUI
+    -- process. It has no controlling terminal (open("/dev/tty") fails) but
+    -- inherits the terminal on its standard fds, so ask those first.
+    for fd = 0, 2 do
+      if ffi.C.isatty(fd) == 1 then
+        local found = query(fd)
+        if found then
+          return found
+        end
+      end
+    end
     local fd = ffi.C.open("/dev/tty", 0)
     if fd < 0 then
       return nil
     end
-    local ws = ffi.new("struct diffbandit_winsize")
-    local rc = ffi.C.ioctl(fd, request, ws)
+    local found = query(fd)
     ffi.C.close(fd)
-    if rc ~= 0 or ws.ws_col == 0 or ws.ws_row == 0 or ws.ws_xpixel == 0 or ws.ws_ypixel == 0 then
-      return nil
-    end
-    return { w = math.floor(ws.ws_xpixel / ws.ws_col), h = math.floor(ws.ws_ypixel / ws.ws_row) }
+    return found
   end)
   if ok and size and size.w > 0 and size.h > 0 then
     return size
@@ -396,15 +413,46 @@ end
 --- ssh often report no pixel size, and Neovim does not forward CSI 16t
 --- replies, so the estimate is HiDPI-sized: terminals downscale it cleanly,
 --- while an undersized image upscaled on a Retina display looks blocky.
+---
+--- Only a real measurement is cached. Ghostty, for one, spawns the shell
+--- with a 1x1 px placeholder size and sends the real size a moment later; an
+--- estimate taken in that window must not stick, because terminals fit
+--- placeholder images preserving aspect ratio — a wrong cell aspect shrinks
+--- and centres the whole image, misaligning it worst at the top and bottom.
 function M.cell_size(config)
   local cfg = kitty_config(config).cell_px
   if type(cfg) == "table" and tonumber(cfg[1]) and tonumber(cfg[2]) then
     return { w = math.floor(cfg[1]), h = math.floor(cfg[2]) }
   end
-  if not state.cell then
-    state.cell = (not env_override and measure_cell()) or { w = 20, h = 40, estimated = true }
+  if not state.cell or state.cell.estimated then
+    local measured = nil
+    if measure_override then
+      measured = measure_override()
+    elseif not env_override then
+      measured = measure_cell()
+    end
+    state.cell = measured or { w = 20, h = 40, estimated = true }
   end
   return state.cell
+end
+
+--- Re-read the cell size (terminal resize / font size change). Returns true
+--- when the measured size changed.
+function M.remeasure(config)
+  local cfg = kitty_config(config).cell_px
+  if type(cfg) == "table" and tonumber(cfg[1]) and tonumber(cfg[2]) then
+    return false
+  end
+  local before = state.cell
+  state.cell = nil
+  local after = M.cell_size(config)
+  return not before or before.w ~= after.w or before.h ~= after.h
+end
+
+--- Test hook: replace the tty measurement (fn returns { w, h } or nil).
+function M._set_measure(fn)
+  measure_override = fn
+  state.cell = nil
 end
 
 function M.status()

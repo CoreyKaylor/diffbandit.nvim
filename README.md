@@ -508,6 +508,8 @@ require("diffbandit").setup({
       max_image_px = 4000000,
       cell_px = nil, -- { w, h } override; measured via the tty, else a 20x40 (HiDPI) estimate
       divider_width = 1.45, -- curve width in line heights (IntelliJ's 24px divider)
+      insertion_line = { thickness = 1 / 18, offset = 1 / 18 }, -- matches the terminal underline
+      image_colorspace = "auto", -- "srgb" | "display-p3" (auto: P3 for Ghostty on macOS)
     },
     split_blend = 0.3,
     overview = {
@@ -562,13 +564,23 @@ cell renderer is used, unchanged.
   The float covers the window separators, so ribbons run unbroken from the
   number panes through the connector. Its text never changes while scrolling:
   only the image does. It follows splits and resizes and closes with its pane.
+- The separators between each number pane and its document keep their line on
+  context rows. On band rows they take the band color, and on an insertion
+  point they carry the origin row's underline, so every band and insertion
+  line runs unbroken from one document to the other.
 - Sizing follows IntelliJ's side-by-side divider (24px beside a ~16.5px
   line, so about 1.45 line heights). The connector core shrinks to the fewest
   cells that hold a curve that wide. The band runs flat across the number-pane
   edge columns and curves only in the middle, using IntelliJ's control points
-  (30%/70%), 2px insertion lines and 1px strokes. `ui.kitty.divider_width`
+  (30%/70%) and 1px strokes. Insertion lines match the terminal underline
+  they continue (`ui.kitty.insertion_line`, in line-height fractions). `ui.kitty.divider_width`
   (in line heights) makes it wider. Unlike IntelliJ, the active chunk keeps an
   outline.
+- Ghostty on macOS shows image pixels as Display P3 but converts text colors
+  from sRGB, so the same color would look more saturated in the curve than in
+  the panes. `ui.kitty.image_colorspace = "auto"` converts the ribbon palette
+  for Ghostty on macOS. Set `"srgb"` if your Ghostty uses
+  `window-colorspace = display-p3`.
 - Without a pixel size from the tty (common under multiplexers and SSH), images
   are rasterized at a 20x40 HiDPI cell estimate and scaled down by the terminal.
   Set `ui.kitty.cell_px` to match your font exactly.

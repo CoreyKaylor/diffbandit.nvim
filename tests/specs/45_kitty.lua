@@ -238,10 +238,17 @@ do
     -- Empty (insertion) side keeps a minimum thickness so it reads as a line.
     local taper = { { kind = "add", chunk = 2, active = false, lt = 2, lb = 2, rt = 1, rb = 4 } }
     local tb = raster.render(taper, spec)
-    local _, _, _, a_taper = px(tb, w, 0, 39)
+    -- Insertion line sits where the terminal underline does: ~1px, its
+    -- bottom ~1px above the boundary (y = 40 at 20px rows).
+    local _, _, _, a_line = px(tb, w, 0, 38)
+    local _, _, _, a_below = px(tb, w, 0, 40)
     local _, _, _, a_taper_far = px(tb, w, 0, 30)
-    assert_eq(a_taper > 0, true, "zero-height side still paints at the insertion boundary")
+    assert_eq(a_line > 0, true, "zero-height side paints the insertion line above the boundary")
+    assert_eq(a_below, 0, "insertion line does not straddle into the next row")
     assert_eq(a_taper_far, 0, "taper stays thin at the insertion side")
+    local tuned = raster.render(taper, vim.tbl_extend("force", spec, { insertion_line = { thickness = 0.1, offset = 0 } }))
+    local _, _, _, a_tuned = px(tuned, w, 0, 39)
+    assert_eq(a_tuned, 255, "insertion_line offset/thickness are configurable")
 
     -- Sloped ribbon: the band centre moves monotonically from left to right
     -- heights (flat near both edges, steepest mid-way).
@@ -433,7 +440,43 @@ do
     assert_eq(detect.failed(), false, "errors for images we do not own are ignored")
 
     assert_eq(detect.cell_size({ ui = { kitty = { cell_px = { 9, 19 } } } }).h, 19, "cell_px override")
+
+    -- Startup race (Ghostty reports 1x1 px until the window settles): the
+    -- estimate is never cached, so the real size wins as soon as it appears.
+    local measured = nil
+    detect._set_measure(function()
+      return measured
+    end)
+    assert_eq(detect.cell_size({}).estimated, true, "no pixel size yet: estimate")
+    measured = { w = 17, h = 37 }
+    local real = detect.cell_size({})
+    assert_eq(real.w .. "x" .. real.h, "17x37", "real size replaces the estimate without a reset")
+    measured = { w = 21, h = 45 }
+    assert_eq(detect.cell_size({}).w, 17, "a real measurement is cached")
+    assert_eq(detect.remeasure({}), true, "font size change is detected on remeasure")
+    assert_eq(detect.cell_size({}).w, 21, "remeasure picks up the new size")
+    assert_eq(detect.remeasure({}), false, "unchanged size reports no change")
+    assert_eq(detect.remeasure({ ui = { kitty = { cell_px = { 9, 19 } } } }), false, "cell_px override never remeasures")
+    detect._set_measure(nil)
     reset_detect()
+  end
+
+  -- ------------------------------------------------------------------
+  -- Image colour space: Ghostty/macOS shows image pixels as Display P3
+  -- but converts text colours from sRGB, so the palette is pre-converted.
+  -- ------------------------------------------------------------------
+  do
+    local color = require("diffbandit.kitty.color")
+    assert_eq(table.concat(color.srgb_to_display_p3({ 18, 61, 43 }), ","), "30,60,44",
+      "sRGB #123d2b in Display P3 (what Ghostty shows for the text colour)")
+    assert_eq(table.concat(color.srgb_to_display_p3({ 255, 255, 255 }), ","), "255,255,255", "white is white")
+    assert_eq(table.concat(color.srgb_to_display_p3({ 0, 0, 0 }), ","), "0,0,0", "black is black")
+    assert_eq(color.image_colorspace({}, { ghostty = true, mac = true, ssh = false }), "display-p3", "Ghostty on macOS")
+    assert_eq(color.image_colorspace({}, { ghostty = true, mac = true, ssh = true }), "srgb", "remote: unknown display")
+    assert_eq(color.image_colorspace({}, { ghostty = false, mac = true, ssh = false }), "srgb", "other terminals")
+    assert_eq(color.image_colorspace({}, { ghostty = true, mac = false, ssh = false }), "srgb", "Ghostty on Linux")
+    assert_eq(color.image_colorspace({ ui = { kitty = { image_colorspace = "srgb" } } },
+      { ghostty = true, mac = true, ssh = false }), "srgb", "config override")
   end
 
   -- ------------------------------------------------------------------
@@ -560,6 +603,45 @@ do
       "last row addresses the last image row")
     assert_eq(vim.fn.strwidth(canvas_lines[1]), layout.cols, "each placeholder is one display cell")
 
+    -- Document-edge bridges: one-column floats over the separators between
+    -- each number pane and its document keep the glyph on context rows and
+    -- carry the band colour on band rows, so bands run through unbroken.
+    local edge_ns = vim.api.nvim_create_namespace("DiffBanditKittyEdges")
+    local function edge_rows(edge)
+      local rows = {}
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(edge.buf, edge_ns, 0, -1, { details = true })) do
+        rows[m[2]] = m[4].virt_text[1][2]
+      end
+      return rows
+    end
+    local le, re = st.edges.left, st.edges.right
+    local le_win, re_win = le.win, re.win
+    assert_eq(le.win ~= nil and re.win ~= nil and vim.api.nvim_win_is_valid(le.win) and vim.api.nvim_win_is_valid(re.win),
+      true, "both document-edge bridges are open")
+    assert_eq(vim.api.nvim_win_get_position(le.win)[2], lpos[2] - 1, "left bridge covers the left document separator")
+    assert_eq(vim.api.nvim_win_get_position(re.win)[2], rpos[2] + vim.api.nvim_win_get_width(session.right_num_win),
+      "right bridge covers the right document separator")
+    assert_eq(vim.api.nvim_win_get_config(le.win).focusable, false, "bridges are not focusable")
+    assert_eq(vim.api.nvim_buf_get_lines(le.buf, 0, 1, false)[1], "│", "context rows keep the separator glyph")
+    local lrows, rrows = edge_rows(le), edge_rows(re)
+    local saw_band = false
+    for _, rb in ipairs(st.last_ribbons) do
+      if rb.lb > rb.lt and rb.lt >= 0 and rb.lt < layout.rows then
+        saw_band = true
+        assert_eq(lrows[math.floor(rb.lt)], "DiffBanditConnector" .. rb.kind:sub(1, 1):upper() .. rb.kind:sub(2),
+          "left bridge carries the band colour on the band's first row")
+      end
+      if rb.rb > rb.rt and rb.rt >= 0 and rb.rt < layout.rows then
+        assert_eq(rrows[math.floor(rb.rt)] ~= nil, true, "right bridge carries the band on its first row")
+      end
+    end
+    assert_eq(saw_band, true, "fixture has a visible left band")
+    local banded = 0
+    for _ in pairs(lrows) do
+      banded = banded + 1
+    end
+    assert_eq(banded < layout.rows, true, "context rows are not bridged")
+
     local conn_marks = path_marks(session.connector_buf, session.path_ns)
     local lnum = path_marks(session.left_num_buf, session.path_ns)
     local rnum = path_marks(session.right_num_buf, session.path_ns)
@@ -607,6 +689,7 @@ do
       end
     end
     assert_eq(right_add_rt, 20 - 4, "add ribbon right edge tracks the right topline")
+    assert_eq(edge_rows(st.edges.right)[16] ~= nil, true, "right bridge follows an independent right scroll")
 
     -- Dedupe through the viewport path too.
     session:rerender_for_viewport()
@@ -672,6 +755,8 @@ do
     assert_eq(count_matching(protocol.delete(st.id)) >= 1, true, "downgrade deletes the terminal image")
     assert_eq(session.kitty_state, nil, "canvas state released")
     assert_eq(vim.api.nvim_win_is_valid(fwin), false, "downgrade closes the canvas float")
+    assert_eq(vim.api.nvim_win_is_valid(le_win) or vim.api.nvim_win_is_valid(re_win), false,
+      "downgrade closes the document-edge bridges")
     local cell_marks = path_marks(session.connector_buf, session.path_ns)
     local saw_placeholder = false
     for _, m in ipairs(cell_marks) do
@@ -681,6 +766,71 @@ do
     end
     assert_eq(saw_placeholder, false, "cells repaint removed every placeholder")
     session:close()
+    reset_detect()
+  end
+
+  do
+    -- Insertion points: scroll the add (right 20-21, left origin 19) on screen.
+    reset_detect()
+    local session = start_session(kitty_config())
+    session:render()
+    for _, w in ipairs({ session.left_win, session.left_num_win, session.connector_win, session.right_win, session.right_num_win }) do
+      nvim_util.set_win_view_topline(w, 12)
+    end
+    session.last_viewport_render_key = nil
+    session:rerender_for_viewport()
+    local st = session.kitty_state
+    local layout = st.last_layout
+    local edge_ns = vim.api.nvim_create_namespace("DiffBanditKittyEdges")
+    local function edge_rows(edge)
+      local rows = {}
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(edge.buf, edge_ns, 0, -1, { details = true })) do
+        rows[m[2]] = m[4].virt_text[1][2]
+      end
+      return rows
+    end
+    -- Insertion side (empty range): the origin row's underline runs through
+    -- the bridge instead of stopping at the separator.
+    local saw_underline = false
+    for _, rb in ipairs(st.last_ribbons) do
+      if rb.kind == "add" and rb.lb == rb.lt and rb.lt >= 1 and rb.lt <= layout.rows then
+        saw_underline = true
+        local hl = edge_rows(st.edges.left)[rb.lt - 1]
+        assert_eq(hl, "DiffBanditKittyEdgeUnderlineAdd", "left bridge underlines the add origin row")
+        local def = vim.api.nvim_get_hl(0, { name = hl, link = false })
+        assert_eq(def.underline == true and def.sp == vim.api.nvim_get_hl(0, { name = "DiffBanditConnectorAdd" }).bg, true,
+          "bridge underline uses the add colour")
+      end
+    end
+    assert_eq(saw_underline, true, "fixture has a visible add insertion point: " .. vim.inspect(st.last_ribbons))
+    session:close()
+    reset_detect()
+  end
+
+  do
+    -- Font size change (VimResized with a new measured cell): the core is
+    -- re-sized to the IntelliJ divider width and the image re-sent.
+    reset_detect()
+    local cell = { w = 10, h = 20 }
+    detect._set_measure(function()
+      return cell
+    end)
+    local cfg = kitty_config()
+    cfg.ui.kitty.cell_px = nil
+    local session = start_session(cfg)
+    session:render()
+    assert_eq(session.connector_core_width, 1, "10x20 cells: one-cell core")
+    local before = session.kitty_state.transmits
+    cell = { w = 8, h = 24 }
+    vim.cmd("doautocmd VimResized")
+    assert_eq(wait_for(function()
+      return session.connector_core_width == 3
+    end), true, "narrower, taller cells widen the core (1.45*24/8 -> 5 cells)")
+    assert_eq(wait_for(function()
+      return session.kitty_state.transmits > before
+    end), true, "new cell size re-rasters the image")
+    session:close()
+    detect._set_measure(nil)
     reset_detect()
   end
 

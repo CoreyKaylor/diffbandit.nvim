@@ -49,13 +49,45 @@ local function install_theme_refresh()
   detect.on_retransmit(function()
     vim.schedule(refresh_all)
   end)
+  -- Font size changes (and a terminal reporting its real pixel size after
+  -- startup) arrive as resizes: re-measure the cell and, when it changed,
+  -- re-size the IntelliJ-width core and re-raster through on_change.
+  vim.api.nvim_create_autocmd("VimResized", {
+    group = theme_group,
+    callback = function()
+      local any = false
+      for host in pairs(hosts) do
+        any = any or (not host.disposed and host.connector_renderer == "kitty")
+      end
+      if not any then
+        return
+      end
+      local first
+      for host in pairs(hosts) do
+        first = first or host
+      end
+      if not detect.remeasure(first and first.config) then
+        return
+      end
+      vim.schedule(function()
+        for host, entry in pairs(hosts) do
+          if not host.disposed and host.connector_renderer == "kitty" then
+            M.invalidate(host)
+            if entry.on_change then
+              pcall(entry.on_change, "kitty")
+            end
+          end
+        end
+      end)
+    end,
+  })
 end
 
 --- opts = { on_change = fn(mode), refresh = fn() }
 function M.attach(host, opts)
   opts = opts or {}
   host.connector_renderer = effective(host.config)
-  local entry = { refresh = opts.refresh }
+  local entry = { refresh = opts.refresh, on_change = opts.on_change }
   entry.unsubscribe = detect.on_change(function()
     if host.disposed then
       return

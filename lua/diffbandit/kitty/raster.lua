@@ -149,10 +149,25 @@ local function thicken(top, bot, thick)
   return mid - thick / 2, mid + thick / 2
 end
 
-local function fill_ribbon(buf, w, h, shape, ribbon, ch, color, min_px)
+-- One side's pixel extent. An empty range (insertion point at boundary b)
+-- becomes the insertion line, drawn where the terminal draws the origin
+-- row's underline — `line.thickness` px whose bottom sits `line.offset` px
+-- above the boundary — so the line continues the document/number-pane
+-- underline seamlessly instead of straddling the boundary.
+local function side_extent(top, bot, ch, line)
+  if bot > top or not line then
+    return top * ch, bot * ch
+  end
+  local b = top * ch - line.offset
+  return b - line.thickness, b
+end
+
+local function fill_ribbon(buf, w, h, shape, ribbon, ch, color, min_px, line)
   local S = shape.S
-  local lt, lb = thicken(ribbon.lt * ch, ribbon.lb * ch, min_px)
-  local rt, rb = thicken(ribbon.rt * ch, ribbon.rb * ch, min_px)
+  local lt, lb = side_extent(ribbon.lt, ribbon.lb, ch, line)
+  local rt, rb = side_extent(ribbon.rt, ribbon.rb, ch, line)
+  lt, lb = thicken(lt, lb, min_px)
+  rt, rb = thicken(rt, rb, min_px)
   local dt, db = rt - lt, rb - lb
   local r, g, b = color[1], color[2], color[3]
   local tops, bots = {}, {}
@@ -230,7 +245,8 @@ end
 --- Rasterize ribbons (curves.ribbons output) into RGBA bytes.
 --- spec = { cols, rows, cell_w, cell_h, curve_x0?, curve_w?,
 ---          palette = { add|delete|change = { fill = {r,g,b}, border = {r,g,b} } },
----          min_px?, border_px?, use_ffi? }
+---          min_px?, border_px?, insertion_line? = { thickness, offset }
+---          (fractions of the line height), use_ffi? }
 --- Returns bytes, width_px, height_px.
 function M.render(ribbons, spec)
   local cw, ch = spec.cell_w, spec.cell_h
@@ -248,13 +264,21 @@ function M.render(ribbons, spec)
   -- range is a 2px line on the line boundary (DividerPolygon.paint widens
   -- it to y-1..y+1), and strokes are 1px (DiffDrawUtil, JBUIScale 1f).
   local logical = ch / INTELLIJ_LINE_PX
-  local min_px = spec.min_px or max(1.5, 2 * logical)
+  -- Insertion line: match the terminal underline (measured in Ghostty:
+  -- 1px, one px above the row boundary at an 18px line). Fractions of the
+  -- line height so it scales with the font; ui.kitty.insertion_line tunes it.
+  local il = spec.insertion_line or {}
+  local line = {
+    thickness = max(1, (tonumber(il.thickness) or (1 / 18)) * ch),
+    offset = (tonumber(il.offset) or (1 / 18)) * ch,
+  }
+  local min_px = spec.min_px or line.thickness
   local border_px = spec.border_px or max(1, logical)
   local palette = spec.palette or {}
   for _, ribbon in ipairs(ribbons) do
     local colors = palette[ribbon.kind]
     if colors and colors.fill then
-      fill_ribbon(buf, w, h, shape, ribbon, ch, colors.fill, min_px)
+      fill_ribbon(buf, w, h, shape, ribbon, ch, colors.fill, min_px, line)
       if ribbon.active and colors.border then
         stroke_edge(buf, w, h, shape, ribbon.lt * ch, ribbon.rt * ch, colors.border, border_px)
         stroke_edge(buf, w, h, shape, ribbon.lb * ch, ribbon.rb * ch, colors.border, border_px)

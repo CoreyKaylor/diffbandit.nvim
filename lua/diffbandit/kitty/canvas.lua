@@ -9,6 +9,7 @@
 -- image is re-rasterized and re-transmitted only when the ribbon geometry,
 -- size, or palette actually changed.
 local connector_width = require("diffbandit.connector.width")
+local color = require("diffbandit.kitty.color")
 local curves = require("diffbandit.connector.curves")
 local detect = require("diffbandit.kitty.detect")
 local protocol = require("diffbandit.kitty.protocol")
@@ -66,13 +67,20 @@ end
 --- Ribbon palette from the theme-derived connector groups (respects user
 --- highlight overrides): band fill = DiffBanditConnector<Kind>.bg, active
 --- border = DiffBanditConnector<Kind>Line.fg.
-function M.palette()
+function M.palette(config)
   local palette = {}
-  local parts = {}
+  local space = color.image_colorspace(config)
+  local parts = { space }
+  local function encode(rgb)
+    if rgb and space == "display-p3" then
+      return color.srgb_to_display_p3(rgb)
+    end
+    return rgb
+  end
   for _, kind in ipairs({ "add", "delete", "change" }) do
     local cap = kind:sub(1, 1):upper() .. kind:sub(2)
-    local fill = hl_rgb("DiffBanditConnector" .. cap, "bg")
-    local border = hl_rgb("DiffBanditConnector" .. cap .. "Line", "fg") or fill
+    local fill = encode(hl_rgb("DiffBanditConnector" .. cap, "bg"))
+    local border = encode(hl_rgb("DiffBanditConnector" .. cap .. "Line", "fg")) or fill
     palette[kind] = { fill = fill, border = border }
     parts[#parts + 1] = table.concat(fill or { "-" }, ",") .. "/" .. table.concat(border or { "-" }, ",")
   end
@@ -194,13 +202,23 @@ end
 -- number panes and the connector are covered so the ribbon flows through.
 
 local float_group = nil
+local ensure_edges
+
+local function close_win(win)
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_win_close, win, true)
+  end
+end
 
 local function close_float(st)
-  if st.float_win and vim.api.nvim_win_is_valid(st.float_win) then
-    pcall(vim.api.nvim_win_close, st.float_win, true)
-  end
+  close_win(st.float_win)
   st.float_win = nil
   st.float_cfg_key = nil
+  for _, edge in pairs(st.edges or {}) do
+    close_win(edge.win)
+    edge.win = nil
+    edge.cfg_key = nil
+  end
 end
 
 -- Layout moved without a diffbandit render (panel toggle, split resize,
@@ -243,8 +261,11 @@ local function install_float_cleanup()
     callback = function(ev)
       local closed = tonumber(ev.match)
       for st in pairs(live_states) do
-        local a = st.float_anchors
-        if a and (a[1] == closed or a[2] == closed or a[3] == closed) then
+        local hit = false
+        for _, w in ipairs(st.float_anchors or {}) do
+          hit = hit or w == closed
+        end
+        if hit then
           vim.schedule(function()
             close_float(st)
           end)
@@ -289,6 +310,186 @@ local function set_canvas_lines(st, buf, cols, rows)
   st.float_lines_key = key
 end
 
+-- Open or move a canvas-style float (minimal, unfocusable, mouse
+-- transparent, borderless). Returns win, cfg_key.
+local function place_float(win, cfg_key, buf, cfg, hl)
+  local key = table.concat({ cfg.row, cfg.col, cfg.width, cfg.height }, ":")
+  if win and vim.api.nvim_win_is_valid(win) then
+    if cfg_key ~= key then
+      pcall(vim.api.nvim_win_set_config, win, cfg)
+    end
+    return win, key
+  end
+  local open_cfg = vim.tbl_extend("force", cfg, { style = "minimal", noautocmd = true, mouse = false })
+  local ok, new_win = pcall(vim.api.nvim_open_win, buf, false, open_cfg)
+  if not ok then
+    open_cfg.mouse = nil
+    ok, new_win = pcall(vim.api.nvim_open_win, buf, false, open_cfg)
+  end
+  if not ok then
+    return nil, nil
+  end
+  vim.wo[new_win].winhighlight = table.concat({
+    "Normal:" .. hl, "NormalNC:" .. hl, "NormalFloat:" .. hl, "EndOfBuffer:" .. hl,
+  }, ",")
+  vim.wo[new_win].wrap = false
+  vim.wo[new_win].cursorline = false
+  vim.wo[new_win].winblend = 0
+  vim.wo[new_win].fillchars = "eob: "
+  return new_win, key
+end
+
+-- --- document-edge bridges -----------------------------------------------
+--
+-- The window separators between each number pane and its document would
+-- still cut every band (content band | separator | number band). A one-column
+-- float over each of them keeps the separator glyph on context rows and
+-- paints the band colour on band rows, so a band runs unbroken from the
+-- document through the numbers and the curve into the other document.
+
+local edge_ns = vim.api.nvim_create_namespace("DiffBanditKittyEdges")
+
+local KIND_HL = { add = "DiffBanditConnectorAdd", delete = "DiffBanditConnectorDelete", change = "DiffBanditConnectorChange" }
+
+local function vert_char()
+  local ok, fc = pcall(function()
+    return vim.opt.fillchars:get()
+  end)
+  local ch = ok and fc and fc.vert or nil
+  return (ch and ch ~= "") and ch or "│"
+end
+
+local function edge_columns(host, layout)
+  local sl, sr = layout.screen_left, layout.screen_right
+  local out = {}
+  local lcol = win_col(sl.win) - 1
+  if lcol >= 0 then
+    out.left = lcol
+  end
+  local rcol = win_col(sr.win) + vim.api.nvim_win_get_width(sr.win)
+  if rcol < vim.o.columns then
+    out.right = rcol
+  end
+  return out
+end
+
+local function edge_buf(edge, rows)
+  if not (edge.buf and vim.api.nvim_buf_is_valid(edge.buf)) then
+    edge.buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[edge.buf].bufhidden = "hide"
+    vim.bo[edge.buf].buftype = "nofile"
+    vim.bo[edge.buf].swapfile = false
+    vim.bo[edge.buf].undolevels = -1
+    edge.lines_key = nil
+  end
+  local glyph = vert_char()
+  local key = rows .. ":" .. glyph
+  if edge.lines_key ~= key then
+    local lines = {}
+    for r = 1, rows do
+      lines[r] = glyph
+    end
+    vim.bo[edge.buf].modifiable = true
+    vim.api.nvim_buf_set_lines(edge.buf, 0, -1, false, lines)
+    vim.bo[edge.buf].modifiable = false
+    edge.lines_key = key
+    edge.marks_key = nil
+  end
+  return edge.buf
+end
+
+-- Separator glyph underlined in a kind's colour: the insertion point of an
+-- add/delete is an underline on the origin row (documents and number panes
+-- draw it), so the bridge carries it too.
+local function underline_hl(kind)
+  local cap = kind:sub(1, 1):upper() .. kind:sub(2)
+  local name = "DiffBanditKittyEdgeUnderline" .. cap
+  local ok_c, color = pcall(vim.api.nvim_get_hl, 0, { name = KIND_HL[kind], link = false })
+  local ok_s, split = pcall(vim.api.nvim_get_hl, 0, { name = "DiffBanditSplit", link = false })
+  vim.api.nvim_set_hl(0, name, {
+    fg = ok_s and split.fg or nil,
+    bg = ok_s and split.bg or nil,
+    underline = true,
+    sp = ok_c and color.bg or nil,
+  })
+  return name
+end
+
+-- Band rows on one screen side: [top, bottom) of every ribbon with a
+-- non-empty extent there, in screen rows. An empty extent (insertion point
+-- at boundary `top`) underlines the origin row above it.
+local function paint_edge_marks(edge, ribbons, side, rows, key)
+  if edge.marks_key == key then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(edge.buf, edge_ns, 0, -1)
+  local glyph = vert_char()
+  local function mark(r, text, hl)
+    pcall(vim.api.nvim_buf_set_extmark, edge.buf, edge_ns, r, 0, {
+      virt_text = { { text, hl } },
+      virt_text_pos = "overlay",
+      priority = 200,
+    })
+  end
+  local underlines, banded = {}, {}
+  for _, rb in ipairs(ribbons) do
+    local top, bot
+    if side == "left" then
+      top, bot = rb.lt, rb.lb
+    else
+      top, bot = rb.rt, rb.rb
+    end
+    local hl = KIND_HL[rb.kind]
+    if hl and bot > top then
+      for r = math.max(0, math.floor(top)), math.min(rows, math.ceil(bot)) - 1 do
+        mark(r, " ", hl)
+        banded[r] = true
+      end
+    elseif hl then
+      local r = math.floor(top) - 1
+      if r >= 0 and r < rows then
+        underlines[r] = rb.kind
+      end
+    end
+  end
+  for r, kind in pairs(underlines) do
+    -- A band ending on the origin row already joins the two sides.
+    if not banded[r] then
+      mark(r, glyph, underline_hl(kind))
+    end
+  end
+  edge.marks_key = key
+end
+
+function ensure_edges(host, st, layout, row)
+  st.edges = st.edges or {}
+  local cols = edge_columns(host, layout)
+  local ribbons = st.last_ribbons or {}
+  local key = (st.last_key or "") .. "|" .. layout.rows
+  for _, side in ipairs({ "left", "right" }) do
+    local edge = st.edges[side] or {}
+    st.edges[side] = edge
+    local col = cols[side]
+    if not col then
+      close_win(edge.win)
+      edge.win = nil
+    else
+      local buf = edge_buf(edge, layout.rows)
+      paint_edge_marks(edge, ribbons, side, layout.rows, key)
+      edge.win, edge.cfg_key = place_float(edge.win, edge.cfg_key, buf, {
+        relative = "editor",
+        row = row,
+        col = col,
+        width = 1,
+        height = layout.rows,
+        focusable = false,
+        zindex = 1,
+        border = "none",
+      }, "DiffBanditSplit")
+    end
+  end
+end
+
 local function ensure_float(host, st, layout)
   install_float_cleanup()
   -- Editor-relative floats open in the CURRENT tab: a paint for a host in a
@@ -316,35 +517,10 @@ local function ensure_float(host, st, layout)
     -- shift its cells one row down / one column right over the numbers.
     border = "none",
   }
-  local cfg_key = table.concat({ row, col, layout.cols, layout.rows }, ":")
-  st.float_anchors = { host.left_num_win, host.connector_win, host.right_num_win }
-  if st.float_win and vim.api.nvim_win_is_valid(st.float_win) then
-    if st.float_cfg_key ~= cfg_key then
-      pcall(vim.api.nvim_win_set_config, st.float_win, cfg)
-      st.float_cfg_key = cfg_key
-    end
-    return st.float_win
-  end
-  local open_cfg = vim.tbl_extend("force", cfg, { style = "minimal", noautocmd = true, mouse = false })
-  local ok, win = pcall(vim.api.nvim_open_win, buf, false, open_cfg)
-  if not ok then
-    open_cfg.mouse = nil
-    ok, win = pcall(vim.api.nvim_open_win, buf, false, open_cfg)
-  end
-  if not ok then
-    return nil
-  end
-  local hl = st.hl
-  vim.wo[win].winhighlight = table.concat({
-    "Normal:" .. hl, "NormalNC:" .. hl, "NormalFloat:" .. hl, "EndOfBuffer:" .. hl,
-  }, ",")
-  vim.wo[win].wrap = false
-  vim.wo[win].cursorline = false
-  vim.wo[win].winblend = 0
-  vim.wo[win].fillchars = "eob: "
-  st.float_win = win
-  st.float_cfg_key = cfg_key
-  return win
+  st.float_anchors = { host.left_num_win, host.connector_win, host.right_num_win, host.left_win, host.right_win }
+  st.float_win, st.float_cfg_key = place_float(st.float_win, st.float_cfg_key, buf, cfg, st.hl)
+  ensure_edges(host, st, layout, row)
+  return st.float_win
 end
 M._ensure_float = ensure_float
 
@@ -374,10 +550,11 @@ function M.paint(host, ctx)
   local cell = detect.cell_size(host.config)
   local kitty_cfg = (((host.config or {}).ui or {}).kitty) or {}
   local cw, ch = capped_cell(cell, layout.cols, layout.rows, kitty_cfg.max_image_px)
-  local palette, palette_key = M.palette()
+  local palette, palette_key = M.palette(host.config)
   local key = table.concat({
     layout.cols, layout.rows, cw, ch, palette_key, curves.geometry_key(ribbons, ch),
-    tostring(((host.config or {}).ui or {}).kitty and host.config.ui.kitty.divider_width),
+    tostring(kitty_cfg.divider_width),
+    vim.inspect(kitty_cfg.insertion_line or false),
   }, "|")
   timings.curves = ms(t0)
 
@@ -395,6 +572,7 @@ function M.paint(host, ctx)
       curve_x0 = (layout.cols > 2 and cw or 0) + (inner - curve_w) / 2,
       curve_w = curve_w,
       palette = palette,
+      insertion_line = kitty_cfg.insertion_line,
     })
     timings.raster = ms(t0)
     t0 = now()
@@ -428,6 +606,12 @@ function M.destroy_state(st)
     pcall(vim.api.nvim_buf_delete, st.float_buf, { force = true })
   end
   st.float_buf = nil
+  for _, edge in pairs(st.edges or {}) do
+    if edge.buf and vim.api.nvim_buf_is_valid(edge.buf) then
+      pcall(vim.api.nvim_buf_delete, edge.buf, { force = true })
+    end
+  end
+  st.edges = nil
   detect.send(protocol.delete(st.id))
   detect.unregister_id(st.id)
   for _, path in ipairs(st.files or {}) do
