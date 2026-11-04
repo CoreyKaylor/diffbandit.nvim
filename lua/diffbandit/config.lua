@@ -96,6 +96,8 @@ local defaults = {
     },
     theme = {
       auto_refresh = true,
+      background = nil, -- reference bg for blending when Normal has none (e.g. "#1e1e2e")
+      transparent = nil, -- nil: detect from Normal; true/false forces see-through panes
       semantic_blend = 0.3,
       change_emphasis_strength = 0.16,
       min_background_delta = 0.08,

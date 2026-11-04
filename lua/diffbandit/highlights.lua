@@ -168,13 +168,46 @@ local function apply_theme_overrides(theme)
   end
 end
 
+-- Fallback reference backgrounds for a transparent Normal with no
+-- ui.theme.background: a typical dark/light terminal background, chosen by
+-- 'background' so light terminals don't blend against black.
+local FALLBACK_DARK_BG = 0x1E1E1E
+local FALLBACK_LIGHT_BG = 0xFFFFFF
+
+--- Resolve the two backgrounds the theme derivation needs.
+--- `ref_bg` is the colour everything is blended against (always a number):
+--- ui.theme.background, then Normal.bg, then a 'background'-based fallback.
+--- `paint_bg` is what "page" groups (context rows, gutters, splits) paint:
+--- "NONE" when the colorscheme is transparent so the terminal shows through,
+--- otherwise ref_bg. ui.theme.transparent forces either mode; nil detects it
+--- from Normal having no background (the usual transparent-theme setup).
+local function resolve_backgrounds(normal_base, theme)
+  local normal_bg = color_to_number(normal_base.bg)
+  local ref_bg = color_to_number(theme.background)
+  if not ref_bg and type(theme.background) == "string" then
+    -- Colour names ("Black", "DarkSlateGray"); -1 when unknown.
+    local named = vim.api.nvim_get_color_by_name(theme.background)
+    ref_bg = named >= 0 and named or nil
+  end
+  ref_bg = ref_bg or normal_bg
+  if not ref_bg then
+    ref_bg = vim.o.background == "light" and FALLBACK_LIGHT_BG or FALLBACK_DARK_BG
+  end
+  local transparent = theme.transparent
+  if transparent == nil then
+    transparent = normal_bg == nil
+  end
+  return ref_bg, transparent and "NONE" or ref_bg
+end
+
 local function apply_diff_variants(config)
   local normal_base = adopt_diff_colors("Normal")
   local ui = (config and config.ui) or {}
   local theme = ui.theme or {}
 
-  local normal_bg = color_to_number(normal_base.bg) or 0x000000
-  local normal_fg = color_to_number(normal_base.fg) or 0xFFFFFF
+  local normal_bg, paint_bg = resolve_backgrounds(normal_base, theme)
+  local normal_fg = color_to_number(normal_base.fg)
+    or (luminance(normal_bg) < 0.5 and 0xFFFFFF or 0x000000)
   local add_bg = semantic_background("add", "DiffAdd", normal_bg, theme)
   local delete_bg = semantic_background("delete", "DiffDelete", normal_bg, theme)
   local change_bg = semantic_background("change", "DiffChange", normal_bg, theme)
@@ -224,22 +257,28 @@ local function apply_diff_variants(config)
 
   -- Context highlight - no sp set to avoid conflicts with separator underlines
   apply_group("DiffBanditContext", {
-    bg = normal_bg,
+    bg = paint_bg,
     fg = "NONE",
   })
 
-  local soft_split_fg = blend_color(normal_base.bg or "#000000", get_foreground_color("LineNr", "#808080"), ui.split_blend or 0.3)
+  local soft_split_fg = blend_color(normal_bg, get_foreground_color("LineNr", "#808080"), ui.split_blend or 0.3)
   apply_group("DiffBanditSplit", {
     fg = soft_split_fg,
-    bg = normal_bg,
+    bg = paint_bg,
   })
 
+  -- Hidden separators draw the glyph in the background colour. Transparent:
+  -- the glyph takes the reference background (invisible when
+  -- ui.theme.background matches the terminal) over a see-through cell.
   apply_group("DiffBanditHiddenSplit", {
     fg = normal_bg,
-    bg = normal_bg,
+    bg = paint_bg,
   })
 
-  local status_bg = blend_color(normal_bg, get_foreground_color("LineNr", "#808080"), 0.08)
+  -- Status strips and panels (nav/commit panel, log view) get a faint tint on
+  -- opaque themes; transparent themes keep them see-through like the panes.
+  local status_bg = paint_bg == "NONE" and "NONE"
+    or blend_color(normal_bg, get_foreground_color("LineNr", "#808080"), 0.08)
   local status_muted = get_foreground_color("Comment", "#808080")
   local status_accent = get_foreground_color("Identifier", normal_fg)
   apply_group("DiffBanditStatus", {
@@ -291,17 +330,17 @@ local function apply_diff_variants(config)
 
   -- Filler/placeholder highlights
   apply_group("DiffBanditGap", {
-    bg = normal_bg,
+    bg = paint_bg,
     fg = get_foreground_color("Comment", "#808080"),
   })
 
   apply_group("DiffBanditPlaceholder", {
-    bg = normal_bg,
+    bg = paint_bg,
     fg = get_foreground_color("Comment", "#808080"),
   })
 
   apply_group("DiffBanditEmptyNotice", {
-    bg = normal_bg,
+    bg = paint_bg,
     fg = get_foreground_color("Comment", "#808080"),
     italic = true,
   })
@@ -314,25 +353,25 @@ local function apply_diff_variants(config)
   for kind, color in pairs({ Add = add_bg, Delete = delete_bg, Change = change_bg }) do
     apply_group("DiffBanditConnector" .. kind, { bg = color, fg = connector_fg })
     apply_group("DiffBanditConnector" .. kind .. "Line", { fg = color, bold = true })
-    apply_group("DiffBanditConnectorExpansion" .. kind, { fg = color, bg = normal_bg, bold = true })
+    apply_group("DiffBanditConnectorExpansion" .. kind, { fg = color, bg = paint_bg, bold = true })
     apply_group("DiffBanditOverview" .. kind, { bg = color, fg = color })
   end
 
   apply_group("DiffBanditConnectorExpansionAddUnderline", {
     fg = add_bg,
-    bg = normal_bg,
+    bg = paint_bg,
     underline = true,
     sp = add_bg,
     bold = true,
   })
 
   apply_group("DiffBanditConnectorContext", {
-    bg = normal_bg,
+    bg = paint_bg,
     fg = get_foreground_color("Comment", "#808080"),
   })
 
   apply_group("DiffBanditOverviewContext", {
-    bg = normal_bg,
+    bg = paint_bg,
     fg = normal_bg,
   })
   apply_group("DiffBanditOverviewCursor", {
@@ -354,7 +393,7 @@ local function apply_diff_variants(config)
   apply_group("DiffBanditLineNumberRight", { fg = line_number_fg })
   -- The editable right pane's sign column must share the pane background
   -- instead of the colorscheme's SignColumn bg.
-  apply_group("DiffBanditSignColumn", { bg = normal_bg })
+  apply_group("DiffBanditSignColumn", { bg = paint_bg })
   -- Band continuation into the sign column: line_hl_group does not cover the
   -- sign column, so band rows place a low-priority blank sign carrying the
   -- band background (real signs outrank it and still display).

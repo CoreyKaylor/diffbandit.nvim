@@ -1543,6 +1543,77 @@ do
   assert_eq(get_hl("DiffBanditConnectorAddLine").bg, 0x040506,
     "Per-group highlight override should include background")
 
+  -- Transparent colorschemes (Normal without bg): page groups paint no
+  -- background so the terminal shows through; bands stay opaque and blend
+  -- against ui.theme.background (or a 'background'-based fallback, never
+  -- black on light terminals).
+  local page_groups = {
+    "DiffBanditContext", "DiffBanditConnectorContext", "DiffBanditOverviewContext",
+    "DiffBanditSignColumn", "DiffBanditSplit", "DiffBanditHiddenSplit",
+    "DiffBanditGap", "DiffBanditPlaceholder", "DiffBanditEmptyNotice",
+    "DiffBanditConnectorExpansionAdd", "DiffBanditConnectorExpansionAddUnderline",
+    "DiffBanditStatus", "DiffBanditStatusLine", "DiffBanditStatusAccent", "DiffBanditStatusMuted",
+  }
+  local transparent_palette = {
+    Normal = { fg = 0xE0E2EA },
+    LineNr = { fg = 0x4F5258 },
+    Comment = { fg = 0x9B9EA4 },
+    DiffAdd = { fg = 0x40C060 },
+    DiffDelete = { fg = 0xE05050 },
+    DiffChange = { fg = 0x5090E0 },
+  }
+  local saved_background = vim.o.background
+  vim.o.background = "dark"
+  set_palette(transparent_palette)
+  highlights.apply(config_mod.defaults())
+  for _, group in ipairs(page_groups) do
+    assert_eq(get_hl(group).bg, nil, "Transparent Normal should leave " .. group .. " see-through")
+  end
+  assert_eq(get_hl("DiffBanditAdd").bg ~= nil, true, "Transparent Normal should keep opaque add bands")
+  assert_eq(luminance(get_hl("DiffBanditAdd").bg) < 0.5, true,
+    "Transparent dark fallback should derive dark add bands")
+  local fallback_add = get_hl("DiffBanditAdd").bg
+
+  highlights.apply(config_mod.apply({ ui = { theme = { background = "#303446" } } }))
+  assert_eq(get_hl("DiffBanditContext").bg, nil,
+    "ui.theme.background must not make a transparent theme opaque")
+  assert_ne(get_hl("DiffBanditAdd").bg, fallback_add,
+    "ui.theme.background should be the blend reference for transparent themes")
+  assert_eq(get_hl("DiffBanditHiddenSplit").fg, 0x303446,
+    "Hidden splits should draw in the configured reference background")
+
+  highlights.apply(config_mod.apply({ ui = { theme = { background = "DarkSlateGray" } } }))
+  assert_eq(get_hl("DiffBanditHiddenSplit").fg, vim.api.nvim_get_color_by_name("DarkSlateGray"),
+    "ui.theme.background should accept colour names")
+
+  local layout_util = require("diffbandit.util.layout")
+  local saved_fillchars = vim.go.fillchars
+  vim.go.fillchars = "eob: ,vert:│,fold:-"
+  assert_eq(layout_util.hidden_separator_fillchars(), "eob: ,fold:-,vert: ",
+    "Hidden-separator windows should blank vert and keep the user's other fillchars")
+  vim.go.fillchars = saved_fillchars
+
+  highlights.apply(config_mod.apply({ ui = { theme = { background = "#303446", transparent = false } } }))
+  assert_eq(get_hl("DiffBanditContext").bg, 0x303446,
+    "transparent = false should paint the reference background")
+
+  vim.o.background = "light"
+  set_palette(transparent_palette)
+  highlights.apply(config_mod.defaults())
+  assert_eq(luminance(get_hl("DiffBanditAdd").bg) > 0.5, true,
+    "Transparent light fallback should derive light add bands, not blend against black")
+  vim.o.background = saved_background
+
+  set_palette({
+    Normal = { fg = 0xE0E2EA, bg = 0x14161B },
+    DiffAdd = { bg = 0x005523 },
+  })
+  highlights.apply(config_mod.apply({ ui = { theme = { transparent = true } } }))
+  assert_eq(get_hl("DiffBanditContext").bg, nil, "transparent = true should force see-through panes")
+  assert_eq(get_hl("DiffBanditAdd").bg, 0x005523, "Forced transparency should keep theme bands")
+  highlights.apply(config_mod.defaults())
+  assert_eq(get_hl("DiffBanditContext").bg, 0x14161B, "Opaque themes should keep painting Normal bg")
+
   local diffbandit = require("diffbandit")
   set_palette({
     Normal = { fg = 0xEEEEEE, bg = 0x101010 },

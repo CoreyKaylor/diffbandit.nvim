@@ -372,8 +372,10 @@ local edge_ns = vim.api.nvim_create_namespace("DiffBanditKittyEdges")
 local KIND_HL = { add = "DiffBanditConnectorAdd", delete = "DiffBanditConnectorDelete", change = "DiffBanditConnectorChange" }
 
 local function vert_char()
+  -- Global value: the current window may be a hidden-separator pane whose
+  -- local fillchars blanks `vert` (util/layout.hidden_separator_fillchars).
   local ok, fc = pcall(function()
-    return vim.opt.fillchars:get()
+    return vim.opt_global.fillchars:get()
   end)
   local ch = ok and fc and fc.vert or nil
   return (ch and ch ~= "") and ch or "│"
