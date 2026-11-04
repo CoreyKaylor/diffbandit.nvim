@@ -14,6 +14,7 @@
 :DiffBanditGitMenu	diffbandit.txt	/*:DiffBanditGitMenu*
 :DiffBanditLaunch	diffbandit.txt	/*:DiffBanditLaunch*
 :DiffBanditMerge	diffbandit.txt	/*:DiffBanditMerge*
+:DiffBanditMinimap	diffbandit.txt	/*:DiffBanditMinimap*
 :DiffBanditStageHunk	diffbandit.txt	/*:DiffBanditStageHunk*
 :DiffBanditToggleStageHunk	diffbandit.txt	/*:DiffBanditToggleStageHunk*
 :DiffBanditUndo	diffbandit.txt	/*:DiffBanditUndo*
@@ -41,6 +42,7 @@ diffbandit-launcher	diffbandit.txt	/*diffbandit-launcher*
 diffbandit-lua-api	diffbandit.txt	/*diffbandit-lua-api*
 diffbandit-mappings	diffbandit.txt	/*diffbandit-mappings*
 diffbandit-merge	diffbandit.txt	/*diffbandit-merge*
+diffbandit-minimap	diffbandit.txt	/*diffbandit-minimap*
 diffbandit-overview	diffbandit.txt	/*diffbandit-overview*
 diffbandit-q	diffbandit.txt	/*diffbandit-q*
 diffbandit-testing	diffbandit.txt	/*diffbandit-testing*
