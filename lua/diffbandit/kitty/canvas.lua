@@ -15,6 +15,7 @@ local detect = require("diffbandit.kitty.detect")
 local ids = require("diffbandit.kitty.ids")
 local protocol = require("diffbandit.kitty.protocol")
 local raster = require("diffbandit.kitty.raster")
+local winbar = require("diffbandit.util.winbar")
 local zlib = require("diffbandit.kitty.zlib")
 
 local M = {}
@@ -140,7 +141,7 @@ function M.layout(host)
   local right_edge = win_col(sr.win) + sr.col
   local cols = right_edge - left_edge + 1
   local core_start = win_col(host.connector_win) - left_edge
-  local rows = math.min(vim.api.nvim_win_get_height(host.connector_win), protocol.MAX_INDEX + 1)
+  local rows = math.min(vim.fn.winheight(host.connector_win), protocol.MAX_INDEX + 1)
   if cols < 1 or cols > protocol.MAX_INDEX + 1 or rows < 1 or core_start < 0 then
     return nil
   end
@@ -522,8 +523,11 @@ local function ensure_float(host, st, layout)
   -- Editor-relative at the connector's screen row and the screen-left wedge
   -- column (relative="win" floats mis-position under some grids); paint
   -- re-checks the position every time, so layout changes follow on the
-  -- next render.
+  -- next render. The window position is its top row, which is the winbar
+  -- when it has one (util/winbar keeps the bar uniform across the panes);
+  -- the ribbons start at the first text row below it.
   local row = vim.api.nvim_win_get_position(host.connector_win)[1]
+    + winbar.rows(host.connector_win)
   local col = vim.api.nvim_win_get_position(layout.screen_left.win)[2] + layout.screen_left.col
   local cfg = {
     relative = "editor",

@@ -788,6 +788,26 @@ do
   end
 
   do
+    -- Issue #14: under a winbar the canvas starts at the connector's first
+    -- TEXT row (below the bar) and is as tall as the text area, not one row
+    -- above the code it connects.
+    reset_detect()
+    local saved = vim.go.winbar
+    vim.go.winbar = "%f"
+    local session = start_session(kitty_config())
+    session:render()
+    local st = session.kitty_state
+    local cwin = session.connector_win
+    assert_eq(require("diffbandit.util.winbar").rows(cwin), 1, "connector shows the (blank) bar row")
+    local text_row = vim.api.nvim_win_get_position(cwin)[1] + 1
+    assert_eq(vim.api.nvim_win_get_position(st.float_win)[1], text_row, "canvas starts below the winbar")
+    assert_eq(vim.api.nvim_win_get_height(st.float_win), vim.fn.winheight(cwin), "canvas spans the text rows only")
+    session:close()
+    vim.go.winbar = saved
+    reset_detect()
+  end
+
+  do
     -- Insertion points: scroll the add (right 20-21, left origin 19) on screen.
     reset_detect()
     local session = start_session(kitty_config())

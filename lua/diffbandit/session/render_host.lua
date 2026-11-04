@@ -18,8 +18,8 @@ local get_win_view_topline = nvim.get_win_view_topline
 local function live_viewport_render_key(self)
   local left_topline = get_win_view_topline(self.left_win)
   local right_topline = get_win_view_topline(self.right_win)
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
-  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
   return ui.viewport_render_key(left_topline, right_topline, left_height, right_height, self.current_chunk)
 end
 
@@ -275,8 +275,8 @@ end
 function M.project_paths_for_viewport(self, paths)
   local left_topline = get_win_view_topline(self.left_win)
   local right_topline = get_win_view_topline(self.right_win)
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
-  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
   return self:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
 end
 
@@ -288,7 +288,7 @@ function M.precompute_connector_core_width(self)
     required_core = require("diffbandit.kitty").core_width(self.config)
   else
     local viewport_rows = vim.api.nvim_win_is_valid(self.left_win)
-        and vim.api.nvim_win_get_height(self.left_win) or nil
+        and nvim.get_window_height(self.left_win) or nil
     required_core = connector.pressure_core_width(
       self:base_paths(),
       connector_width.base(self.view, self.config),

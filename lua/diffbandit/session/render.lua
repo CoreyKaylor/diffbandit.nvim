@@ -234,7 +234,7 @@ local function build_render_context(self)
   local left_lines, right_lines = self:display_lines()
   local left_topline = get_win_view_topline(self.left_win)
   local right_topline = get_win_view_topline(self.right_win)
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
   local right_text_hl_mode = self.right.editable and "combine" or "replace"
 
   -- Compute connector routing lanes using extracted paths module. Projection
@@ -242,7 +242,7 @@ local function build_render_context(self)
   -- functions of the viewport state — cache per state so revisited viewports
   -- (navigation back and forth, debounced duplicate repaints) are free.
   local paths = self:base_paths()
-  local win_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local win_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
   local kitty = kitty_mode(self)
   local plan_cache_key = string.format("%s:%s:%d:%d:%d:%d%s",
     tostring(left_topline), tostring(right_topline), left_height, win_height,

@@ -561,3 +561,63 @@ do
   pcall(vim.api.nvim_buf_delete, buf2, { force = true })
 end
 
+
+-- Suite 16g: winbar keeps content panes and gutters on the same rows
+-- (GitHub issue #14). A breadcrumb plugin's bar on one source pane, or a
+-- global 'winbar', must shift every aligned window's text by the same row.
+do
+  local winbar = require("diffbandit.util.winbar")
+  local session_layout_mod = require("diffbandit.session.layout")
+  local function text_row(win)
+    return vim.fn.win_screenpos(win)[1] + winbar.rows(win)
+  end
+  local function aligned_windows(session)
+    return {
+      session.left_overview_win, session.left_win, session.left_num_win, session.connector_win,
+      session.right_num_win, session.right_win, session.right_overview_win,
+    }
+  end
+  local function assert_rows_aligned(session, label)
+    vim.cmd("redraw")
+    local want_row, want_height = text_row(session.left_win), vim.fn.winheight(session.left_win)
+    for _, win in ipairs(aligned_windows(session)) do
+      if win then
+        assert_eq(text_row(win), want_row, label .. ": text starts on the same row in win " .. win)
+        assert_eq(vim.fn.winheight(win), want_height, label .. ": same text height in win " .. win)
+      end
+    end
+  end
+  local function start()
+    return assert((Session.start({
+      left = source_mod.from_lines({ "a", "b", "c" }, nil, "left"),
+      right = source_mod.from_lines({ "a", "B", "c", "d" }, nil, "right"),
+    }, config)))
+  end
+
+  -- Per-window bar on one pane (LspSaga breadcrumbs).
+  local session = start()
+  assert_rows_aligned(session, "no winbar")
+  vim.wo[session.right_win].winbar = "crumbs"
+  assert_eq(winbar.align(session_layout_mod.winbar_spec(session)), true, "a new pane bar realigns")
+  assert_rows_aligned(session, "pane winbar")
+  assert_eq(vim.wo[session.right_win].winbar, "crumbs", "the user's bar is kept")
+  assert_eq(vim.wo[session.connector_win].winbar, winbar.BLANK, "gutters get a blank bar")
+  assert_eq(winbar.align(session_layout_mod.winbar_spec(session)), false, "aligning is idempotent")
+  vim.wo[session.right_win].winbar = ""
+  winbar.align(session_layout_mod.winbar_spec(session))
+  assert_rows_aligned(session, "bar removed")
+  assert_eq(vim.wo[session.connector_win].winbar, "", "blank bars are withdrawn with the last real one")
+  session:close()
+
+  -- Global bar: kept on the panes, blanked on gutters and headers.
+  local saved = vim.go.winbar
+  vim.go.winbar = "%f"
+  session = start()
+  assert_rows_aligned(session, "global winbar")
+  assert_eq(vim.wo[session.connector_win].winbar, winbar.BLANK, "gutters blank the global bar")
+  if session.center_header_win then
+    assert_eq(vim.wo[session.center_header_win].winbar, winbar.BLANK, "headers blank the global bar")
+  end
+  session:close()
+  vim.go.winbar = saved
+end
