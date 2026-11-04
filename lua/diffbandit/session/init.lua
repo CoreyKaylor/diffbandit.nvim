@@ -16,6 +16,7 @@ local config_mod = require("diffbandit.config")
 local view_builder = require("diffbandit.diff.view")
 local diff_document = require("diffbandit.diff.document")
 local kitty = require("diffbandit.kitty")
+local winbar = require("diffbandit.util.winbar")
 
 local Session = {}
 Session.__index = Session
@@ -232,8 +233,8 @@ function Session:render_overviews()
     return
   end
 
-  local left_height = math.max(1, vim.api.nvim_win_get_height(self.left_win))
-  local right_height = math.max(1, vim.api.nvim_win_get_height(self.right_win))
+  local left_height = math.max(1, nvim.get_window_height(self.left_win))
+  local right_height = math.max(1, nvim.get_window_height(self.right_win))
   local left_cursor = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_cursor(self.left_win)[1] or 1
   local right_cursor = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_cursor(self.right_win)[1] or 1
 
@@ -268,7 +269,7 @@ function Session:get_scroll_padding()
   local wins = { self.left_win, self.right_win, self.connector_win }
   for _, win in ipairs(wins) do
     if win and vim.api.nvim_win_is_valid(win) then
-      height = math.max(height, vim.api.nvim_win_get_height(win))
+      height = math.max(height, nvim.get_window_height(win))
     end
   end
   return math.max(0, height - 1)
@@ -386,6 +387,15 @@ function Session:setup_autocmds()
       end
     end,
   })
+
+  -- A winbar set on a source pane after open (breadcrumb plugins attach
+  -- lazily) moves its text a row down; give the gutters the same bar row.
+  winbar.watch(self, function()
+    return session_layout.winbar_spec(self)
+  end, function()
+    self:sync_gutter_viewports()
+    self:render()
+  end)
 
   vim.api.nvim_create_autocmd("WinScrolled", {
     group = augroup,
@@ -872,8 +882,8 @@ function Session:align_chunk_viewports(chunk)
   -- keeps the UI responsive and coalesces repaints. Long jumps outside the
   -- window render synchronously so no unstyled rows ever appear.
   local clip = self.last_render_clip
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
-  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
   local within_styled_window = clip ~= nil
     and left_topline >= clip.left_min
     and (left_topline + left_height) <= clip.left_max
@@ -942,8 +952,8 @@ function Session:goto_document_edge(edge)
   local right_line_count = math.max(1, #self.view.right)
   local left_line = edge == "bottom" and left_line_count or 1
   local right_line = edge == "bottom" and right_line_count or 1
-  local left_height = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_height(self.left_win) or 1
-  local right_height = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_height(self.right_win) or 1
+  local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
+  local right_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
   local left_topline = edge == "bottom" and math.max(1, left_line_count - left_height + 1) or 1
   local right_topline = edge == "bottom" and math.max(1, right_line_count - right_height + 1) or 1
 

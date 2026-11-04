@@ -4,6 +4,7 @@ local nvim = require("diffbandit.util.nvim")
 local process = require("diffbandit.util.process")
 local ui = require("diffbandit.util.ui")
 local layout = require("diffbandit.util.layout")
+local winbar = require("diffbandit.util.winbar")
 local config_mod = require("diffbandit.config")
 
 local Folder = {}
@@ -419,6 +420,7 @@ function Folder:open_layout()
   end
   set_window_options(gutter_win, layout.win_opts.gutter())
   set_window_width(gutter_win, self.gutter_width)
+  winbar.align(self:winbar_spec())
   self:resize_layout()
   vim.api.nvim_set_current_win(left_win)
   self.title = string.format("DiffBandit Folder: %s ↔ %s", self.left_root, self.right_root)
@@ -981,6 +983,11 @@ function Folder:run_digest_batch(batch, generation)
   end)
 end
 
+-- The windows whose rows line up under a winbar (see util/winbar).
+function Folder:winbar_spec()
+  return { content = { self.left_win, self.right_win }, gutters = { self.gutter_win } }
+end
+
 function Folder:setup_autocmds()
   local augroup = vim.api.nvim_create_augroup("DiffBanditFolder" .. tostring(self.id), { clear = true })
   self.autocmd_group = augroup
@@ -1001,6 +1008,11 @@ function Folder:setup_autocmds()
       end,
     })
   end
+  winbar.watch(self, function()
+    return self:winbar_spec()
+  end, function()
+    self:render()
+  end)
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
     group = augroup,
     callback = function()

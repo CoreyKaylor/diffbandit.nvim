@@ -4,6 +4,7 @@ local merge_model = require("diffbandit.merge.model")
 local nvim = require("diffbandit.util.nvim")
 local keymaps = require("diffbandit.util.keymaps")
 local layout = require("diffbandit.util.layout")
+local winbar = require("diffbandit.util.winbar")
 local document = require("diffbandit.util.document")
 local pair_renderer = require("diffbandit.merge.pair_renderer")
 local panel_mod = require("diffbandit.panel")
@@ -325,6 +326,22 @@ function Merge.start_for_path(path, opts, config)
   return Merge.start(data, config, opts)
 end
 
+-- The windows whose rows line up under a winbar (see util/winbar).
+function Merge:winbar_spec()
+  return {
+    content = { self.local_win, self.result_win, self.remote_win },
+    gutters = {
+      self.local_num_win,
+      self.local_result_connector_win,
+      self.result_left_num_win,
+      self.result_right_num_win,
+      self.result_remote_connector_win,
+      self.remote_num_win,
+    },
+    headers = { self.local_header_win, self.result_header_win, self.remote_header_win },
+  }
+end
+
 function Merge:configure_windows()
   for _, win in ipairs({ self.local_win, self.result_win, self.remote_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
@@ -383,11 +400,7 @@ function Merge:configure_windows()
     set_win_width(self.remote_header_win,
       content_width + (remote_visible and (num_pane_width + core_width) or 0))
   end
-  for _, win in ipairs({ self.local_win, self.result_win, self.remote_win }) do
-    if win and vim.api.nvim_win_is_valid(win) then
-      pcall(vim.api.nvim_set_option_value, "winbar", "", { scope = "local", win = win })
-    end
-  end
+  winbar.align(self:winbar_spec())
   if self.panel then
     local panel_config = config_mod.section(self.config, "git", "panel")
     for _, win in ipairs({ self.panel.nav_win, self.panel.commit_win }) do
@@ -514,6 +527,14 @@ function Merge:setup_autocmds()
     group = self.augroup,
     callback = reassert_merge_maps,
   })
+  -- Breadcrumb plugins set a pane's winbar lazily; keep the gutters on the
+  -- same bar row.
+  winbar.watch(self, function()
+    return self:winbar_spec()
+  end, function()
+    self:sync_gutter_viewports()
+    self:render()
+  end)
   -- The three content panes scroll independently; DiffBandit owns gutter
   -- synchronization (same contract as two-way sessions — no scrollbind).
   vim.api.nvim_create_autocmd("WinScrolled", {
@@ -1652,9 +1673,9 @@ function Merge:goto_document_edge(edge)
   local local_count = math.max(1, vim.api.nvim_buf_line_count(self.local_buf))
   local result_count = math.max(1, vim.api.nvim_buf_line_count(self.result_buf))
   local remote_count = math.max(1, vim.api.nvim_buf_line_count(self.remote_buf))
-  local local_height = self.local_win and vim.api.nvim_win_is_valid(self.local_win) and vim.api.nvim_win_get_height(self.local_win) or 1
-  local result_height = self.result_win and vim.api.nvim_win_is_valid(self.result_win) and vim.api.nvim_win_get_height(self.result_win) or 1
-  local remote_height = self.remote_win and vim.api.nvim_win_is_valid(self.remote_win) and vim.api.nvim_win_get_height(self.remote_win) or 1
+  local local_height = self.local_win and vim.api.nvim_win_is_valid(self.local_win) and nvim.get_window_height(self.local_win) or 1
+  local result_height = self.result_win and vim.api.nvim_win_is_valid(self.result_win) and nvim.get_window_height(self.result_win) or 1
+  local remote_height = self.remote_win and vim.api.nvim_win_is_valid(self.remote_win) and nvim.get_window_height(self.remote_win) or 1
 
   local local_line = edge == "bottom" and local_count or 1
   local result_line = edge == "bottom" and result_count or 1

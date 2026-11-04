@@ -36,11 +36,14 @@ M.winhl = {
   source = split .. ",CursorLine:DiffBanditCursorLine,SignColumn:DiffBanditSignColumn",
   hidden_source = hidden_split .. ",CursorLine:DiffBanditCursorLine,SignColumn:DiffBanditSignColumn",
   gutter = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
+    .. "WinBar:DiffBanditConnectorContext,WinBarNC:DiffBanditConnectorContext,"
     .. split .. ",CursorLine:DiffBanditCursorLine",
   overview = "Normal:DiffBanditOverviewContext,NormalNC:DiffBanditOverviewContext,"
+    .. "WinBar:DiffBanditOverviewContext,WinBarNC:DiffBanditOverviewContext,"
     .. hidden_split .. ",CursorLine:DiffBanditCursorLine",
   status = "Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,"
     .. "StatusLine:DiffBanditStatusLine,StatusLineNC:DiffBanditStatusLine,"
+    .. "WinBar:DiffBanditStatus,WinBarNC:DiffBanditStatus,"
     .. split .. ",CursorLine:DiffBanditStatus",
   panel = split .. ",Normal:DiffBanditStatus,NormalNC:DiffBanditStatus,CursorLine:DiffBanditCursorLine",
 }

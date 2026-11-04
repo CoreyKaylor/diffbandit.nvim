@@ -55,9 +55,11 @@ function M.get_window_width(win)
   return 0
 end
 
+-- Text rows of a window. nvim_win_get_height counts the winbar row too;
+-- every DiffBandit viewport computation means the rows code is drawn on.
 function M.get_window_height(win)
   if win and vim.api.nvim_win_is_valid(win) then
-    return vim.api.nvim_win_get_height(win)
+    return math.max(0, vim.fn.winheight(win))
   end
   return 0
 end

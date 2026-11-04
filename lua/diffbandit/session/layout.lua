@@ -6,6 +6,7 @@ local nvim = require("diffbandit.util.nvim")
 local document = require("diffbandit.util.document")
 local config_mod = require("diffbandit.config")
 local layout = require("diffbandit.util.layout")
+local winbar = require("diffbandit.util.winbar")
 
 local set_buffer_options = nvim.set_buffer_options
 local set_window_options = nvim.set_window_options
@@ -240,11 +241,27 @@ end
 -- queue) silently reverts them to that buffer's defaults — 'wrap' coming
 -- back on desyncs the pane's screen rows from its unwrappable gutters,
 -- and 'scrolloff'/folds undo ]c alignment. Re-apply after every right-buffer swap.
+-- The windows whose rows line up under a winbar (see util/winbar).
+local function winbar_spec(session)
+  return {
+    content = { session.left_win, session.right_win },
+    gutters = {
+      session.left_overview_win,
+      session.left_num_win,
+      session.connector_win,
+      session.right_num_win,
+      session.right_overview_win,
+    },
+    headers = { session.left_header_win, session.center_header_win, session.right_header_win },
+  }
+end
+
 local function apply_right_source_window_options(session)
   local right_source_winhl = session.overview_enabled and layout.winhl.hidden_source or layout.winhl.source
   set_window_options(session.right_win, layout.win_opts.source(right_source_winhl, {
     signcolumn = session.right.editable and "auto" or "no",
   }))
+  winbar.align(winbar_spec(session))
 end
 
 local function apply_window_options(session)
@@ -340,6 +357,8 @@ end
 function M.apply_right_source_window_options(session)
   apply_right_source_window_options(session)
 end
+
+M.winbar_spec = winbar_spec
 
 function M.open(session)
   vim.cmd("tabnew")
