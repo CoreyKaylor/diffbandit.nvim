@@ -246,6 +246,12 @@ end, {
   desc = "Open DiffBandit folder diff view",
 })
 
+vim.api.nvim_create_user_command("DiffBanditClose", function()
+  diffbandit.close()
+end, {
+  desc = "Close the DiffBandit view in the current tab",
+})
+
 vim.api.nvim_create_user_command("DiffBanditLaunch", function()
   require("diffbandit.launcher").main()
 end, {

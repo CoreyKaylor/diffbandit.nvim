@@ -182,6 +182,12 @@ Resolve a Git conflict:
 :DiffBanditMerge path/to/conflicted-file
 ```
 
+Close the DiffBandit view in the current tab (same as `q`):
+
+```vim
+:DiffBanditClose
+```
+
 ## Editor Integration
 
 DiffBandit uses real editable buffers for the right-side target in file,
@@ -277,11 +283,12 @@ Inside a diff view:
 | `]d` | Align both panes to the bottom of the documents |
 | `]s` | Snap the other pane to the cursor line |
 | `C` | Open or focus the commit panel for the current Git file |
+| `gzp` | Show or hide the commit panel |
 | `<Space>` | Toggle stage for the active Git hunk |
 | `>>` | Apply the left side to the right target |
 | `<<` | Apply the right side to the left target |
 | `u` | Undo the last DiffBandit hunk action |
-| `q` | Close the diff session |
+| `q` | Close the diff session (`navigation.close_key`) |
 
 At a file boundary, `]c` and `[c` first notify that the next press will move to
 the next or previous file. This keeps hunk navigation deliberate while still
@@ -332,7 +339,16 @@ opened by `:DiffBanditGit`.
 | `<Space>` in the commit message window | Toggle amend mode |
 | `:w` in the commit message window | Commit staged changes |
 | `R` | Refresh the panel |
-| `q` | Close the panel |
+| `gzp` | Hide the panel, keeping the diff open |
+| `q` | Close the whole view (diff, merge resolver, or standalone panel) |
+
+`q` closes the view the same way from the panel and the diff panes, as does
+`:DiffBanditClose`. An unfinished commit message is kept: closing the view
+saves it for the repository, and the next commit panel opened there restores
+it. Committing clears it.
+
+Moving the panel selection between a merge conflict and a changed file swaps
+the view in place, in the same tab.
 
 The panel validates empty commit messages and missing staged changes before
 committing, and rejects commits while merge conflicts remain unresolved. In

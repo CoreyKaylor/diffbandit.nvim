@@ -598,4 +598,28 @@ function M.undo()
   return call_current_session("undo_action")
 end
 
+-- Close the DiffBandit view in the current tab: a diff, merge, or folder
+-- session (with its tabpage) and/or a standalone commit panel. Under the
+-- bin/diffbandit launcher this quits nvim, matching the panel's close key.
+function M.close()
+  local tab = vim.api.nvim_get_current_tabpage()
+  local session = live_session(tab)
+  local panel = live_panel(tab)
+  if not session and not panel then
+    nvim.notify_info("no DiffBandit view in this tab")
+    return false
+  end
+  if state.quit_on_close then
+    pcall(vim.cmd, "confirm qall")
+    return true
+  end
+  if panel then
+    panel:close()
+  end
+  if session then
+    session:close()
+  end
+  return true
+end
+
 return M
