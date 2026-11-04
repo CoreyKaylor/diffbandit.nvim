@@ -202,12 +202,17 @@ end
 
 --- Capability query: a 1x1 RGB image the terminal validates but never stores.
 --- medium "t" probes temp-file transmission (the file must exist).
+--- U=1 asks about Unicode-placeholder (virtual) placements, the only kind
+--- DiffBandit uses: a terminal with Kitty graphics but no placeholders (e.g.
+--- Zellij 0.45: "ENOTSUPPORTED:unicode placeholders are not supported")
+--- rejects it here, while Ghostty and Kitty answer OK.
 function M.query(id, medium, path)
   local keys = {
     { "i", id },
     { "s", 1 },
     { "v", 1 },
     { "a", "q" },
+    { "U", 1 },
     { "t", medium or "d" },
     { "f", 24 },
   }

@@ -57,8 +57,16 @@ function M.image_colorspace(config, env)
   if cfg == "srgb" or cfg == "display-p3" then
     return cfg
   end
+  local outer = nil
+  if not env then
+    local ok, detect = pcall(require, "diffbandit.kitty.detect")
+    outer = ok and detect.outer_terminal() or nil
+  end
   env = env or {
-    ghostty = vim.env.GHOSTTY_RESOURCES_DIR ~= nil and vim.env.GHOSTTY_RESOURCES_DIR ~= "",
+    -- Inside tmux the client terminal is known exactly; outside it, Ghostty
+    -- exports GHOSTTY_RESOURCES_DIR (also inherited by multiplexers).
+    ghostty = (outer and outer:lower():find("ghostty", 1, true) ~= nil)
+      or (outer == nil and vim.env.GHOSTTY_RESOURCES_DIR ~= nil and vim.env.GHOSTTY_RESOURCES_DIR ~= ""),
     mac = vim.fn.has("mac") == 1,
     ssh = vim.env.SSH_CONNECTION ~= nil and vim.env.SSH_CONNECTION ~= "",
   }

@@ -66,9 +66,10 @@ placeholders:
 - Rex
 - anything based on libghostty
 
-Detection is automatic (Neovim 0.12+). Everywhere else, including tmux,
-iTerm2, and Terminal.app, the cell renderer draws the same routes with Unicode
-glyphs.
+Detection is automatic (Neovim 0.12+), also inside tmux 3.3+ with
+`allow-passthrough` enabled ([tmux](#tmux)). Everywhere else, including
+iTerm2, Terminal.app, and Zellij, the cell renderer draws the same routes with
+Unicode glyphs.
 Details and options: [Image connectors](#image-connectors-kitty-graphics).
 
 ## Installation
@@ -526,6 +527,9 @@ require("diffbandit").setup({
       transmission = "auto", -- "auto" | "file" | "direct"
       compress = true,
       probe_timeout_ms = 300,
+      passthrough = "auto", -- "auto" | "tmux" | "none"
+      tmux_terminals = nil, -- terminals trusted behind tmux (default Ghostty, Kitty)
+      tmux_passthrough_all = true, -- see tmux below
       max_image_px = 4000000,
       cell_px = nil, -- { w, h } override; measured via the tty, else a 20x40 (HiDPI) estimate
       divider_width = 1.45, -- curve width in line heights (IntelliJ's 24px divider)
@@ -574,8 +578,8 @@ override specific `DiffBandit*` highlight groups.
 With `ui.connector_renderer = "auto"` (the default), DiffBandit probes the
 terminal for the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 when a diff opens. It sends a capability query followed by a device-attributes
-sentinel, so detection never depends on terminal names. When the terminal
-answers, each connector is drawn as an anti-aliased image of filled bezier
+sentinel, so detection does not depend on terminal names (tmux is the
+exception, see [tmux](#tmux)). When the terminal answers, each connector is drawn as an anti-aliased image of filled bezier
 ribbons between the two panes, modelled on IntelliJ's diff divider. The curve
 also replaces the wedge glyphs in the number-pane edge columns. Otherwise the
 cell renderer is used, unchanged.
@@ -602,9 +606,9 @@ cell renderer is used, unchanged.
   the panes. `ui.kitty.image_colorspace = "auto"` converts the ribbon palette
   for Ghostty on macOS. Set `"srgb"` if your Ghostty uses
   `window-colorspace = display-p3`.
-- Without a pixel size from the tty (common under multiplexers and SSH), images
-  are rasterized at a 20x40 HiDPI cell estimate and scaled down by the terminal.
-  Set `ui.kitty.cell_px` to match your font exactly.
+- The cell size is measured from the tty (or tmux). Without it (common over
+  SSH), images use a 20x40 HiDPI estimate scaled down by the terminal. Set
+  `ui.kitty.cell_px` to match your font exactly.
 - Repaints ride the same debounced viewport path as the cell renderer. The rail
   solver is skipped entirely, and an image is re-sent only when the ribbon
   geometry, size, or theme changes.
@@ -612,8 +616,52 @@ cell renderer is used, unchanged.
   zlib-compressed chunked data otherwise (SSH, remote multiplexers).
 - `"kitty"` forces the image renderer and `"cells"` disables it. You can also
   set `vim.g.diffbandit_connector_renderer` or
-  `DIFFBANDIT_CONNECTOR_RENDERER`. Inside tmux, auto mode uses cells.
+  `DIFFBANDIT_CONNECTOR_RENDERER`.
 - If the terminal rejects an image later, every open view falls back to cells.
+- Zellij (0.45) has no Unicode placeholder support, so it uses the cell
+  renderer. Ribbons will be detected once it adds them (zellij-org/zellij#5531).
+- Neovim instances sharing one terminal (e.g. tmux panes) use separate image
+  ids. Closing a view deletes only its own images.
+
+#### tmux
+
+Ribbons work inside tmux 3.3+ when the terminal running tmux supports them
+(tested with Ghostty and tmux 3.8). Add this to `~/.tmux.conf`, then reload it
+and reattach, because tmux applies `terminal-features` only when a client
+attaches:
+
+```tmux
+set -g allow-passthrough on
+set -as terminal-features ',xterm-ghostty:RGB'   # ',xterm-kitty:RGB' for Kitty
+set -g focus-events on   # recommended: ribbons are re-sent when you return
+```
+
+- tmux does not pass the terminal's answer back, so detection asks tmux
+  instead. Ghostty and Kitty are recognised; add other terminals with
+  `ui.kitty.tmux_terminals`.
+- tmux drops images sent while a pane is hidden, so DiffBandit sets
+  `allow-passthrough all` on its own pane and restores it on exit (unless you
+  changed it meanwhile). Opt out with `ui.kitty.tmux_passthrough_all = false`.
+- Images can still be lost while no client shows the session (switched away,
+  detached). They are re-sent when Neovim's pane regains focus, so keep focus
+  events on. Without them, DiffBandit re-sends on a later key press, which can
+  miss a switch made within a fraction of a second of typing.
+- Reattaching from a terminal without graphics switches to cells until you
+  return.
+- Limitations: tmux does not pass terminal errors back, so a rejected image
+  cannot trigger the fallback to cells. Every client attached to the session
+  must support Kitty graphics. Nested tmux and screen are not supported.
+
+If ribbons do not appear, `:lua print(require("diffbandit.kitty.detect").status())`
+shows the reason:
+
+| Reason | Fix |
+| --- | --- |
+| `tmux allow-passthrough is off` | `set -g allow-passthrough on`, then press a key in Neovim |
+| `tmux client lacks the RGB feature` | add the `terminal-features` line above and reattach |
+| `… is not a known Kitty graphics terminal` | add it to `ui.kitty.tmux_terminals` |
+| `tmux … is too old` | upgrade to tmux 3.3+ |
+| wrong ribbon size or offset | set `ui.kitty.cell_px = { w, h }` |
 
 `DIFFBANDIT_PERF=1` adds `kitty curves/raster/transmit` stage timings to the
 render log. `tools/bench_kitty.lua` compares repaint cost against the cell

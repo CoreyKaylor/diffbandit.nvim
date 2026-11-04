@@ -35,7 +35,20 @@ local defaults = {
       transmission = "auto",
       -- zlib-compress direct transmissions (o=z) when libz is available.
       compress = true,
+      -- In-band probe timeout. Inside tmux detection queries tmux instead
+      -- (bounded by max(probe_timeout_ms, 500)).
       probe_timeout_ms = 300,
+      -- Graphics transport: "auto" (tmux DCS passthrough when $TMUX is
+      -- set), "tmux" (always wrap), or "none" (never wrap).
+      passthrough = "auto",
+      -- Outer terminals trusted behind tmux (tmux cannot relay the probe
+      -- reply), matched against the client's XTVERSION / TERM. Replaces the
+      -- default list when set, e.g. { "ghostty", "kitty", "rex" }.
+      tmux_terminals = nil,
+      -- With tmux allow-passthrough "on", images written while the pane is
+      -- hidden are silently dropped. Raise it to "all" for Neovim's own pane
+      -- only (restored on exit; a pane set to "off" is left alone).
+      tmux_passthrough_all = true,
       -- Pixel cap per connector image; larger viewports render at reduced
       -- resolution and the terminal scales them up.
       max_image_px = 4000000,
