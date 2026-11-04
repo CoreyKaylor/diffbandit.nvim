@@ -548,6 +548,8 @@ require("diffbandit").setup({
     },
     theme = {
       auto_refresh = true,
+      background = nil, -- reference bg for blending when Normal has none (e.g. "#1e1e2e")
+      transparent = nil, -- nil: detect from Normal; true/false forces see-through panes
       semantic_blend = 0.3,
       change_emphasis_strength = 0.16,
       min_background_delta = 0.08,
@@ -572,6 +574,16 @@ require("diffbandit").setup({
 Theme colors are derived from the active colorscheme's diff highlight groups.
 Use `ui.theme.colors` for semantic color overrides, or `ui.theme.highlights` to
 override specific `DiffBandit*` highlight groups.
+
+Transparent colorschemes (a `Normal` group with no background) keep the panes
+and gutters see-through with no extra configuration: context rows, gutters,
+splits, panels and status strips paint no background, while the
+add/delete/change bands stay opaque. The bands are still blended against a
+background color. Without one, DiffBandit picks a neutral dark or light color
+based on `'background'`; set `ui.theme.background` (hex or a color name) to your
+terminal's background to tune the bands to it exactly. `ui.theme.transparent = true` forces
+see-through panes on an opaque theme, and `false` paints `ui.theme.background`
+(or the fallback) instead.
 
 ### Image connectors (Kitty graphics)
 

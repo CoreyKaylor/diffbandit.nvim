@@ -257,9 +257,10 @@ local function winbar_spec(session)
 end
 
 local function apply_right_source_window_options(session)
-  local right_source_winhl = session.overview_enabled and layout.winhl.hidden_source or layout.winhl.source
-  set_window_options(session.right_win, layout.win_opts.source(right_source_winhl, {
+  local hidden = session.overview_enabled
+  set_window_options(session.right_win, layout.win_opts.source(hidden and layout.winhl.hidden_source or layout.winhl.source, {
     signcolumn = session.right.editable and "auto" or "no",
+    fillchars = hidden and layout.hidden_separator_fillchars() or nil,
   }))
   winbar.align(winbar_spec(session))
 end
@@ -270,6 +271,7 @@ local function apply_window_options(session)
   for _, win in ipairs({ session.left_overview_win, session.right_overview_win }) do
     if win then
       set_window_options(win, layout.win_opts.gutter(layout.winhl.overview))
+      set_window_options(win, { fillchars = layout.hidden_separator_fillchars() })
       set_window_width(win, session.overview_width)
     end
   end
@@ -372,7 +374,9 @@ function M.open(session)
   finalize_bufhidden(session)
 
   -- Set vertical split character to thin line
-  vim.opt.fillchars:append({ vert = "│" })
+  -- Global only: vim.opt would also reset the current window's local
+  -- fillchars (the hidden-separator windows set their own).
+  vim.opt_global.fillchars:append({ vert = "│" })
 
   set_initial_focus(session)
 end

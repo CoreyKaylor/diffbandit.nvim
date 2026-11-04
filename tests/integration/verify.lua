@@ -1051,11 +1051,11 @@ local function connector_core_bounds(stripped)
     from = pos + #"│"
   end
 
-  local has_overview_pane = (separators[1] or 999) <= 3
-  if has_overview_pane then
-    return separators[3], separators[#separators - 2]
-  end
-  return separators[2], separators[#separators - 2]
+  -- Overview strips hide their separators with a blank fillchar (no glyph
+  -- is invisible on a transparent background), so the visible glyphs are
+  -- the same with or without overviews: left source, left numbers (core
+  -- start), [rails], core end, right numbers.
+  return separators[2], separators[#separators - 1]
 end
 
 local function connector_core_pipe_count(stripped)

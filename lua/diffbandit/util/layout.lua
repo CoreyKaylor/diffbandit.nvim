@@ -50,6 +50,22 @@ M.winhl = {
 
 M.win_opts = {}
 
+--- Window-local 'fillchars' for windows whose separator is hidden
+--- (winhl.hidden_split): the user's global fillchars with a blank `vert`.
+--- DiffBanditHiddenSplit alone paints the glyph fg = bg, which only hides it
+--- when the background is opaque; a transparent theme would show the glyph in
+--- the reference colour over the terminal background.
+function M.hidden_separator_fillchars()
+  local chars = vim.opt_global.fillchars:get()
+  chars.vert = " "
+  local parts = {}
+  for key, value in pairs(chars) do
+    parts[#parts + 1] = key .. ":" .. value
+  end
+  table.sort(parts)
+  return table.concat(parts, ",")
+end
+
 -- Source/content pane: cursorline on, no gutter columns.
 function M.win_opts.source(winhl, overrides)
   local opts = {
