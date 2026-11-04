@@ -12,15 +12,25 @@ local connector_width = require("diffbandit.connector.width")
 local color = require("diffbandit.kitty.color")
 local curves = require("diffbandit.connector.curves")
 local detect = require("diffbandit.kitty.detect")
+local ids = require("diffbandit.kitty.ids")
 local protocol = require("diffbandit.kitty.protocol")
 local raster = require("diffbandit.kitty.raster")
 local zlib = require("diffbandit.kitty.zlib")
 
 local M = {}
 
-local ID_BASE = 0xDB0000
+-- Image ids are 24-bit (the placeholder fg colour carries them): a 12-bit
+-- prefix claimed per process (kitty/ids.lua), so Neovim instances sharing one
+-- terminal never collide, and a 12-bit slot counted per process.
+local SLOTS = 0xFFF
 local next_slot = 0
 local live_states = setmetatable({}, { __mode = "k" })
+local live_ids = {}
+
+--- Image id for per-process slot n (1..4095) and prefix (1..4095).
+function M.image_id(slot, prefix)
+  return (prefix or ids.prefix()) * 0x1000 + slot
+end
 
 local function now()
   local uv = vim.uv or vim.loop
@@ -34,8 +44,16 @@ end
 --- Fresh per-connector state. Merge hosts keep one per pair slot so pair
 --- renderer rebuilds reuse the same terminal image id.
 function M.new_state()
-  next_slot = (next_slot % 0xFFFF) + 1
-  local id = ID_BASE + next_slot
+  local id
+  local tries = 0
+  repeat
+    next_slot = (next_slot % SLOTS) + 1
+    id = M.image_id(next_slot)
+    tries = tries + 1
+    -- Skip the probe ids and slots still held by a live view (after the
+    -- counter wraps).
+  until (id ~= detect.QUERY_ID and id ~= detect.QUERY_ID + 1 and not live_ids[id]) or tries > SLOTS
+  live_ids[id] = true
   local st = {
     id = id,
     hl = "DiffBanditKittyImage" .. id,
@@ -190,7 +208,9 @@ local function transmit(host, st, bytes, width, height, layout)
     })
   end
   st.transmits = st.transmits + 1
-  return detect.send(table.concat(chunks))
+  local ok = detect.send(chunks)
+  detect.note_transmit()
+  return ok
 end
 
 -- --- canvas float ---------------------------------------------------------
@@ -614,6 +634,7 @@ function M.destroy_state(st)
   st.edges = nil
   detect.send(protocol.delete(st.id))
   detect.unregister_id(st.id)
+  live_ids[st.id] = nil
   for _, path in ipairs(st.files or {}) do
     pcall(os.remove, path)
   end

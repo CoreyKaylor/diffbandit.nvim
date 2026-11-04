@@ -9,6 +9,10 @@ do
   local detect = require("diffbandit.kitty.detect")
   local kitty_canvas = require("diffbandit.kitty.canvas")
   local nvim_util = require("diffbandit.util.nvim")
+  -- These specs exercise the raw (non-tmux) transport; the tmux transport
+  -- has its own spec. Do not inherit the developer's $TMUX.
+  local saved_tmux_env = vim.env.TMUX
+  vim.env.TMUX = nil
 
   local function nr(cp)
     return vim.fn.nr2char(cp)
@@ -97,8 +101,8 @@ do
       assert_eq(zlib.uncompress(packed, #pixels), pixels, "zlib payload round-trips")
     end
 
-    assert_eq(protocol.query(5, "d"),"\27_Gi=5,s=1,v=1,a=q,t=d,f=24;AAAA\27\\", "query golden")
-    assert_eq(protocol.query(6, "t", "/tmp/p"), "\27_Gi=6,s=1,v=1,a=q,t=t,f=24;" .. vim.base64.encode("/tmp/p") .. "\27\\",
+    assert_eq(protocol.query(5, "d"),"\27_Gi=5,s=1,v=1,a=q,U=1,t=d,f=24;AAAA\27\\", "query golden (asks about Unicode placeholders)")
+    assert_eq(protocol.query(6, "t", "/tmp/p"), "\27_Gi=6,s=1,v=1,a=q,U=1,t=t,f=24;" .. vim.base64.encode("/tmp/p") .. "\27\\",
       "temp-file query golden")
     assert_eq(protocol.delete(5), "\27_Ga=d,d=I,i=5,q=2\27\\", "delete golden")
 
@@ -336,7 +340,7 @@ do
     assert_eq(detect.status(), "probing", "probe started")
     assert_eq(#sent, 1, "one probe write")
     assert_eq(sent[1]:find(protocol.query(detect.QUERY_ID, "d"), 1, true) == 1, true, "direct query first")
-    assert_eq(sent[1]:find("a=q,t=t", 1, true) ~= nil, true, "temp-file query included")
+    assert_eq(sent[1]:find("a=q,U=1,t=t", 1, true) ~= nil, true, "temp-file query included")
     assert_eq(sent[1]:sub(-#protocol.DA1), protocol.DA1, "DA1 sentinel last")
     vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. detect.QUERY_ID .. ";OK\27\\" } })
     vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. (detect.QUERY_ID + 1) .. ";OK\27\\" } })
@@ -414,6 +418,20 @@ do
       return detect.status() == "cells"
     end), true, "DA1 without a graphics reply resolves to cells")
     assert_eq(detect.transmission({ ui = {} }), "direct", "no file reply keeps direct transmission")
+
+    -- Kitty graphics without Unicode placeholders (Zellij 0.45 answers the
+    -- U=1 query with an error before its DA1): cells, with the reason.
+    probe_env()
+    detect.resolve({ ui = {} })
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. detect.QUERY_ID
+      .. ";ENOTSUPPORTED:unicode placeholders are not supported\27\\" } })
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27[?62;52c" } })
+    assert_eq(wait_for(function()
+      return detect.status() == "cells"
+    end), true, "placeholder rejection resolves to cells")
+    local _, rejected = detect.status()
+    assert_eq(rejected:find("ENOTSUPPORTED:unicode placeholders", 1, true) ~= nil, true,
+      "the terminal's rejection is the recorded reason")
 
     -- No reply at all: the timeout resolves to cells.
     probe_env()
@@ -935,5 +953,6 @@ do
   end
 
   detect._set_sink(nil)
+  vim.env.TMUX = saved_tmux_env
   kitty_canvas = nil
 end

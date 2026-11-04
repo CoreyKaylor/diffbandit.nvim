@@ -11,6 +11,9 @@ local detect = require("diffbandit.kitty.detect")
 
 local M = {}
 
+-- Minimum interval between activity-driven tmux client checks.
+M.TMUX_ACTIVITY_CHECK_MS = 1000
+
 local hosts = setmetatable({}, { __mode = "k" })
 local theme_group = nil
 
@@ -49,9 +52,82 @@ local function install_theme_refresh()
   detect.on_retransmit(function()
     vim.schedule(refresh_all)
   end)
+  -- tmux: the outer terminal never reports back, so follow the client from
+  -- tmux itself. Gaining focus (tmux focus-events) re-sends images, which
+  -- covers switching back to the window and reattaching; editor activity
+  -- runs a throttled check that catches a reattach (new client, perhaps a
+  -- different terminal) even without focus events.
+  local last_check = 0
+  local function any_host()
+    for host in pairs(hosts) do
+      if not host.disposed then
+        return host
+      end
+    end
+    return nil
+  end
+  vim.api.nvim_create_autocmd("FocusGained", {
+    group = theme_group,
+    callback = function()
+      local host = any_host()
+      if host and detect.passthrough() == "tmux" then
+        detect.note_visible()
+        last_check = (vim.uv or vim.loop).now()
+        detect.tmux_check(host.config, { retransmit = true })
+      end
+    end,
+  })
+  local function activity()
+    if detect.passthrough() ~= "tmux" then
+      return
+    end
+    local now = (vim.uv or vim.loop).now()
+    if now - last_check < M.TMUX_ACTIVITY_CHECK_MS then
+      return
+    end
+    local host = any_host()
+    if host then
+      last_check = now
+      detect.tmux_check(host.config)
+    end
+  end
+  M._tmux_activity = activity
+  -- Any typed key or mouse event means someone is looking at this pane
+  -- (whatever window has focus, even one where the cursor cannot move).
+  -- Keys from :normal, feedkeys or timers (typed == "") prove nothing.
+  vim.on_key(function(_, typed)
+    if typed == nil or typed == "" then
+      return
+    end
+    -- Stamp now: the key's mapping runs before any scheduled callback and
+    -- may render (and transmit) synchronously; a stale stamp would mark that
+    -- transmission unconfirmed and re-send every image right after it.
+    if detect.passthrough() == "tmux" then
+      detect.note_visible()
+    end
+    vim.schedule(function()
+      if detect.passthrough() == "tmux" then
+        detect.note_key()
+      end
+      activity()
+    end)
+  end, vim.api.nvim_create_namespace("DiffBanditKittyTmuxActivity"))
+  vim.api.nvim_create_autocmd("VimResized", { group = theme_group, callback = activity })
   -- Font size changes (and a terminal reporting its real pixel size after
   -- startup) arrive as resizes: re-measure the cell and, when it changed,
   -- re-size the IntelliJ-width core and re-raster through on_change.
+  local function rerender_for_cell()
+    vim.schedule(function()
+      for host, entry in pairs(hosts) do
+        if not host.disposed and host.connector_renderer == "kitty" then
+          M.invalidate(host)
+          if entry.on_change then
+            pcall(entry.on_change, "kitty")
+          end
+        end
+      end
+    end)
+  end
   vim.api.nvim_create_autocmd("VimResized", {
     group = theme_group,
     callback = function()
@@ -66,21 +142,14 @@ local function install_theme_refresh()
       for host in pairs(hosts) do
         first = first or host
       end
-      if not detect.remeasure(first and first.config) then
-        return
+      if detect.remeasure(first and first.config) then
+        rerender_for_cell()
       end
-      vim.schedule(function()
-        for host, entry in pairs(hosts) do
-          if not host.disposed and host.connector_renderer == "kitty" then
-            M.invalidate(host)
-            if entry.on_change then
-              pcall(entry.on_change, "kitty")
-            end
-          end
-        end
-      end)
     end,
   })
+  -- tmux reported a different cell size (new client, font change measured
+  -- only by tmux): detect already re-measured, re-size and re-raster.
+  detect.on_cell_change(rerender_for_cell)
 end
 
 --- opts = { on_change = fn(mode), refresh = fn() }

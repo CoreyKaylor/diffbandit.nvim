@@ -62,6 +62,11 @@ Requirements:
 - Git for Git diff workflows and hunk actions.
 - tmux only for running integration tests.
 - Nerd Fonts are optional.
+- Image (Kitty graphics) connectors: Neovim 0.12+, 'termguicolors', and a
+  terminal with Kitty graphics + Unicode placeholders (Ghostty, Kitty, ...).
+  Inside tmux 3.3+ they also need `set -g allow-passthrough on` and the RGB
+  terminal feature; see the README section "tmux" for setup, limitations and
+  troubleshooting. `ui.connector_renderer = "cells"` disables them.
 
 ==============================================================================
 COMMANDS                                            *diffbandit-commands*
