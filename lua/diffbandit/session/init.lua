@@ -390,7 +390,7 @@ function Session:setup_autocmds()
 
   -- A winbar set on a source pane after open (breadcrumb plugins attach
   -- lazily) moves its text a row down; give the gutters the same bar row.
-  winbar.watch(self, augroup, function()
+  winbar.watch(self, function()
     return session_layout.winbar_spec(self)
   end, function()
     self:sync_gutter_viewports()

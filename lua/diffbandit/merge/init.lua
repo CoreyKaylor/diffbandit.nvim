@@ -529,7 +529,7 @@ function Merge:setup_autocmds()
   })
   -- Breadcrumb plugins set a pane's winbar lazily; keep the gutters on the
   -- same bar row.
-  winbar.watch(self, self.augroup, function()
+  winbar.watch(self, function()
     return self:winbar_spec()
   end, function()
     self:sync_gutter_viewports()

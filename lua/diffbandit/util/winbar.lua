@@ -26,7 +26,7 @@ local function local_value(win)
 end
 
 local function set_local(win, value)
-  if local_value(win) ~= value then
+  if valid(win) and local_value(win) ~= value then
     pcall(vim.api.nvim_set_option_value, "winbar", value, { scope = "local", win = win })
     return true
   end
@@ -52,14 +52,10 @@ function M.rows(win)
   return info and info.winbar or 0
 end
 
---- Make the winbar row uniform across a host's aligned windows.
---- spec.content: panes whose text the gutters follow (may carry a user bar)
---- spec.gutters: number/connector/overview windows (only ever blank bars)
---- spec.headers: one-row status windows above the panes; they share a row
----   with each other, not with the panes, so they only need a bar when the
----   global winbar forces one on some of them anyway.
---- Returns true when any window's bar changed (its text height changed).
-function M.align(spec)
+-- The local winbar values that would make the spec's windows uniform, as
+-- a list of { win, value } (empty when already aligned). Reads only, so it
+-- is safe to call from a decoration provider during redraw.
+local function plan(spec)
   local content, gutters, headers = {}, {}, {}
   for _, win in ipairs(spec.content or {}) do
     if valid(win) then content[#content + 1] = win end
@@ -71,57 +67,135 @@ function M.align(spec)
     if valid(win) then headers[#headers + 1] = win end
   end
 
-  local any = vim.go.winbar ~= ""
+  local global = vim.go.winbar ~= ""
+  local any = global
   for _, win in ipairs(content) do
     any = any or foreign_bar(win)
   end
 
-  local changed = false
-  local function blank_or_clear(win, want_blank)
-    if want_blank then
-      changed = set_local(win, M.BLANK) or changed
-    elseif local_value(win) == M.BLANK then
-      changed = set_local(win, "") or changed
+  local changes = {}
+  local function want(win, blank)
+    local value = local_value(win)
+    if blank and value ~= M.BLANK then
+      changes[#changes + 1] = { win, M.BLANK }
+    elseif not blank and value == M.BLANK then
+      changes[#changes + 1] = { win, "" }
     end
   end
   -- A global bar already fills every pane; only blank the panes that would
   -- otherwise have none, and drop a stale blank so the global bar shows.
   for _, win in ipairs(content) do
-    blank_or_clear(win, any and vim.go.winbar == "" and not foreign_bar(win))
+    want(win, any and not global and not foreign_bar(win))
   end
   for _, win in ipairs(gutters) do
-    blank_or_clear(win, any)
+    want(win, any)
   end
   for _, win in ipairs(headers) do
-    blank_or_clear(win, vim.go.winbar ~= "")
+    want(win, global)
+  end
+  return changes
+end
+
+--- Make the winbar row uniform across a host's aligned windows.
+--- spec.content: panes whose text the gutters follow (may carry a user bar)
+--- spec.gutters: number/connector/overview windows (only ever blank bars)
+--- spec.headers: one-row status windows above the panes; they share a row
+---   with each other, not with the panes, so they only need a bar when the
+---   global winbar forces one on some of them anyway.
+--- Returns true when any window's bar changed (its text height changed).
+function M.align(spec)
+  local changed = false
+  for _, change in ipairs(plan(spec)) do
+    changed = set_local(change[1], change[2]) or changed
   end
   return changed
 end
 
---- Re-align whenever a winbar changes (plugins set breadcrumbs lazily, on
---- LspAttach or CursorMoved) or a buffer swap resets window-local options.
---- `get_spec()` returns the align spec (nil once the host is gone);
---- `on_change()` runs after an alignment changed window heights.
-function M.watch(host, augroup, get_spec, on_change)
-  local pending = false
-  local function sync()
-    if pending then
+--- True when the spec's windows already share one bar row.
+function M.aligned(spec)
+  return #plan(spec) == 0
+end
+
+-- Hosts being watched: host -> { get_spec, on_change, pending }.
+local watched = {}
+local provider_ns
+
+local function sync(host, entry)
+  if entry.pending then
+    return
+  end
+  entry.pending = true
+  vim.schedule(function()
+    entry.pending = false
+    if host.disposed or watched[host] ~= entry then
       return
     end
-    pending = true
-    vim.schedule(function()
-      pending = false
-      if host.disposed then
-        return
+    local spec = entry.get_spec()
+    if spec and M.align(spec) and entry.on_change then
+      entry.on_change()
+    end
+  end)
+end
+
+local function spec_has(spec, win)
+  for _, field in ipairs({ "content", "gutters" }) do
+    for _, w in ipairs(spec[field] or {}) do
+      if w == win then
+        return true
       end
-      local spec = get_spec()
-      if spec and M.align(spec) and on_change then
-        on_change()
-      end
-    end)
+    end
   end
-  vim.api.nvim_create_autocmd("OptionSet", { group = augroup, pattern = "winbar", callback = sync })
-  vim.api.nvim_create_autocmd("BufWinEnter", { group = augroup, callback = sync })
+  return false
+end
+
+-- Plugins set winbars from inside their own autocmds (LspSaga renders on
+-- CursorMoved, BufEnter and its symbol-update event), where OptionSet does
+-- not fire (autocmds are not nested), and a bar appearing fires neither
+-- WinResized nor WinScrolled. Showing it always redraws the window, so the
+-- check rides on the redraw: on_win compares (read-only) and a mismatch
+-- schedules the realign, since options cannot change mid-redraw.
+local function ensure_provider()
+  if provider_ns then
+    return
+  end
+  provider_ns = vim.api.nvim_create_namespace("DiffBanditWinbar")
+  local checked = {}
+  vim.api.nvim_set_decoration_provider(provider_ns, {
+    on_start = function()
+      checked = {}
+      for host in pairs(watched) do
+        if host.disposed then
+          watched[host] = nil
+        end
+      end
+      return next(watched) ~= nil
+    end,
+    on_win = function(_, win)
+      for host, entry in pairs(watched) do
+        if not checked[host] and not entry.pending then
+          local ok, spec = pcall(entry.get_spec)
+          if ok and spec and spec_has(spec, win) then
+            checked[host] = true
+            local ok_plan, aligned = pcall(M.aligned, spec)
+            if ok_plan and not aligned then
+              sync(host, entry)
+            end
+          end
+        end
+      end
+      return false
+    end,
+  })
+end
+
+--- Keep a host aligned for its lifetime: whenever one of its windows is
+--- redrawn with bar rows out of step (a bar added, changed to/from empty,
+--- a global bar toggled, a buffer swap resetting window-local options),
+--- realign and call `on_change()`. `get_spec()` returns the align spec.
+--- The host stops being watched once `host.disposed` is set.
+function M.watch(host, get_spec, on_change)
+  watched[host] = { get_spec = get_spec, on_change = on_change }
+  ensure_provider()
 end
 
 return M

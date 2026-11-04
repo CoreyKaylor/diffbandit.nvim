@@ -607,6 +607,32 @@ do
   winbar.align(session_layout_mod.winbar_spec(session))
   assert_rows_aligned(session, "bar removed")
   assert_eq(vim.wo[session.connector_win].winbar, "", "blank bars are withdrawn with the last real one")
+
+  -- The reported case (PR #16 feedback): a plugin sets the bar from inside
+  -- its own autocmd after the session rendered, so no OptionSet fires and
+  -- nothing calls align. The next redraw must catch it on its own.
+  local group = vim.api.nvim_create_augroup("DiffBanditWinbarSpec", { clear = true })
+  vim.api.nvim_create_autocmd("User", {
+    group = group,
+    pattern = "WinbarSpecCrumbs",
+    callback = function(args)
+      vim.wo[session.right_win].winbar = args.data
+    end,
+  })
+  local function nested_set(value)
+    vim.api.nvim_exec_autocmds("User", { pattern = "WinbarSpecCrumbs", data = value })
+    vim.cmd("redraw")
+    return vim.wait(1000, function()
+      vim.cmd("redraw")
+      return winbar.aligned(session_layout_mod.winbar_spec(session))
+    end, 10)
+  end
+  assert_eq(nested_set("lazy crumbs"), true, "a bar set inside another autocmd is caught on redraw")
+  assert_rows_aligned(session, "lazily set pane winbar")
+  assert_eq(nested_set(""), true, "clearing the bar inside an autocmd is caught on redraw")
+  assert_rows_aligned(session, "lazily cleared pane winbar")
+  assert_eq(vim.wo[session.connector_win].winbar, "", "blank bars withdrawn after a lazy clear")
+  vim.api.nvim_del_augroup_by_id(group)
   session:close()
 
   -- Global bar: kept on the panes, blanked on gutters and headers.

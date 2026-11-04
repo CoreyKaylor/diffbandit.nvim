@@ -1008,7 +1008,7 @@ function Folder:setup_autocmds()
       end,
     })
   end
-  winbar.watch(self, augroup, function()
+  winbar.watch(self, function()
     return self:winbar_spec()
   end, function()
     self:render()
