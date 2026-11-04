@@ -804,6 +804,27 @@ do
     assert_eq(vim.api.nvim_win_get_height(st.float_win), vim.fn.winheight(cwin), "canvas spans the text rows only")
     session:close()
     vim.go.winbar = saved
+
+    -- PR #16 feedback: a bar arriving after the first paint shrinks the grid
+    -- by a row. Ghostty keeps an image id's old virtual-placement grid when
+    -- the id is re-sent with new c/r, stretching the ribbons, so a grid
+    -- change must delete the old image first; same-grid repaints must not.
+    session = start_session(kitty_config())
+    session:render()
+    st = session.kitty_state
+    local deletes = count_matching(protocol.delete(st.id))
+    vim.wo[session.right_win].winbar = "lazy crumbs"
+    require("diffbandit.util.winbar").align(require("diffbandit.session.layout").winbar_spec(session))
+    session:render()
+    assert_eq(st.last_layout.rows, vim.fn.winheight(session.connector_win), "repaint uses the shrunken grid")
+    assert_eq(count_matching(protocol.delete(st.id)), deletes + 1, "a grid change deletes the old placement first")
+    for _, w in ipairs({ session.left_win, session.left_num_win, session.connector_win, session.right_num_win, session.right_win }) do
+      nvim_util.set_win_view_topline(w, 40)
+    end
+    session.last_viewport_render_key = nil
+    session:rerender_for_viewport()
+    assert_eq(count_matching(protocol.delete(st.id)), deletes + 1, "same-grid repaints keep the placement")
+    session:close()
     reset_detect()
   end
 

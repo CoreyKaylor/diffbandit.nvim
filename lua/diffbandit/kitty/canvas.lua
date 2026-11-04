@@ -208,6 +208,16 @@ local function transmit(host, st, bytes, width, height, layout)
       medium = "d", data = payload, compressed = compressed, quiet = 1,
     })
   end
+  -- Re-sending an image id with a new cell grid (c/r) does not resize its
+  -- existing virtual placement in every terminal: Ghostty keeps the old
+  -- grid and stretches the new image over it, so the ribbons drift further
+  -- off the further down they are (a winbar or resize taking one row). Drop
+  -- the old image and placement first whenever the grid changes.
+  local grid = layout.cols .. "x" .. layout.rows
+  if st.placed_grid and st.placed_grid ~= grid then
+    table.insert(chunks, 1, protocol.delete(st.id))
+  end
+  st.placed_grid = grid
   st.transmits = st.transmits + 1
   local ok = detect.send(chunks)
   detect.note_transmit()
