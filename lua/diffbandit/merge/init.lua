@@ -395,7 +395,7 @@ function Merge:configure_windows()
   local remote_visible = not hidden.remote_pane
   local visible_panes = 1 + (local_visible and 1 or 0) + (remote_visible and 1 or 0)
   local side_gutter_width = (num_pane_width * 2) + core_width
-  local content_width = math.max(15, math.floor((vim.o.columns
+  local content_width = math.max(15, math.floor((self:owned_columns()
     - (panel_mod.is_open(self) and (config_mod.section(self.config, "git", "panel").width or 42) or 0)
     - (local_visible and side_gutter_width or 0)
     - (remote_visible and side_gutter_width or 0)) / visible_panes))
@@ -420,6 +420,57 @@ function Merge:configure_windows()
     end
     set_win_height(self.panel.commit_win, panel_config.commit_height or 10)
   end
+  self.foreign_layout_key = layout.foreign_layout_key(self.tabpage, self:owned_windows())
+end
+
+-- The content row's windows, left to right (hidden sides are nil/closed).
+function Merge:body_windows()
+  local wins = {}
+  for _, win in ipairs({
+    self.local_win, self.local_num_win, self.local_result_connector_win,
+    self.result_left_num_win, self.result_win, self.result_right_num_win,
+    self.result_remote_connector_win, self.remote_num_win, self.remote_win,
+  }) do
+    if win and vim.api.nvim_win_is_valid(win) then
+      wins[#wins + 1] = win
+    end
+  end
+  return wins
+end
+
+-- Split windows this merge view lays out: the content row, its headers, and
+-- the attached commit panel.
+function Merge:owned_windows()
+  local wins = self:body_windows()
+  local panel = self.panel or {}
+  for _, win in ipairs({
+    self.local_header_win, self.result_header_win, self.remote_header_win,
+    panel.nav_win, panel.commit_win,
+  }) do
+    if win and vim.api.nvim_win_is_valid(win) then
+      wins[#wins + 1] = win
+    end
+  end
+  return wins
+end
+
+-- Columns the merge view occupies (content row plus the panel column), not
+-- the editor width: a foreign split such as a file tree keeps its own
+-- columns.
+function Merge:owned_columns()
+  local body = self:body_windows()
+  if #body == 0 then
+    return vim.o.columns
+  end
+  local total = #body - 1
+  for _, win in ipairs(body) do
+    total = total + vim.api.nvim_win_get_width(win)
+  end
+  local nav = self.panel and self.panel.nav_win
+  if panel_mod.is_open(self) and nav and vim.api.nvim_win_is_valid(nav) then
+    total = total + vim.api.nvim_win_get_width(nav) + 1
+  end
+  return total
 end
 
 function Merge:setup_autocmds()
@@ -558,9 +609,19 @@ function Merge:setup_autocmds()
   vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
     group = self.augroup,
     callback = function()
-      if not self.disposed then
-        self:request_render()
+      if self.disposed then
+        return
       end
+      -- A foreign split (file tree, quickfix, …) opening or closing, or the
+      -- editor resizing, hands columns to an adjacent merge window; lay the
+      -- widths out again (see Session's handler).
+      ui.schedule_once(self, "foreign_layout_scheduled", function()
+        if vim.api.nvim_get_current_tabpage() == self.tabpage
+            and layout.foreign_layout_key(self.tabpage, self:owned_windows()) ~= self.foreign_layout_key then
+          self:configure_windows()
+        end
+      end, 0)
+      self:request_render()
     end,
   })
   -- The three content panes scroll independently; DiffBandit owns gutter

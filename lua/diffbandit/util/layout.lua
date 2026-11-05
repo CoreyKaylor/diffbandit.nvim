@@ -27,6 +27,34 @@ function M.open_unfocusable_win(buf, anchor_win, opts)
   return vim.api.nvim_open_win(buf, false, base)
 end
 
+--- Key for the parts of a tabpage's layout DiffBandit does not own: the
+--- editor size plus every foreign split window (file trees, quickfix, …) with
+--- its size. Owned windows contribute only their id, so resizing them (the
+--- user dragging the separator between the source panes, or DiffBandit's own
+--- relayout) leaves the key alone, while opening, closing, or resizing a
+--- foreign window changes it. Floats are ignored.
+function M.foreign_layout_key(tabpage, owned)
+  if not (tabpage and vim.api.nvim_tabpage_is_valid(tabpage)) then
+    return nil
+  end
+  local is_owned = {}
+  for _, win in pairs(owned or {}) do
+    is_owned[win] = true
+  end
+  local parts = { vim.o.columns .. "x" .. vim.o.lines }
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+    if vim.api.nvim_win_get_config(win).relative == "" then
+      if is_owned[win] then
+        parts[#parts + 1] = tostring(win)
+      else
+        parts[#parts + 1] = win .. ":" .. vim.api.nvim_win_get_width(win)
+          .. "x" .. vim.api.nvim_win_get_height(win)
+      end
+    end
+  end
+  return table.concat(parts, ",")
+end
+
 local split = "VertSplit:DiffBanditSplit,WinSeparator:DiffBanditSplit"
 local hidden_split = "VertSplit:DiffBanditHiddenSplit,WinSeparator:DiffBanditHiddenSplit"
 
