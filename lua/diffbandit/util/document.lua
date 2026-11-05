@@ -11,6 +11,15 @@ local function realpath(path)
   return uv.fs_realpath(path)
 end
 
+-- Absolute in either path style, independent of the host OS: "/x" (POSIX),
+-- "C:\x" / "C:/x" (Windows drive) and "\\server\share" / "//server/share" (UNC).
+function M.is_absolute_path(path)
+  if type(path) ~= "string" or path == "" then
+    return false
+  end
+  return path:sub(1, 1) == "/" or path:find("^%a:[/\\]") ~= nil or path:find("^\\\\") ~= nil
+end
+
 function M.normalize_path(path)
   if not path or path == "" then
     return nil

@@ -340,3 +340,22 @@ do
   assert_eq(queue.source_cache[3] == nil or queue.source_cache[3].document == nil, true,
     "cancelled prefetch should not install a document on neighbor 3")
 end
+
+do
+  -- Absolute-path detection is host-independent so Windows paths name panes too.
+  local util_document = require("diffbandit.util.document")
+  for _, path in ipairs({ "/a/b.txt", "C:\\a\\b.txt", "c:/a/b.txt", "\\\\srv\\share\\b.txt", "//srv/share/b.txt" }) do
+    assert_eq(util_document.is_absolute_path(path), true, "absolute path: " .. path)
+  end
+  for _, path in ipairs({ "b.txt", "a/b.txt", "C:b.txt", "", false }) do
+    assert_eq(util_document.is_absolute_path(path or nil), false, "relative path: " .. tostring(path))
+  end
+
+  local name = require("diffbandit.session.layout")._private.source_buffer_name
+  assert_eq(name({ path = "C:\\proj\\left\\a.lua" }, "left"), "C:\\proj\\left\\a.lua (left)",
+    "Windows drive path names the pane with the full path")
+  assert_eq(name({ path = "/repo/a.lua", git_target = "head" }, "left"), "/repo/a.lua (HEAD)",
+    "git side tags the pane")
+  assert_eq(name({ path = "a.lua", label = "a.lua (missing left)" }, "left"), "a.lua (missing left)",
+    "relative source falls back to its label")
+end

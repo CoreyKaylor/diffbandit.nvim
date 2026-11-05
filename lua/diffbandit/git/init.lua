@@ -129,9 +129,7 @@ local function realpath(path)
   return uv.fs_realpath(path) or vim.fn.fnamemodify(path, ":p")
 end
 
-local function is_absolute(path)
-  return path and path:sub(1, 1) == "/"
-end
+local is_absolute = document.is_absolute_path
 
 local function path_dir(path)
   if not path or path == "" then

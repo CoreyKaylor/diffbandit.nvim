@@ -45,7 +45,7 @@ end
 -- from the real file's buffer (and from `document.find_loaded_buffer`).
 local function source_buffer_name(source, side)
   local path = source.path
-  if path and path ~= "" and path:sub(1, 1) == "/" then
+  if document.is_absolute_path(path) then
     return string.format("%s (%s)", path, source_buffer_tag(source, side))
   end
   local label = source.label or path
@@ -443,6 +443,7 @@ function M.apply_right_source_window_options(session)
 end
 
 M.winbar_spec = winbar_spec
+M._private = { source_buffer_name = source_buffer_name }
 
 function M.open(session)
   vim.cmd("tabnew")
