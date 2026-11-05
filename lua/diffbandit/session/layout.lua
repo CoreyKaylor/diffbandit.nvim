@@ -15,6 +15,88 @@ local set_window_height = nvim.set_window_height
 
 local M = {}
 
+local function source_buffer_tag(source, side)
+  if source.git_state == "untracked" then
+    return "not tracked"
+  end
+  if source.git_state == "deleted" then
+    return "deleted"
+  end
+  if source.git_ref and source.git_ref ~= "" then
+    return source.git_ref
+  end
+  if source.git_target == "head" then
+    return "HEAD"
+  end
+  if source.git_target == "index" then
+    return "index"
+  end
+  if source.git_target == "worktree" then
+    return "working tree"
+  end
+  if source.git_target == "rev" then
+    return "revision"
+  end
+  return side
+end
+
+-- Display name for a scratch source pane, so `<C-g>`, `%` and statuslines show
+-- the full path instead of "[Scratch]". The "(tag)" suffix keeps it distinct
+-- from the real file's buffer (and from `document.find_loaded_buffer`).
+local function source_buffer_name(source, side)
+  local path = source.path
+  if path and path ~= "" and path:sub(1, 1) == "/" then
+    return string.format("%s (%s)", path, source_buffer_tag(source, side))
+  end
+  local label = source.label or path
+  if label and label ~= "" then
+    return label:find("%(") and label or string.format("%s (%s)", label, side)
+  end
+  return string.format("[DiffBandit %s]", side)
+end
+
+local function set_scratch_name(buf, name)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  local old_name = vim.api.nvim_buf_get_name(buf)
+  local candidate = name
+  local ok = false
+  for n = 1, 50 do
+    if n > 1 then
+      candidate = string.format("%s [%d]", name, n)
+    end
+    if old_name == vim.fn.fnamemodify(candidate, ":p") or old_name == candidate then
+      return
+    end
+    ok = pcall(vim.api.nvim_buf_set_name, buf, candidate)
+    if ok then
+      break
+    end
+  end
+  if not ok or old_name == "" then
+    return
+  end
+  -- Renaming leaves an unloaded, unlisted alternate buffer under the old name.
+  for _, other in ipairs(vim.api.nvim_list_bufs()) do
+    if other ~= buf and not vim.api.nvim_buf_is_loaded(other)
+      and vim.api.nvim_buf_get_name(other) == old_name then
+      pcall(vim.api.nvim_buf_delete, other, { force = true })
+    end
+  end
+end
+
+-- Name the non-editable source panes after their sources. Editable right
+-- panes are the real file buffer and keep their own name.
+function M.name_source_buffers(session)
+  if session.left then
+    set_scratch_name(session.left_buf, source_buffer_name(session.left, "left"))
+  end
+  if session.right and not session.right.editable then
+    set_scratch_name(session.right_buf, source_buffer_name(session.right, "right"))
+  end
+end
+
 local function create_buffers(session)
   -- Create buffers with basic options first (avoid bufhidden=wipe until in windows)
   local left_buf = vim.api.nvim_create_buf(false, true)
@@ -368,6 +450,7 @@ function M.open(session)
   session.tabnr = vim.api.nvim_tabpage_get_number(session.tabpage)
 
   create_buffers(session)
+  M.name_source_buffers(session)
   open_windows(session)
   apply_window_options(session)
   session:resize_layout()

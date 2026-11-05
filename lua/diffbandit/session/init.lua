@@ -1244,6 +1244,7 @@ function Session:replace_sources(sources, opts)
     self:clear_buffer_paint_namespaces(old_right_buf)
     document.cleanup_created_buffer(old_right_editable)
   end
+  session_layout.name_source_buffers(self)
   self.replacing_sources = previous_replacing_sources
   apply_document_model(self, model, not same_document)
   self.current_chunk = opts.chunk_position == "top" and 0 or (view.chunks[1] and 1 or 0)

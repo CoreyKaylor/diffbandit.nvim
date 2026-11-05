@@ -50,6 +50,11 @@ T["open child diff and return"] = function()
   child:keys("<CR>")
   child:settle()
   local child_state, child_path = child:state("DBWriteFolderState", dir, "folder-child")
+  -- Scratch source panes carry the full source path (shown by <C-g>), not "[Scratch]".
+  local pane_names = child:lua([[
+    local s = require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
+    return { vim.api.nvim_buf_get_name(s.left_buf), vim.api.nvim_buf_get_name(s.right_buf) }
+  ]])
   child:keys("q")
   child:settle()
   local ret, return_path = child:state("DBWriteFolderState", dir, "folder-return")
@@ -60,6 +65,9 @@ T["open child diff and return"] = function()
   expect(initial, "surface=folder", "initial state was not a folder session", initial_path)
   expect(child_state, "surface=file", "opening a row did not create a child file diff", child_path)
   expect(child_state, "has_return_to=true", "child file diff did not carry return metadata", child_path)
+  local real_left = vim.uv.fs_realpath(left .. "/diff.txt")
+  local real_right = vim.uv.fs_realpath(right .. "/diff.txt")
+  MiniTest.expect.equality(pane_names, { real_left .. " (left)", real_right .. " (right)" })
   expect(ret, "surface=folder", "q from child diff did not return to folder session", return_path)
   expect(ret, "selected_rel=diff.txt", "return did not restore selected folder row", return_path)
 end
