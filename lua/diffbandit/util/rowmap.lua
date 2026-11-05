@@ -307,8 +307,27 @@ function M.get(win, opts)
     return entry.map
   end
   local map = measure(win, buf)
-  by_win[win] = { key = key, map = map, buf = buf }
+  local wrap = vim.api.nvim_get_option_value("wrap", { win = win })
+  by_win[win] = { key = key, map = map, buf = buf, width = wrap and text_area_width(win) or nil }
   return map
+end
+
+--- After a paint: true when a wrapped window's text area is no longer the
+--- width its map was measured at. The paint's own band signs open a
+--- 'signcolumn=auto' column, and Neovim only sizes that column when it
+--- redraws the window, so it is validated here first; without that the
+--- pane re-wraps on the next redraw under gutters already painted.
+function M.width_changed_by_paint(win)
+  local entry = win and by_win[win]
+  if not (entry and entry.width and vim.api.nvim_win_is_valid(win))
+      or vim.api.nvim_win_get_buf(win) ~= entry.buf then
+    return false
+  end
+  local signcolumn = vim.api.nvim_get_option_value("signcolumn", { win = win })
+  if signcolumn:sub(1, 4) == "auto" and vim.api.nvim__redraw then
+    pcall(vim.api.nvim__redraw, { win = win, valid = true })
+  end
+  return text_area_width(win) ~= entry.width
 end
 
 --- Drop the window's cached map (e.g. an extmark changed a line's height).

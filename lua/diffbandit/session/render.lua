@@ -1783,6 +1783,12 @@ function M.render(session)
   -- the previous frame so neither clear loses the prior range mid-render.
   session.last_paint_clip = ctx.paint_clip
 
+  -- The paint itself can re-wrap a source pane (band signs open its
+  -- 'signcolumn=auto' column), leaving these gutters a row space behind.
+  if rowmap.width_changed_by_paint(session.left_win) or rowmap.width_changed_by_paint(session.right_win) then
+    session:row_space_shifted()
+  end
+
   if not viewport_only then
     session:render_status_headers()
     -- Full render paints overviews immediately; cancel any armed CursorMoved debounce.

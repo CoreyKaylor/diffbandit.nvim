@@ -351,7 +351,16 @@ function Merge:winbar_spec()
   }
 end
 
+-- Window options and widths. Options are per (window, buffer) and are the
+-- user's to change afterwards (':set wrap' in a pane), so they are applied
+-- only when windows open or buffers swap in; re-renders and foreign splits
+-- re-run layout_windows alone.
 function Merge:configure_windows()
+  self:apply_window_options()
+  self:layout_windows()
+end
+
+function Merge:apply_window_options()
   for _, win in ipairs({ self.local_win, self.result_win, self.remote_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
       local is_result = win == self.result_win
@@ -376,6 +385,20 @@ function Merge:configure_windows()
   for _, win in ipairs({ self.local_header_win, self.result_header_win, self.remote_header_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
       set_win_options(win, layout.win_opts.header())
+    end
+  end
+  if self.panel then
+    for _, win in ipairs({ self.panel.nav_win, self.panel.commit_win }) do
+      if win and vim.api.nvim_win_is_valid(win) then
+        set_win_options(win, layout.win_opts.panel())
+      end
+    end
+  end
+end
+
+function Merge:layout_windows()
+  for _, win in ipairs({ self.local_header_win, self.result_header_win, self.remote_header_win }) do
+    if win and vim.api.nvim_win_is_valid(win) then
       set_win_height(win, 1)
     end
   end
@@ -414,7 +437,6 @@ function Merge:configure_windows()
     local panel_config = config_mod.section(self.config, "git", "panel")
     for _, win in ipairs({ self.panel.nav_win, self.panel.commit_win }) do
       if win and vim.api.nvim_win_is_valid(win) then
-        set_win_options(win, layout.win_opts.panel())
         set_win_width(win, panel_config.width or 42)
       end
     end
@@ -618,7 +640,7 @@ function Merge:setup_autocmds()
       ui.schedule_once(self, "foreign_layout_scheduled", function()
         if vim.api.nvim_get_current_tabpage() == self.tabpage
             and layout.foreign_layout_key(self.tabpage, self:owned_windows()) ~= self.foreign_layout_key then
-          self:configure_windows()
+          self:layout_windows()
         end
       end, 0)
       self:request_render()
@@ -1296,7 +1318,10 @@ function Merge:render(opts)
 
   if can_reuse_pairs then
     local view_key = self:render_view_key(result_tick)
-    if self.rendered_view_key ~= view_key or opts.force_viewport == true then
+    -- row_space_dirty: a pair's paint re-wrapped a pane (render_host
+    -- row_space_shifted); the key already holds the re-measured maps.
+    if self.rendered_view_key ~= view_key or opts.force_viewport == true or self.row_space_dirty then
+      self.row_space_dirty = false
       self.result_lines = next_result_lines
       self:rerender_pair_viewports()
       self:render_merge_overlays()
@@ -1306,6 +1331,7 @@ function Merge:render(opts)
     return true
   end
 
+  self.row_space_dirty = false
   self.result_lines = next_result_lines
   self.number_width = math.max(3, ui.digits_of(math.max(#self.local_lines, #self.result_lines, #self.remote_lines)))
   local left_pair, left_err = diff_pair.build(self.local_lines, self.result_lines, self.config)
@@ -1397,7 +1423,7 @@ function Merge:render(opts)
   if result_remote then
     result_remote.connector_core_width = self.connector_width
   end
-  self:configure_windows()
+  self:layout_windows()
 
   -- Pair construction already cleared the host latch (merge_host assigned
   -- before invalidate). Belt-and-suspenders for any residual timer gen.

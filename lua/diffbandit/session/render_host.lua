@@ -502,6 +502,18 @@ function M.rerender_for_viewport(self)
   self.rendering_viewport = false
 end
 
+--- A paint re-wrapped a source pane (see session/render). Merge pairs repaint
+--- through their host; a session re-measures and repaints itself.
+function M.row_space_shifted(self)
+  local host = self.merge_host
+  if host then
+    host.row_space_dirty = true
+    host:request_render()
+  elseif type(self.refresh_row_maps) == "function" then
+    self:refresh_row_maps()
+  end
+end
+
 --- Install shared render methods onto a host class table (e.g. Session).
 function M.install(class)
   for name, fn in pairs(M) do

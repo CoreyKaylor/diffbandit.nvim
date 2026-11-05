@@ -4,6 +4,7 @@
 -- must show exactly the line that starts there, and stay blank on wrapped
 -- continuation rows.
 local child_mod = require("helpers.child")
+local state = require("helpers.state")
 local files = child_mod.files
 
 local child = child_mod.new({ lines = 30, columns = 120 })
@@ -139,6 +140,70 @@ T["resizing re-wraps the gutters"] = function()
   check(dir, "wider")
   child:lua("vim.o.columns = 100")
   check(dir, "narrower")
+end
+
+-- Merge panes: an edit in the result rebuilds both pairs, and that rebuild
+-- must not reapply the panes' default window options over the user's
+-- ':set wrap' (issue #26 follow-up: 'o' in the result turned wrap off).
+T["merge edits keep the user's wrap"] = function()
+  local dir = child_mod.case_dir("wrap-merge-edit")
+  local repo = state.init_repo(dir .. "/repo")
+  local long = string.rep("wrapped words ", 12)
+  state.write(repo .. "/conflict.txt", { "one " .. long, "base", "three " .. long })
+  state.git(repo, { "add", "conflict.txt" })
+  state.git(repo, { "commit", "-m", "baseline" })
+  local main = vim.trim(state.git(repo, { "rev-parse", "--abbrev-ref", "HEAD" }))
+  state.git(repo, { "checkout", "-b", "feature" })
+  state.write(repo .. "/conflict.txt", { "one " .. long, "remote", "three " .. long })
+  state.git(repo, { "commit", "-am", "remote change" })
+  state.git(repo, { "checkout", main })
+  state.write(repo .. "/conflict.txt", { "one " .. long, "local", "three " .. long })
+  state.git(repo, { "commit", "-am", "local change" })
+  state.git(repo, { "merge", "feature" }, { allow_fail = true })
+
+  child:start({ cwd = repo })
+  child:cmd("DiffBanditMerge conflict.txt")
+  child:settle()
+  local function wraps()
+    return child:lua([=[
+      local m = require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
+      local out = {}
+      for _, key in ipairs({ "local_win", "result_win", "remote_win" }) do
+        out[#out + 1] = vim.wo[m[key]].wrap
+      end
+      return out
+    ]=])
+  end
+  child:lua([=[
+    local m = require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
+    for _, key in ipairs({ "local_win", "result_win", "remote_win" }) do
+      vim.wo[m[key]].wrap = true
+    end
+    vim.api.nvim_set_current_win(m.result_win)
+    vim.api.nvim_win_set_cursor(m.result_win, { 1, 0 })
+  ]=])
+  child:settle()
+  child:keys("o", "inserted", "<Esc>")
+  child:settle()
+  local after = wraps()
+  if not (after[1] and after[2] and after[3]) then
+    error("wrap reset by a result edit: " .. vim.inspect(after), 0)
+  end
+  -- The result's number gutter follows the wrapped rows: line 1 wraps, so
+  -- the inserted line 2 starts right below its last row. (Its band signs
+  -- must not re-wrap the pane after the gutter is painted.)
+  local rows = child:lua([=[
+    local m = require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
+    local lines = vim.api.nvim_buf_get_lines(m.result_left_num_buf, 0, -1, false)
+    return { lines = lines, height = vim.api.nvim_win_text_height(m.result_win, { start_row = 0, end_row = 0 }).all }
+  ]=])
+  if rows.height < 2 then
+    error("fixture line 1 should wrap in the result pane", 0)
+  end
+  local second = rows.lines[rows.height + 1] or ""
+  if not second:match("2") or rows.lines[2]:match("%d") then
+    error("result gutter not in row space after edit: " .. vim.inspect(rows), 0)
+  end
 end
 
 return T

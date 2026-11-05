@@ -243,6 +243,23 @@ function Session:owned_windows()
   return wins
 end
 
+-- Wrapped line heights follow the source panes' width and wrap-related
+-- options ('wrap', 'linebreak', 'tabstop', …). When either row map
+-- changes, the gutters and routes must be rebuilt in the new row space.
+function Session:refresh_row_maps()
+  ui.schedule_once(self, "row_map_refresh_scheduled", function()
+    if self.disposed then
+      return
+    end
+    local before = self.row_map_signature
+    self:row_maps({ verify = true })
+    if self.row_map_signature ~= before then
+      self:render()
+      self:sync_gutter_viewports()
+    end
+  end, 0)
+end
+
 function Session:render_overviews()
   if not self.overview_enabled then
     return
@@ -424,27 +441,11 @@ function Session:setup_autocmds()
     self:render()
   end)
 
-  -- Wrapped line heights follow the source panes' width and wrap-related
-  -- options ('wrap', 'linebreak', 'tabstop', …). When either row map
-  -- changes, the gutters and routes must be rebuilt in the new row space.
-  local function refresh_row_maps()
-    ui.schedule_once(self, "row_map_refresh_scheduled", function()
-      if self.disposed then
-        return
-      end
-      local before = self.row_map_signature
-      self:row_maps({ verify = true })
-      if self.row_map_signature ~= before then
-        self:render()
-        self:sync_gutter_viewports()
-      end
-    end, 0)
-  end
   local function on_height_change()
     if self.disposed or self.rendering_viewport then
       return
     end
-    refresh_row_maps()
+    self:refresh_row_maps()
   end
   -- A foreign split (a file tree, quickfix, …) opening or closing in this
   -- tabpage, or the editor resizing, hands columns to whichever DiffBandit
