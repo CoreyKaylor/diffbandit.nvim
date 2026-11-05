@@ -1,4 +1,10 @@
-local diffbandit = require("diffbandit")
+-- Commands load the plugin on first use: requiring it here would put every
+-- module on the startup path of every nvim, DiffBandit used or not.
+local diffbandit = setmetatable({}, {
+  __index = function(_, key)
+    return require("diffbandit")[key]
+  end,
+})
 local nvim = require("diffbandit.util.nvim")
 
 local function report(result, err)

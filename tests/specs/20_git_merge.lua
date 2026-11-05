@@ -135,11 +135,21 @@ do
 end
 
 do
-  local entries = git_mod._private.parse_name_status("M\0space name.txt\0R100\0old path.txt\0new path.txt\0")
-  assert_eq(#entries, 2, "NUL name-status parser should read modified and renamed entries")
+  local entries = git_mod._private.parse_raw(table.concat({
+    ":100644 100644 1111111 0000000 M", "space name.txt",
+    ":100644 100644 2222222 2222222 R100", "old path.txt", "new path.txt",
+    ":100644 000000 3333333 0000000 D", "gone.txt",
+    ":100644 100755 4444444 0000000 M", "mode.sh",
+  }, "\0") .. "\0")
+  assert_eq(#entries, 4, "NUL raw parser should read modified, renamed, and deleted entries")
   assert_eq(entries[1].path, "space name.txt", "Parser should preserve spaces in paths")
+  assert_eq(entries[1].raw_status, "M", "Parser should keep the status letter")
   assert_eq(entries[2].old_path, "old path.txt", "Parser should capture rename old path")
   assert_eq(entries[2].path, "new path.txt", "Parser should capture rename new path")
+  assert_eq(entries[2].raw_status, "R100", "Parser should keep the rename score")
+  assert_eq(entries[1].modes.left .. " " .. entries[1].modes.right, "100644 100644", "Raw modes ride along")
+  assert_eq(entries[3].modes, nil, "A side the diff cannot see (000000) keeps the lazy mode lookup")
+  assert_eq(entries[4].modes.right, "100755", "Mode changes come from the raw listing")
 end
 
 do
@@ -2590,4 +2600,65 @@ do
   rs = regions()
   merge_model_mod.track_result_edit(rs, 8, 2, 0) -- delete rows 8-9 (the whole region)
   assert_eq(spans(rs), "2+1 5+0 7+0", "deleting a whole region leaves an after-row anchor")
+end
+
+-- Performance paths: filesystem root discovery, concurrent listing with the
+-- stage snapshot, and blob batching must answer exactly what git answers.
+do
+  local process_mod = require("diffbandit.util.process")
+  local results = process_mod.run_many({ { "git", "--version" }, false, { "git", "no-such-command-xyz" } })
+  assert_eq(type(results[1][1]), "string", "run_many returns each command's output in order")
+  assert_eq(results[2][1], nil, "a false slot yields an empty result")
+  assert_eq(results[3][1], nil, "a failing command has no output")
+  assert_eq(type(results[3][2]), "string", "a failing command reports its error")
+
+  local repo = make_git_repo()
+  write_repo_file(repo, "a.txt", { "one" })
+  write_repo_file(repo, "sub/b.txt", { "two" })
+  commit_baseline(repo)
+  local git_root = vim.trim(git_test_command({ "rev-parse", "--show-toplevel" }, repo .. "/sub"))
+  assert_eq(git_mod.find_root(repo .. "/sub"), git_root, "filesystem discovery finds git's toplevel from a subdirectory")
+  assert_eq(git_mod.find_root(repo .. "/sub/b.txt"), git_root, "discovery starts from a file's directory")
+  local worktree = vim.fn.tempname()
+  git_test_command({ "worktree", "add", "-q", worktree }, repo)
+  local worktree_root = vim.trim(git_test_command({ "rev-parse", "--show-toplevel" }, worktree))
+  assert_eq(git_mod._private.discover_root(worktree), worktree_root, "a linked worktree's .git file marks its root")
+  local outside = vim.fn.tempname()
+  vim.fn.mkdir(outside, "p")
+  local saved_ceiling = vim.env.GIT_CEILING_DIRECTORIES
+  vim.env.GIT_CEILING_DIRECTORIES = vim.fn.fnamemodify(outside, ":h")
+  assert_eq(git_mod._private.discover_root(outside), nil, "discovery defers to git when the environment redirects it")
+  assert_eq(git_mod.find_root(outside), nil, "a directory outside any repository has no root")
+  vim.env.GIT_CEILING_DIRECTORIES = saved_ceiling
+
+  write_repo_file(repo, "a.txt", { "one", "staged" })
+  git_test_command({ "add", "a.txt" }, repo)
+  write_repo_file(repo, "a.txt", { "one", "staged", "unstaged" })
+  write_repo_file(repo, "sub/b.txt", { "two", "unstaged" })
+  write_repo_file(repo, "new.txt", { "new" })
+  local queue = assert(git_mod.queue({ root = repo, mode = "all" }, {}))
+  assert_ne(queue.stage_snapshot, nil, "a working-tree queue carries a stage snapshot")
+  local from_snapshot = git_mod.queue_stage_states(queue)
+  local from_git = git_mod.file_stage_states(queue.root, queue.entries, queue.opts)
+  assert_eq(table.concat(from_snapshot, ","), table.concat(from_git, ","), "snapshot stage states match git's")
+  assert_eq(table.concat(from_git, ","), "partial,unstaged,unstaged", "a.txt partial, new.txt and sub/b.txt unstaged")
+  assert_eq(git_mod.snapshot_has_staged_changes(queue, "a.txt"), true, "the snapshot knows a.txt has staged changes")
+  assert_eq(git_mod.snapshot_has_staged_changes(queue, "sub/b.txt"), false, "the snapshot knows sub/b.txt has none")
+
+  -- A mutating git command retires the snapshot even within the same tick.
+  git_mod.stage_file(repo, { path = "sub/b.txt" })
+  assert_eq(git_mod.snapshot_has_staged_changes(queue, "sub/b.txt"), nil, "a mutation invalidates the snapshot")
+  assert_eq(git_mod.queue_stage_states(queue)[3], "staged", "after invalidation stage states come from git")
+
+  -- Loading a file batches its HEAD and index blobs for the stage markers.
+  queue = assert(git_mod.queue({ root = repo, mode = "all" }, {}))
+  local loaded = assert(queue.load(1))
+  local blobs = loaded.left.git_stage_blobs
+  assert_ne(blobs, nil, "a modified file's sources carry its HEAD and index blobs")
+  assert_eq(blobs.head, "one\n", "HEAD blob")
+  assert_eq(blobs.index, "one\nstaged\n", "index blob")
+  assert_eq(blobs.generation, git_mod.generation(), "blobs are current until the next mutation")
+  assert_eq(loaded.left.lines[1], "one", "the left side reads HEAD from the batched blob")
+  local untracked_loaded = assert(queue.load(2))
+  assert_eq(untracked_loaded.left.git_stage_blobs, nil, "untracked files have no stage markers to compare")
 end

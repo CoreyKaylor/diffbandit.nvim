@@ -172,6 +172,11 @@ function Session.start(sources, config, opts)
   self:render()
   self:setup_autocmds()
   self:setup_keymaps()
+  if self.file_queue and #(self.file_queue.entries or {}) > 1 then
+    -- Warm the next file once the first paint (and the editor's own
+    -- FileType/LSP work) has had its turn, so the first ]f is instant too.
+    queue_host.prefetch_neighbors(self, self.file_queue_index, 120)
+  end
 
   if self.current_chunk > 0 then
     vim.schedule(function()

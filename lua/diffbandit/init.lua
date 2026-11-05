@@ -8,9 +8,18 @@ local source_mod = require("diffbandit.util.source")
 local text = require("diffbandit.util.text")
 local document = require("diffbandit.util.document")
 local CommitPanel = require("diffbandit.panel.commit_host")
-local Merge = require("diffbandit.merge")
-local Folder = require("diffbandit.folder")
-local git_workflows = require("diffbandit.git.workflows")
+
+-- Views most launches never open load on first use.
+local function lazy(name)
+  return setmetatable({}, {
+    __index = function(_, key)
+      return require(name)[key]
+    end,
+  })
+end
+local Merge = lazy("diffbandit.merge")
+local Folder = lazy("diffbandit.folder")
+local git_workflows = lazy("diffbandit.git.workflows")
 local queue_host = require("diffbandit.host.queue")
 local config_mod = require("diffbandit.config")
 

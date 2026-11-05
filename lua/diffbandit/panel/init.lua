@@ -348,7 +348,7 @@ function M.refresh_stage_states(session)
     return panel.stage_states
   end
   local queue = session.file_queue or {}
-  panel.stage_states = git.file_stage_states(queue.root, queue.entries, queue.opts or {})
+  panel.stage_states = git.queue_stage_states(queue)
   return panel.stage_states
 end
 

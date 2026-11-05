@@ -158,9 +158,14 @@ local function hunk_matches_staged(visible, staged)
     or ranges_overlap(visible.right.start, visible.right.count, staged.right.start, staged.right.count)
 end
 
-local function staged_hunks_for_session(session, ctx)
-  local head = git_mod.read_head(ctx.root, ctx.path, ctx.opts.base or "HEAD") or ""
-  local index = git_mod.read_index(ctx.root, ctx.path) or ""
+local function staged_hunks_for_session(session, ctx, blobs)
+  local head, index
+  if blobs then
+    head, index = blobs.head, blobs.index
+  else
+    local read = git_mod.read_blobs(ctx.root, { (ctx.opts.base or "HEAD") .. ":" .. ctx.path, ":" .. ctx.path })
+    head, index = read[1][1] or "", read[2][1] or ""
+  end
   local staged_hunks = diff_mod.compute_hunks(head, index, session.config.diff or {})
   if type(staged_hunks) ~= "table" then
     return {}
@@ -505,12 +510,34 @@ function M.staged_chunk_states(session)
     return states
   end
 
-  local has_staged = git_mod.has_staged_changes(ctx.root, ctx.path)
-  if not has_staged then
+  local has_staged = git_mod.snapshot_has_staged_changes(ctx.queue, ctx.path)
+  if has_staged == false then
+    return states
+  end
+  local base = ctx.opts.base or "HEAD"
+  -- Blobs read with the file's sources, while no git command has changed
+  -- the index since.
+  local blobs = session.left and session.left.git_stage_blobs
+  if blobs and (blobs.generation ~= git_mod.generation() or base ~= "HEAD") then
+    blobs = nil
+  end
+  if blobs then
+    if blobs.head == blobs.index then
+      return states
+    end
+  elseif has_staged == nil and base == "HEAD" then
+    -- Read both sides at once; an index equal to HEAD has nothing staged,
+    -- which spares the separate `diff --cached` probe.
+    local read = git_mod.read_blobs(ctx.root, { "HEAD:" .. ctx.path, ":" .. ctx.path })
+    blobs = { head = read[1][1] or "", index = read[2][1] or "" }
+    if blobs.head == blobs.index then
+      return states
+    end
+  elseif has_staged == nil and not git_mod.has_staged_changes(ctx.root, ctx.path) then
     return states
   end
 
-  local staged_hunks = staged_hunks_for_session(session, ctx)
+  local staged_hunks = staged_hunks_for_session(session, ctx, blobs)
   if #staged_hunks == 0 then
     return states
   end

@@ -164,3 +164,25 @@ do
     "merge_base rev queue swaps the base for the merge base")
   assert_eq(queue.opts.merge_base, nil, "merge_base flag is consumed once resolved")
 end
+
+-- plugin/diffbandit.lua only defines commands: loading the plugin waits for
+-- the first command, so it costs nothing on every other nvim start.
+do
+  local plugin_root = vim.fn.fnamemodify(vim.fn.getcwd(), ":p"):gsub("/$", "")
+  local cmd = { vim.v.progpath, "--headless", "--clean" }
+  for _, command in ipairs({
+    "lua vim.opt.rtp:prepend(" .. vim.inspect(plugin_root) .. ")",
+    "runtime plugin/diffbandit.lua",
+    "lua io.stdout:write(package.loaded['diffbandit'] and 'eager' or 'lazy', ' ')",
+    "lua io.stdout:write(vim.fn.exists(':DiffBanditGit') == 2 and 'commands' or 'missing', ' ')",
+    "silent! DiffBanditClose",
+    "lua io.stdout:write(package.loaded['diffbandit'] and 'loaded' or 'unloaded')",
+    "qall!",
+  }) do
+    cmd[#cmd + 1] = "-c"
+    cmd[#cmd + 1] = command
+  end
+  local result = vim.system(cmd, { text = true }):wait(10000)
+  assert_eq(vim.trim(result.stdout or ""), "lazy commands loaded",
+    "the plugin file defines commands without requiring diffbandit; the first command loads it")
+end

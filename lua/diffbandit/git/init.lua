@@ -5,7 +5,31 @@ local git_sources = require("diffbandit.git.sources")
 
 local M = {}
 
+-- Subcommands that never change the index, refs, or worktree. Every other
+-- command bumps `generation`, which invalidates stage snapshots taken before
+-- it (see take_stage_snapshot).
+local READ_ONLY = {
+  ["rev-parse"] = true,
+  diff = true,
+  ["ls-files"] = true,
+  ["ls-tree"] = true,
+  show = true,
+  log = true,
+  ["for-each-ref"] = true,
+  ["merge-base"] = true,
+  ["name-rev"] = true,
+  ["cat-file"] = true,
+}
+local generation = 0
+
+local function invalidate_snapshots()
+  generation = generation + 1
+end
+
 local function git_cmd(root, args)
+  if not READ_ONLY[args[1]] then
+    invalidate_snapshots()
+  end
   local cmd = { "git" }
   if root and root ~= "" then
     cmd[#cmd + 1] = "-C"
@@ -121,8 +145,39 @@ local function path_dir(path)
   return vim.fn.fnamemodify(expanded, ":h")
 end
 
+-- The work tree containing dir, found the way git discovers it: the nearest
+-- ancestor holding a .git directory (with a HEAD) or a .git file (linked
+-- worktrees, submodules). Nil when the environment redirects discovery or
+-- nothing is found, so find_root asks git.
+local function discover_root(dir)
+  for _, var in ipairs({ "GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES" }) do
+    if (vim.env[var] or "") ~= "" then
+      return nil
+    end
+  end
+  local uv = vim.uv or vim.loop
+  local current = dir:gsub("/+$", "")
+  while current ~= "" do
+    local stat = uv.fs_stat(current .. "/.git")
+    if stat then
+      if stat.type == "file" or (stat.type == "directory" and uv.fs_stat(current .. "/.git/HEAD")) then
+        return uv.fs_realpath(current)
+      end
+      return nil
+    end
+    current = current:match("^(.*)/[^/]*$") or ""
+  end
+  return nil
+end
+
+-- A process spawn is most of the cost of opening a view, so the root comes
+-- from the filesystem when it can; git answers the unusual cases.
 function M.find_root(start)
   local dir = path_dir(start)
+  local discovered = discover_root(dir)
+  if discovered then
+    return discovered, nil
+  end
   local lines, err = git_lines(dir, { "rev-parse", "--show-toplevel" })
   if not lines or not lines[1] or lines[1] == "" then
     return nil, err ~= "" and err or "not inside a git repository"
@@ -168,7 +223,9 @@ end
 
 local function diff_args(opts)
   local mode = opts.mode or "unstaged"
-  local args = { "diff", "--name-status", "-z", "--no-ext-diff" }
+  -- --raw costs the same as --name-status and also carries both sides'
+  -- modes, which saves classify_entry three git calls per file.
+  local args = { "diff", "--raw", "-z", "--no-ext-diff" }
   if opts.find_renames ~= false then
     args[#args + 1] = "-M"
   end
@@ -192,47 +249,53 @@ local function diff_args(opts)
   return args, nil
 end
 
-local function parse_name_status(output)
+-- `git diff --raw -z`: ":<src mode> <dst mode> <src oid> <dst oid> <status>"
+-- then one path, or two (old, new) for renames and copies. A 000000 mode is
+-- a side the diff cannot see (absent, or not hashed yet); those entries keep
+-- the lazy per-file mode lookup.
+local function parse_raw(output)
   local tokens = split_nul(output)
   local entries = {}
   local i = 1
   while i <= #tokens do
-    local status = tokens[i]
-    local code = status and status:sub(1, 1) or ""
-    if code == "R" or code == "C" then
-      local old_path = tokens[i + 1]
-      local new_path = tokens[i + 2]
-      if old_path and new_path then
-        entries[#entries + 1] = {
-          status = code,
-          raw_status = status,
-          path = normalize_path(new_path),
-          old_path = normalize_path(old_path),
-        }
-      end
-      i = i + 3
+    local src_mode, dst_mode, status = tokens[i]:match("^:(%d+) (%d+) %x+ %x+ (%u%d*)$")
+    if not status then
+      i = i + 1
     else
-      local path = tokens[i + 1]
-      if path then
-        entries[#entries + 1] = {
-          status = code,
-          raw_status = status,
-          path = normalize_path(path),
-        }
+      local code = status:sub(1, 1)
+      local entry
+      if code == "R" or code == "C" then
+        local old_path, new_path = tokens[i + 1], tokens[i + 2]
+        if old_path and new_path then
+          entry = { status = code, raw_status = status, path = normalize_path(new_path), old_path = normalize_path(old_path) }
+        end
+        i = i + 3
+      else
+        local path = tokens[i + 1]
+        if path then
+          entry = { status = code, raw_status = status, path = normalize_path(path) }
+        end
+        i = i + 2
       end
-      i = i + 2
+      if entry then
+        if src_mode ~= "000000" and dst_mode ~= "000000" then
+          entry.modes = { left = src_mode, right = dst_mode }
+          entry.raw_modes = true
+        end
+        entries[#entries + 1] = entry
+      end
     end
   end
   return entries
 end
 
-local function list_untracked(root, pathspecs)
+local function untracked_args(pathspecs)
   local args = { "ls-files", "--others", "--exclude-standard", "-z" }
   append_pathspecs(args, pathspecs)
-  local output, err = git_output(root, args)
-  if not output then
-    return nil, err
-  end
+  return args
+end
+
+local function parse_untracked(output)
   local entries = {}
   for _, path in ipairs(split_nul(output)) do
     entries[#entries + 1] = {
@@ -242,16 +305,24 @@ local function list_untracked(root, pathspecs)
       untracked = true,
     }
   end
-  return entries, nil
+  return entries
 end
 
-local function list_unmerged(root, pathspecs)
-  local args = { "ls-files", "-u", "-z" }
-  append_pathspecs(args, pathspecs)
-  local output, err = git_output(root, args)
+local function list_untracked(root, pathspecs)
+  local output, err = git_output(root, untracked_args(pathspecs))
   if not output then
     return nil, err
   end
+  return parse_untracked(output), nil
+end
+
+local function unmerged_args(pathspecs)
+  local args = { "ls-files", "-u", "-z" }
+  append_pathspecs(args, pathspecs)
+  return args
+end
+
+local function parse_unmerged(output)
   local seen = {}
   local entries = {}
   for _, token in ipairs(split_nul(output)) do
@@ -266,37 +337,128 @@ local function list_unmerged(root, pathspecs)
       }
     end
   end
-  return entries, nil
+  return entries
 end
 
+local function list_unmerged(root, pathspecs)
+  local output, err = git_output(root, unmerged_args(pathspecs))
+  if not output then
+    return nil, err
+  end
+  return parse_unmerged(output), nil
+end
+
+local function path_set_from_nul(output)
+  local set = {}
+  for _, path in ipairs(split_nul(output)) do
+    set[normalize_path(path)] = true
+  end
+  return set
+end
+
+local function stage_base_from_opts(opts)
+  if type(opts) == "table" then
+    return opts.stage_base
+  elseif type(opts) == "string" then
+    return opts
+  end
+  return nil
+end
+
+-- --no-renames lists both sides of a rename, which matches what per-path
+-- `diff --cached -- <path>` checks report.
+local function staged_set_args(stage_base)
+  local args = { "diff", "--cached", "--name-only", "-z", "--no-ext-diff", "--no-renames" }
+  if type(stage_base) == "string" and stage_base ~= "" then
+    args[#args + 1] = stage_base
+  end
+  append_pathspecs(args, {})
+  return args
+end
+
+local function worktree_set_args()
+  return { "diff", "--name-only", "-z", "--no-ext-diff", "--" }
+end
+
+-- Lists the queue's entries. Every git call this needs (the diff, untracked
+-- and unmerged listings, the unborn-HEAD probe, and the stage snapshot that
+-- the panel and stage markers read) runs concurrently.
 local function list_entries(root, opts)
+  local probe_head = opts.mode == "all" and (opts.base == nil or opts.base == "HEAD")
   local args, arg_err = diff_args(opts)
   if not args then
     return nil, arg_err
   end
+  local want_untracked = opts.include_untracked ~= false and (opts.mode == "unstaged" or opts.mode == "all")
+  local pathspecs = opts.pathspecs or {}
+  local want_snapshot = opts.mode ~= "rev" and opts.read_only ~= true
+  -- The snapshot's untracked set is repository-wide; reuse the listing when
+  -- it is too.
+  local snapshot_untracked = want_snapshot and not (want_untracked and #pathspecs == 0)
+  local snapshot_generation = generation
+  local results = process.run_many({
+    git_cmd(root, args),
+    want_untracked and git_cmd(root, untracked_args(pathspecs)) or false,
+    git_cmd(root, unmerged_args(pathspecs)),
+    probe_head and git_cmd(root, { "rev-parse", "--verify", "HEAD" }) or false,
+    want_snapshot and git_cmd(root, staged_set_args(stage_base_from_opts(opts))) or false,
+    want_snapshot and git_cmd(root, worktree_set_args()) or false,
+    snapshot_untracked and git_cmd(root, untracked_args({})) or false,
+  })
 
-  local output, err = git_output(root, args)
+  local output, err = results[1][1], results[1][2]
+  if probe_head and results[4][2] then
+    -- Unborn HEAD: compare against the empty tree instead.
+    opts.base = empty_tree
+    opts.unborn_head = true
+    args = diff_args(opts)
+    output, err = git_output(root, args)
+  end
   if not output then
     return nil, err
   end
-  local entries = parse_name_status(output)
+  local entries = parse_raw(output)
 
-  if opts.include_untracked ~= false and (opts.mode == "unstaged" or opts.mode == "all") then
-    local untracked, untracked_err = list_untracked(root, opts.pathspecs)
-    if not untracked then
-      return nil, untracked_err
+  local untracked = {}
+  if want_untracked then
+    if not results[2][1] then
+      return nil, results[2][2]
     end
+    untracked = parse_untracked(results[2][1])
     for _, entry in ipairs(untracked) do
       entries[#entries + 1] = entry
     end
   end
 
-  local unmerged, unmerged_err = list_unmerged(root, opts.pathspecs)
-  if not unmerged then
-    return nil, unmerged_err
+  if not results[3][1] then
+    return nil, results[3][2]
   end
-  for _, entry in ipairs(unmerged) do
+  for _, entry in ipairs(parse_unmerged(results[3][1])) do
     entries[#entries + 1] = entry
+  end
+
+  local snapshot
+  if want_snapshot and results[5][1] and results[6][1] then
+    local worktree = path_set_from_nul(results[6][1])
+    local untracked_ok = true
+    if snapshot_untracked then
+      if results[7][1] then
+        untracked = parse_untracked(results[7][1])
+      else
+        untracked_ok = false
+      end
+    end
+    for _, entry in ipairs(untracked) do
+      worktree[entry.path] = true
+    end
+    if untracked_ok then
+      snapshot = {
+        generation = snapshot_generation,
+        stage_base = stage_base_from_opts(opts),
+        staged = path_set_from_nul(results[5][1]),
+        worktree = worktree,
+      }
+    end
   end
 
   local by_path = {}
@@ -332,7 +494,7 @@ local function list_entries(root, opts)
   table.sort(entries, function(a, b)
     return (a.path or "") < (b.path or "")
   end)
-  return entries, nil
+  return entries, nil, snapshot
 end
 
 local function abs_path(root, path)
@@ -396,7 +558,14 @@ local function read_worktree_raw(root, path)
   return data, nil
 end
 
+-- Blobs already read for the file being loaded (see sources_for_entry).
+local blob_memo
+
 local function read_blob(root, spec)
+  local hit = blob_memo and blob_memo.root == root and blob_memo.blobs[spec]
+  if hit then
+    return hit[1], hit[2]
+  end
   local output, err = git_output(root, { "show", "--no-ext-diff", spec })
   if not output then
     return nil, err
@@ -476,7 +645,10 @@ local function entry_modes(queue, entry)
   local left_path = entry.old_path or entry.path
   local right_path = entry.path
   local modes = {}
-  if mode == "unstaged" then
+  if entry.untracked then
+    -- Not in the index or any tree: only the worktree side has a mode.
+    modes.right = worktree_mode(root, right_path)
+  elseif mode == "unstaged" then
     local index = index_entry(root, left_path)
     modes.left = index and index.mode or nil
     modes.right = worktree_mode(root, right_path) or modes.left
@@ -581,12 +753,7 @@ function M.queue(opts, config)
     normalized.base = merge_base
     normalized.merge_base = nil
   end
-  if normalized.mode == "all" and (normalized.base == nil or normalized.base == "HEAD") and not has_head(root) then
-    normalized.base = empty_tree
-    normalized.unborn_head = true
-  end
-
-  local entries, entries_err = list_entries(root, normalized)
+  local entries, entries_err, snapshot = list_entries(root, normalized)
   if not entries then
     return nil, entries_err
   end
@@ -613,6 +780,17 @@ function M.queue(opts, config)
     index = 1,
     source_cache = {},
   }
+  if snapshot then
+    queue.stage_snapshot = snapshot
+    -- Valid for the synchronous build that follows (first file, panel
+    -- marks). By the next event-loop turn the user may have saved a file or
+    -- staged from a shell, so later reads go back to git.
+    vim.schedule(function()
+      if queue.stage_snapshot == snapshot then
+        queue.stage_snapshot = nil
+      end
+    end)
+  end
 
   function queue.load(index)
     local entry = queue.entries[index]
@@ -872,13 +1050,46 @@ function M.checkout_branch(root, branch, opts)
   return err == nil, err
 end
 
+-- HEAD and index blob specs for a file whose stage markers compare them
+-- (session/actions staged_chunk_states), or nil.
+local function stage_blob_specs(queue, entry)
+  local opts = queue.opts or {}
+  local mode = opts.mode or "unstaged"
+  if (mode ~= "all" and mode ~= "unstaged") or (opts.base or "HEAD") ~= "HEAD" then
+    return nil
+  end
+  if entry.untracked or not entry.path or not entry.actions_enabled then
+    return nil
+  end
+  return { "HEAD:" .. entry.path, ":" .. entry.path }
+end
+
+function M.generation()
+  return generation
+end
+
 function M.sources_for_entry(queue, index)
   local entry = queue.entries[index]
   if not entry then
     return nil, "no changed file at queue index " .. tostring(index)
   end
 
-  local left, left_err = source_from_kind(queue, entry, "left")
+  -- Read the blobs the left side and the stage markers need in one
+  -- concurrent batch; the left source then takes its blob from the memo.
+  sources.classify_entry(queue, entry)
+  local specs = stage_blob_specs(queue, entry)
+  local stage_blobs
+  if specs then
+    local read_generation = generation
+    local read = M.read_blobs(queue.root, specs)
+    blob_memo = { root = queue.root, blobs = { [specs[1]] = read[1], [specs[2]] = read[2] } }
+    stage_blobs = { head = read[1][1] or "", index = read[2][1] or "", generation = read_generation }
+  end
+  local ok, left, left_err = pcall(source_from_kind, queue, entry, "left")
+  blob_memo = nil
+  if not ok then
+    error(left, 0)
+  end
   if not left then
     return nil, left_err
   end
@@ -886,6 +1097,7 @@ function M.sources_for_entry(queue, index)
   if not right then
     return nil, right_err
   end
+  left.git_stage_blobs = stage_blobs
 
   if left.git_binary_hex or right.git_binary_hex or left.git_binary_hidden or right.git_binary_hidden then
     entry.content_kind = "binary"
@@ -913,6 +1125,16 @@ end
 
 function M.read_head(root, path, base)
   return read_blob(root, (base or "HEAD") .. ":" .. path)
+end
+
+-- read_blob() for several specs at once, concurrently. Returns a list of
+-- { text, err } in spec order.
+function M.read_blobs(root, specs)
+  local cmds = {}
+  for index, spec in ipairs(specs) do
+    cmds[index] = git_cmd(root, { "show", "--no-ext-diff", spec })
+  end
+  return process.run_many(cmds)
 end
 
 function M.read_conflict_stage(root, path, stage)
@@ -1115,15 +1337,6 @@ function M.has_staged_changes(root, path, base)
   return vim.trim(output) ~= "", nil
 end
 
-local function stage_base_from_opts(opts)
-  if type(opts) == "table" then
-    return opts.stage_base
-  elseif type(opts) == "string" then
-    return opts
-  end
-  return nil
-end
-
 local function has_untracked_file(root, path)
   local output = git_output(root, { "ls-files", "--others", "--exclude-standard", "--", path })
   return output and vim.trim(output) ~= ""
@@ -1132,14 +1345,6 @@ end
 local function has_worktree_changes(root, path)
   local code = git_exit_code(root, { "diff", "--quiet", "--", path })
   return code == 1 or has_untracked_file(root, path)
-end
-
-local function path_set_from_nul(output)
-  local set = {}
-  for _, path in ipairs(split_nul(output)) do
-    set[normalize_path(path)] = true
-  end
-  return set
 end
 
 local function has_entry_path(set, entry)
@@ -1151,33 +1356,45 @@ local function has_entry_path(set, entry)
     or false
 end
 
-local function staged_path_set(root, opts)
-  local args = { "diff", "--cached", "--name-only", "-z", "--no-ext-diff" }
-  local stage_base = stage_base_from_opts(opts)
-  if type(stage_base) == "string" and stage_base ~= "" then
-    args[#args + 1] = stage_base
-  end
-  append_pathspecs(args, {})
-  local output, err = git_output(root, args)
-  if not output then
-    return nil, err
-  end
-  return path_set_from_nul(output), nil
-end
-
-local function worktree_path_set(root)
-  local output, err = git_output(root, { "diff", "--name-only", "-z", "--no-ext-diff", "--" })
-  if not output then
-    return nil, err
-  end
-  local set = path_set_from_nul(output)
-  local untracked = list_untracked(root, {})
-  for _, entry in ipairs(untracked or {}) do
-    if entry.path then
-      set[entry.path] = true
+-- Staged and worktree path sets, read concurrently.
+local function stage_path_sets(root, opts)
+  local results = process.run_many({
+    git_cmd(root, staged_set_args(stage_base_from_opts(opts))),
+    git_cmd(root, worktree_set_args()),
+    git_cmd(root, untracked_args({})),
+  })
+  local staged = results[1][1] and path_set_from_nul(results[1][1]) or nil
+  local worktree = results[2][1] and path_set_from_nul(results[2][1]) or nil
+  if worktree and results[3][1] then
+    for _, entry in ipairs(parse_untracked(results[3][1])) do
+      worktree[entry.path] = true
     end
   end
-  return set, nil
+  return staged, worktree
+end
+
+-- The queue's stage snapshot, when it is still current: taken during this
+-- event-loop turn, with no index- or worktree-changing git command since,
+-- and for the same stage base.
+local function live_stage_snapshot(queue, opts)
+  local snapshot = queue and queue.stage_snapshot
+  if not snapshot or snapshot.generation ~= generation then
+    return nil
+  end
+  if snapshot.stage_base ~= stage_base_from_opts(opts or queue.opts) then
+    return nil
+  end
+  return snapshot
+end
+
+-- has_staged_changes() from the queue's stage snapshot: true/false while
+-- the snapshot is live, nil when only git can tell.
+function M.snapshot_has_staged_changes(queue, path)
+  local snapshot = live_stage_snapshot(queue, {})
+  if snapshot and path then
+    return snapshot.staged[normalize_path(path)] == true
+  end
+  return nil
 end
 
 function M.file_stage_state(root, entry, opts)
@@ -1201,6 +1418,22 @@ function M.file_stage_state(root, entry, opts)
   return "unstaged"
 end
 
+local function states_from_sets(entries, staged_set, worktree_set)
+  local states = {}
+  for index, entry in ipairs(entries or {}) do
+    local staged = has_entry_path(staged_set, entry)
+    local unstaged = has_entry_path(worktree_set, entry)
+    if staged and unstaged then
+      states[index] = "partial"
+    elseif staged then
+      states[index] = "staged"
+    else
+      states[index] = "unstaged"
+    end
+  end
+  return states
+end
+
 function M.file_stage_states(root, entries, opts)
   local states = {}
   if not root then
@@ -1210,27 +1443,25 @@ function M.file_stage_states(root, entries, opts)
     return states
   end
 
-  local staged_set = staged_path_set(root, opts)
-  local worktree_set = worktree_path_set(root)
+  local staged_set, worktree_set = stage_path_sets(root, opts)
   if staged_set and worktree_set then
-    for index, entry in ipairs(entries or {}) do
-      local staged = has_entry_path(staged_set, entry)
-      local unstaged = has_entry_path(worktree_set, entry)
-      if staged and unstaged then
-        states[index] = "partial"
-      elseif staged then
-        states[index] = "staged"
-      else
-        states[index] = "unstaged"
-      end
-    end
-    return states
+    return states_from_sets(entries, staged_set, worktree_set)
   end
 
   for index, entry in ipairs(entries or {}) do
     states[index] = M.file_stage_state(root, entry, opts)
   end
   return states
+end
+
+-- file_stage_states() for a queue, from its stage snapshot while it is live.
+function M.queue_stage_states(queue)
+  queue = queue or {}
+  local snapshot = live_stage_snapshot(queue)
+  if snapshot then
+    return states_from_sets(queue.entries, snapshot.staged, snapshot.worktree)
+  end
+  return M.file_stage_states(queue.root, queue.entries, queue.opts or {})
 end
 
 local function entry_paths(entry)
@@ -1327,6 +1558,7 @@ function M.discard_worktree_file(root, entry)
 end
 
 function M.delete_untracked_file(root, entry)
+  invalidate_snapshots()
   if not root or not entry or not entry.path then
     return false, "no untracked file entry to delete"
   end
@@ -1354,6 +1586,7 @@ function M.delete_untracked_file(root, entry)
 end
 
 function M.append_gitignore(root, pattern)
+  invalidate_snapshots()
   if not root or root == "" then
     return false, "no Git root configured"
   end
@@ -1523,6 +1756,7 @@ function M.write_index(root, path, value)
 end
 
 function M.write_worktree(root, path, value, use_buffer)
+  invalidate_snapshots()
   local full_path = abs_path(root, path)
   if use_buffer ~= false then
     local bufnr = find_loaded_buffer(full_path)
@@ -1580,7 +1814,8 @@ function M.write_worktree(root, path, value, use_buffer)
 end
 
 M._private = {
-  parse_name_status = parse_name_status,
+  parse_raw = parse_raw,
+  discover_root = discover_root,
   split_char = split_char,
 }
 

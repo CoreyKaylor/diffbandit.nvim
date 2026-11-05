@@ -57,6 +57,15 @@ function M.new(readers)
   local has_modified_loaded_buffer = readers.has_modified_loaded_buffer
 
   local function is_metadata_only(queue, entry)
+    -- `git diff --summary` is empty for untracked files (diff never sees
+    -- them) and for plain modifications that keep their mode (raw modes
+    -- from the listing), so skip both git calls there.
+    if entry.untracked then
+      return false
+    end
+    if entry.raw_modes and entry.status == "M" and entry.modes and entry.modes.left == entry.modes.right then
+      return false
+    end
     local summary = git_summary(queue.root, queue.opts or {}, entry.path)
     if not summary then
       return false

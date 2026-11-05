@@ -202,8 +202,15 @@ local function disable_buffer_diagnostics(bufnr)
   elseif type(vim.diagnostic.disable) == "function" then
     pcall(vim.diagnostic.disable, bufnr)
   end
+  -- reset() fires DiagnosticChanged even for a buffer without diagnostics,
+  -- and the runtime's statusline handler answers with a flushing redraw:
+  -- the half-built layout would reach the screen mid-open (and on every file
+  -- switch). Fresh panes have nothing to clear.
   if type(vim.diagnostic.reset) == "function" then
-    pcall(vim.diagnostic.reset, nil, bufnr)
+    local ok, existing = pcall(vim.diagnostic.get, bufnr)
+    if not ok or (type(existing) == "table" and #existing > 0) then
+      pcall(vim.diagnostic.reset, nil, bufnr)
+    end
   end
 end
 
