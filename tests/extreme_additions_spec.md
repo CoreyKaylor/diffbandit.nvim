@@ -71,7 +71,7 @@ Row  │ Left#  Connector        Right# │ Notes
 
 ## Integration Regression Checks
 
-The tmux integration verifier should protect these visual details:
+The integration verifier (`tests/helpers/verify.lua`) should protect these visual details:
 
 - At least five add triangles appear under the default fixed core (width 9);
   dense stacking may hide one transition while rails remain. Expanding

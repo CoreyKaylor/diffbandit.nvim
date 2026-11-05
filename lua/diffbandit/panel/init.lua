@@ -1,5 +1,6 @@
 local git = require("diffbandit.git")
 local nvim = require("diffbandit.util.nvim")
+local pending = require("diffbandit.util.pending")
 local ui = require("diffbandit.util.ui")
 local config_mod = require("diffbandit.config")
 local layout = require("diffbandit.util.layout")
@@ -787,7 +788,9 @@ function M.preview_selected(session)
   end
   panel.preview_token = (panel.preview_token or 0) + 1
   local token = panel.preview_token
+  local pending_token = pending.begin("panel_preview")
   vim.defer_fn(function()
+    pending.done(pending_token)
     if session.disposed or not session.panel or session.panel.preview_token ~= token then
       return
     end

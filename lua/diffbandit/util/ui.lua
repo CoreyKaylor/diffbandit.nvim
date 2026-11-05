@@ -1,4 +1,5 @@
 local nvim = require("diffbandit.util.nvim")
+local pending = require("diffbandit.util.pending")
 
 local M = {}
 
@@ -199,7 +200,9 @@ function M.schedule_once(host, flag_field, fn, delay_ms)
   host[gen_field] = (host[gen_field] or 0) + 1
   local gen = host[gen_field]
   local delay = math.max(0, tonumber(delay_ms) or 16)
+  local token = pending.begin(flag_field)
   vim.defer_fn(function()
+    pending.done(token)
     if host[gen_field] ~= gen then
       return
     end

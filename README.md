@@ -49,7 +49,7 @@ documents without distorting either one.
 - Neovim 0.10 or newer.
 - Git for `:DiffBanditGit`, `:DiffBanditGitCurrent`, hunk actions, and the
   commit panel.
-- tmux only for running the integration test suite.
+- tmux only for the optional real-terminal smoke test.
 - Nerd Fonts are optional.
 - Image connectors need Neovim 0.12+ (`nvim_ui_send`), `termguicolors`, and a
   terminal with Kitty graphics + Unicode placeholder support. LuaJIT `ffi` and
@@ -784,21 +784,21 @@ diffbandit.undo()
 
 ## Testing
 
-Run the unit/spec suite:
+Run everything (unit specs and integration tests, in parallel):
 
 ```bash
-nvim --headless -u tests/run.lua
+nvim -l tests/run_all.lua
 ```
 
-Run the tmux integration suite:
+The first run fetches [mini.test](https://github.com/nvim-mini/mini.test)
+into `deps/` (`tests/deps.sh`). `DIFFBANDIT_TESTS=scroll,git` runs only the
+matching jobs; `DIFFBANDIT_JOBS=N` sets the worker count.
 
-```bash
-tests/integration/run.sh
-```
-
-The integration tests capture terminal output, including ANSI highlights, so
-they can verify connector geometry, backgrounds, underline spans, Git actions,
-commit panel behavior, binary diffs, and scrolling behavior.
+The integration tests (`tests/integration/test_*.lua`) drive headless child
+Neovim instances and read the drawn screen cell by cell, including colors, so
+they verify connector geometry, backgrounds, underline spans, Git actions,
+commit panel behavior, binary diffs, and scrolling behavior without a
+terminal. `tests/smoke/tmux.sh` repeats one check in a real TUI under tmux.
 
 ## Acknowledgments
 

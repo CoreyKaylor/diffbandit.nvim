@@ -2,6 +2,7 @@ local diff_pair = require("diffbandit.diff.pair")
 local git = require("diffbandit.git")
 local merge_model = require("diffbandit.merge.model")
 local nvim = require("diffbandit.util.nvim")
+local pending = require("diffbandit.util.pending")
 local keymaps = require("diffbandit.util.keymaps")
 local keyhelp = require("diffbandit.util.keyhelp")
 local layout = require("diffbandit.util.layout")
@@ -783,15 +784,19 @@ function Merge:request_render()
       previous:close()
     end
   end
+  pending.done(self.render_timer_token)
   local delay = tonumber(config_mod.section(self.config, "ui").scroll_debounce_ms) or 16
   local timer = vim.uv and vim.uv.new_timer() or vim.loop.new_timer()
+  local token = pending.begin("merge_render")
   self.render_timer = timer
+  self.render_timer_token = token
   timer:start(delay, 0, function()
     timer:stop()
     if not timer:is_closing() then
       timer:close()
     end
     vim.schedule(function()
+      pending.done(token)
       if self.render_timer == timer then
         self.render_timer = nil
       end
@@ -2211,6 +2216,7 @@ function Merge:close(from_autocmd)
     end
     self.render_timer = nil
   end
+  pending.done(self.render_timer_token)
   self:clear_result_paint_namespaces(self.result_buf)
   document.cleanup_created_buffer(self.result_editable, { discard_if_unchanged = true })
   state.unregister(self.tabpage)

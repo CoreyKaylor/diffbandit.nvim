@@ -25,7 +25,7 @@ jobs:
   test:
     name: Neovim tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -34,7 +34,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git lua5.1 tmux
+          sudo apt-get install -y git tmux
 
       - name: Install Neovim
         uses: rhysd/action-setup-vim@v1
@@ -47,11 +47,20 @@ jobs:
           nvim --headless -u NONE -i NONE -c 'helptags doc' -c 'if &modified | cquit | endif' -c qa
           git diff --exit-code -- doc/tags
 
-      - name: Run unit specs
-        run: nvim --headless -u tests/run.lua
+      - name: Cache test dependencies
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: test-deps-${{ hashFiles('tests/deps.sh') }}
 
-      - name: Run integration specs
-        run: tests/integration/run.sh
+      - name: Fetch test dependencies
+        run: tests/deps.sh
+
+      - name: Run tests (unit + integration, parallel)
+        run: nvim -l tests/run_all.lua
+
+      - name: Run tmux smoke test
+        run: tests/smoke/tmux.sh
 
       - name: Check whitespace
         run: git diff --check

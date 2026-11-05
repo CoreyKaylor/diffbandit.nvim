@@ -1,6 +1,6 @@
 # DiffBandit Visual Contract
 
-This contract records the IntelliJ-inspired behavior that the focused specs and tmux integration tests should preserve. Future specs should describe both the semantic diff and the terminal rendering details that make the visual mapping readable.
+This contract records the IntelliJ-inspired behavior that the focused specs and integration tests should preserve. Future specs should describe both the semantic diff and the terminal rendering details that make the visual mapping readable.
 
 ## Shared Principles
 
@@ -13,7 +13,7 @@ This contract records the IntelliJ-inspired behavior that the focused specs and 
 - Adjacent or overlapping change regions must not touch in the gutter. When paths are close, lanes must stay compact and leave at least one clear transition cell between unrelated regions.
 - Route lines and rails crossing a solid connector band decorate it instead of cutting it: the band background continues underneath while the crossing route's underline/rail renders on top, so both stay visible on shared rows. The same rule covers number-pane spacer cells on delete-origin rows inside a change band — the band fills the whole pane width and the origin underline rides over it, so the corridor never shows a bare default cell between the core and the number text.
 - Native terminal underline is the required representation for separator spans. Diagrams may use `▁`, but implementation and integration tests should inspect ANSI underline (`SGR 4`) rather than literal underline characters.
-- ANSI captures are part of the spec. Plain captures verify glyph geometry and text placement; `capture-pane -e` verifies color backgrounds, underline spans, and token-level emphasis.
+- ANSI captures are part of the spec. Plain captures verify glyph geometry and text placement; the ANSI capture (`tests/helpers/child.lua`, same format as `tmux capture-pane -e`) verifies color backgrounds, underline spans, and token-level emphasis.
 - Optional overview gutters are independent one-column visual maps at the outer edges of the diff view. They summarize side-native changed rows proportionally across the source viewport height and must not affect source text, line-number panes, connector routing, or scroll synchronization.
 
 ## Additions
