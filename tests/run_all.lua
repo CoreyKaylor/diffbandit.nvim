@@ -136,7 +136,9 @@ for _, job in ipairs(jobs) do
     -- next case start and stop the child). Every collected case must report.
     local total = tonumber(plain:match("Total number of cases:%s*(%d+)"))
     local reported = 0
-    for marks in plain:gmatch("\n[^\n]-%.lua: ([ox]*)") do
+    -- One mark per case: o/x for pass/fail, O/X when the case left notes
+    -- (MiniTest.skip reports as a note).
+    for marks in plain:gmatch("\n[^\n]-%.lua: ([oOxX]*)") do
       reported = reported + #marks
     end
     if not total or reported ~= total then

@@ -781,21 +781,26 @@ do
   assert_eq(wrapped(21), 42, "pending.wrap passes through the result")
   assert_eq(pending.count(), base, "pending.wrap releases its token")
 
+  -- Timers armed by earlier specs may still be pending, so track this spec's
+  -- own tokens by label instead of the global count.
+  local function armed(label)
+    return vim.tbl_contains(pending.list(), label)
+  end
   local ui = require("diffbandit.util.ui")
   local host = {}
   local fired = 0
-  ui.schedule_once(host, "flag", function()
+  ui.schedule_once(host, "pending_spec_fire", function()
     fired = fired + 1
   end, 5)
-  assert_eq(pending.count(), base + 1, "schedule_once holds a pending token while armed")
+  assert_eq(armed("pending_spec_fire"), true, "schedule_once holds a pending token while armed")
   vim.wait(500, function()
     return fired == 1
   end, 5)
-  assert_eq(pending.count(), base, "schedule_once releases its token when the timer fires")
-  ui.reschedule_once(host, "flag", function() end, 5)
-  ui.cancel_schedule_once(host, "flag")
+  assert_eq(armed("pending_spec_fire"), false, "schedule_once releases its token when the timer fires")
+  ui.reschedule_once(host, "pending_spec_cancel", function() end, 5)
+  ui.cancel_schedule_once(host, "pending_spec_cancel")
   vim.wait(500, function()
-    return pending.count() == base
+    return not armed("pending_spec_cancel")
   end, 5)
-  assert_eq(pending.count(), base, "a cancelled schedule_once still releases its token")
+  assert_eq(armed("pending_spec_cancel"), false, "a cancelled schedule_once still releases its token")
 end
