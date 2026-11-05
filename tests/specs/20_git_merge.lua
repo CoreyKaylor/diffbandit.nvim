@@ -2245,6 +2245,103 @@ if vim.fn.executable("git") == 1 then
     assert_eq(table.concat(read_file(repo .. "/mixed_staged_add.txt"), "\n") .. "\n", "one\ntwo\nTHREE\nfour\n",
       "All-mode mixed staged added hunk toggle unstage should leave nearby worktree edits")
   end
+
+  -- All-mode staging anchors on the worktree: once one hunk is staged the
+  -- index no longer has HEAD's line numbers, so the next hunk must land at
+  -- its index position, not its HEAD position.
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "two_hunks.txt", { "a", "b", "c", "d", "e" })
+    commit_baseline(repo)
+    write_repo_file(repo, "two_hunks.txt", { "a", "X1", "X2", "X3", "b", "c", "d", "Y", "e" })
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "two_hunks.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    assert_eq(#session.view.chunks, 2, "Two separated edits make two hunks")
+    session.current_chunk = 1
+    assert_eq(actions_mod.stage(session), true, "Staging the first hunk succeeds")
+    session.current_chunk = 2
+    assert_eq(actions_mod.stage(session), true, "Staging the second hunk succeeds")
+    assert_eq(git_mod.read_index(repo, "two_hunks.txt"), "a\nX1\nX2\nX3\nb\nc\nd\nY\ne\n",
+      "The second hunk lands after d even though the first shifted the index")
+    local states = actions_mod.staged_chunk_states(session)
+    assert_eq(states[1] == true and states[2] == true, true, "Both hunks show as staged")
+  end
+
+  -- A view against a merge base (diffbandit <rev>, compare): committed hunks
+  -- cannot be staged, pending ones stage and unstage against HEAD, and the
+  -- markers only flag staged changes.
+  do
+    local repo = make_git_repo()
+    git_test_command({ "checkout", "-q", "-b", "main" }, repo)
+    write_repo_file(repo, "branch.txt", { "1", "2", "3", "4", "5" })
+    commit_baseline(repo)
+    git_test_command({ "switch", "-q", "-c", "topic" }, repo)
+    write_repo_file(repo, "branch.txt", { "1", "2", "3", "4", "5", "6", "7", "8" })
+    git_test_command({ "commit", "-q", "-am", "branch adds 6-8" }, repo)
+    write_repo_file(repo, "branch.txt", { "ONE", "2", "3", "4", "5", "6", "7", "8" })
+    local merge_base = vim.trim(git_test_command({ "merge-base", "main", "HEAD" }, repo))
+    local head_text = "1\n2\n3\n4\n5\n6\n7\n8\n"
+
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", base = merge_base, pathspecs = { "branch.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    assert_eq(#session.view.chunks, 2, "The view shows the pending edit and the committed addition")
+    local states = actions_mod.staged_chunk_states(session)
+    assert_eq(states[1] == nil and states[2] == nil, true, "Committed changes are not shown as staged")
+
+    session.current_chunk = 2
+    local ok, err = actions_mod.stage(session)
+    assert_eq(ok, false, "A committed hunk cannot be staged")
+    assert_eq(err, "nothing to stage in this hunk: it is already staged or committed", "The refusal says why")
+    assert_eq(git_mod.read_index(repo, "branch.txt"), head_text, "Refusing leaves the index untouched")
+    ok, err = actions_mod.unstage(session)
+    assert_eq(ok, false, "A committed hunk cannot be unstaged")
+    assert_eq(git_mod.read_index(repo, "branch.txt"), head_text, "Unstaging a committed hunk leaves the index untouched")
+
+    session.current_chunk = 1
+    assert_eq(actions_mod.stage(session), true, "The pending hunk stages")
+    assert_eq(git_mod.read_index(repo, "branch.txt"), "ONE\n2\n3\n4\n5\n6\n7\n8\n", "Only the pending edit reaches the index")
+    states = actions_mod.staged_chunk_states(session)
+    assert_eq(states[1], true, "The staged pending hunk shows as staged")
+    assert_eq(states[2], nil, "The committed hunk still does not")
+
+    session.current_chunk = 1
+    assert_eq(actions_mod.toggle_stage(session), true, "Toggling a staged pending hunk unstages it")
+    assert_eq(git_mod.read_index(repo, "branch.txt"), head_text, "Unstaging restores HEAD, not the merge base")
+  end
+
+  -- Against a merge base, unstaging a staged new file removes it from the
+  -- index instead of leaving an empty one.
+  do
+    local repo = make_git_repo()
+    git_test_command({ "checkout", "-q", "-b", "main" }, repo)
+    write_repo_file(repo, "keep.txt", { "base" })
+    commit_baseline(repo)
+    git_test_command({ "switch", "-q", "-c", "topic" }, repo)
+    write_repo_file(repo, "keep.txt", { "base", "topic" })
+    git_test_command({ "commit", "-q", "-am", "topic" }, repo)
+    write_repo_file(repo, "fresh.txt", { "new" })
+    git_test_command({ "add", "fresh.txt" }, repo)
+    local merge_base = vim.trim(git_test_command({ "merge-base", "main", "HEAD" }, repo))
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", base = merge_base, pathspecs = { "fresh.txt" } }, config.git)))
+    local session = make_action_session(queue)
+    assert_eq(actions_mod.staged_chunk_states(session)[1], true, "The staged new file shows as staged")
+    assert_eq(actions_mod.toggle_stage(session), true, "Toggling unstages it")
+    assert_eq(git_mod.read_index(repo, "fresh.txt"), nil, "The new file leaves the index")
+  end
+
+  -- Before the first commit staging compares with the empty tree, which is
+  -- also the view's base: unstaging a new file removes its index entry.
+  do
+    local repo = make_git_repo()
+    write_repo_file(repo, "first.txt", { "one" })
+    git_test_command({ "add", "first.txt" }, repo)
+    local queue = assert((git_mod.queue({ root = repo, mode = "all", pathspecs = { "first.txt" } }, config.git)))
+    assert_eq(queue.opts.unborn_head, true, "The repository has no commits yet")
+    local session = make_action_session(queue)
+    assert_eq(actions_mod.staged_chunk_states(session)[1], true, "The staged file shows as staged")
+    assert_eq(actions_mod.toggle_stage(session), true, "Toggling unstages it")
+    assert_eq(git_mod.read_index(repo, "first.txt"), nil, "Unstaging removes the entry")
+  end
 end
 
 do

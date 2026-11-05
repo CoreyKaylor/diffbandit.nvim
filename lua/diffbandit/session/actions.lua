@@ -158,6 +158,113 @@ local function hunk_matches_staged(visible, staged)
     or ranges_overlap(visible.right.start, visible.right.count, staged.right.start, staged.right.count)
 end
 
+-- All-mode hunk actions anchor on the working tree, the one side every
+-- diff here shares: the visible hunks are base -> worktree, while staging
+-- edits the index, whose lines are shifted by whatever is already staged
+-- (and, against a merge base, by every committed change). Ranges below are
+-- half-open spans of line boundaries: a hunk side with lines covers
+-- [start, start + count); an empty side is the gap after line `start`.
+local function span(range)
+  if range.count > 0 then
+    return range.start, range.start + range.count
+  end
+  return range.start + 1, range.start + 1
+end
+
+local function spans_touch(a_from, a_to, b_from, b_to)
+  local a_point, b_point = a_from == a_to, b_from == b_to
+  if a_point and b_point then
+    return a_from == b_from
+  elseif a_point then
+    return b_from < a_from and a_from < b_to
+  elseif b_point then
+    return a_from < b_from and b_from < a_to
+  end
+  return a_from < b_to and b_from < a_to
+end
+
+-- The index span a worktree span corresponds to, through the index ->
+-- worktree hunks. A boundary inside a hunk widens to that hunk's edge.
+local function map_worktree_span(unstaged, from, to)
+  local function map(position, is_end)
+    local delta = 0
+    for _, hunk in ipairs(unstaged) do
+      local left_from, left_to = span(hunk.left)
+      local right_from, right_to = span(hunk.right)
+      if right_to <= position and not (right_from == right_to and right_from == position and not is_end) then
+        delta = left_to - right_to
+      elseif right_from < position and position < right_to then
+        return is_end and left_to or left_from
+      end
+    end
+    return position + delta
+  end
+  local mapped_from = map(from, false)
+  if from == to then
+    return mapped_from, mapped_from
+  end
+  return mapped_from, math.max(mapped_from, map(to, true))
+end
+
+-- What staging compares the index against: the amend base in amend mode,
+-- the empty tree before the first commit, HEAD otherwise.
+local function staging_reference(opts)
+  if opts.stage_base then
+    return opts.stage_base
+  elseif opts.unborn_head then
+    return opts.base
+  end
+  return "HEAD"
+end
+
+local function all_mode_texts(session, ctx, reference)
+  local read = git_mod.read_blobs(ctx.root, { reference .. ":" .. ctx.path, ":" .. ctx.path })
+  return read[1][1], read[2][1], target_text_from_session(session, "right")
+end
+
+-- Index -> worktree hunks that make up the worktree side of `visible`.
+local function unstaged_parts(session, index_text, worktree_text, visible)
+  local unstaged = diff_mod.compute_hunks(index_text or "", worktree_text or "", session.config.diff or {})
+  local parts = {}
+  local from, to = span(visible.right)
+  for _, hunk in ipairs(type(unstaged) == "table" and unstaged or {}) do
+    local h_from, h_to = span(hunk.right)
+    if spans_touch(from, to, h_from, h_to) then
+      parts[#parts + 1] = hunk
+    end
+  end
+  return parts, type(unstaged) == "table" and unstaged or {}
+end
+
+-- Reference -> index hunks staged inside `visible`, located through the
+-- worktree (used when the view's base is not the staging reference).
+local function staged_parts(session, reference_text, index_text, worktree_text, visible)
+  local _, unstaged = unstaged_parts(session, index_text, worktree_text, visible)
+  local staged = diff_mod.compute_hunks(reference_text or "", index_text or "", session.config.diff or {})
+  local from, to = map_worktree_span(unstaged, span(visible.right))
+  local parts = {}
+  for _, hunk in ipairs(type(staged) == "table" and staged or {}) do
+    local h_from, h_to = span(hunk.right)
+    if spans_touch(from, to, h_from, h_to) then
+      parts[#parts + 1] = hunk
+    end
+  end
+  return parts
+end
+
+-- Replace each part's `target` side lines in `lines` with its `source` side
+-- lines from `source_lines`, bottom-up so earlier ranges stay valid.
+local function splice_parts(lines, parts, target, source, source_lines)
+  table.sort(parts, function(a, b)
+    return a[target].start > b[target].start
+  end)
+  for _, part in ipairs(parts) do
+    lines = text.replace_range(lines, part[target].start, part[target].count,
+      text.copy_range(source_lines, part[source].start, part[source].count))
+  end
+  return lines
+end
+
 local function staged_hunks_for_session(session, ctx, blobs)
   local head, index
   if blobs then
@@ -236,6 +343,37 @@ local function apply_sides(session, source_side, target_side, opts)
     end
   end
 
+  local reference = staging_reference(ctx.opts)
+  local mapped_next
+  if mode == "all" and target == "index" and (source_side == "right" or (ctx.opts.base or "HEAD") ~= reference) then
+    local reference_text, index_text, worktree_text = all_mode_texts(session, ctx, reference)
+    local parts
+    if source_side == "right" then
+      -- Stage: bring the index to the worktree where this hunk shows
+      -- pending (unstaged) lines.
+      parts = unstaged_parts(session, index_text, worktree_text, hunk)
+      if #parts == 0 then
+        return false, "nothing to stage in this hunk: it is already staged or committed"
+      end
+      mapped_next = splice_parts(text.split_lines(index_text or ""), parts, "left", "right", text.split_lines(worktree_text or ""))
+    else
+      -- Unstage against a base other than the staging reference: restore
+      -- the reference lines where this hunk has staged changes.
+      parts = staged_parts(session, reference_text, index_text, worktree_text, hunk)
+      if #parts == 0 then
+        return false, "current hunk is not staged"
+      end
+      mapped_next = splice_parts(text.split_lines(index_text or ""), parts, "right", "left", text.split_lines(reference_text or ""))
+    end
+    -- An empty result for a path the target side lacks removes the index
+    -- entry rather than staging an empty file.
+    if #mapped_next == 0 and (index_text == nil
+        or (source_side == "right" and session.right and session.right.git_target == "absent")
+        or (source_side ~= "right" and reference_text == nil)) then
+      mapped_next = nil
+    end
+  end
+
   local current = read_target(ctx, target)
   if expected ~= nil and (current or "") ~= expected then
     return false, "target changed outside DiffBandit; refresh before applying this hunk"
@@ -245,15 +383,19 @@ local function apply_sides(session, source_side, target_side, opts)
     target_range_side = opts.target_range_side
   end
 
-  local range_hunk = opts.hunk or hunk
-  local target_start, target_count = side_range(range_hunk, target_range_side)
-  local source_start, source_count = side_range(range_hunk, source_side)
-  local replacement = text.copy_range(side_lines(session, source_side), source_start, source_count)
   local next_text
-  if remove_target_for_absent_source(session, source_side, target_side, range_hunk) then
-    next_text = nil
+  if mode == "all" and target == "index" and (source_side == "right" or (ctx.opts.base or "HEAD") ~= reference) then
+    next_text = mapped_next and text.to_text(mapped_next) or nil
   else
-    next_text = text.to_text(text.replace_range(text.split_lines(current or ""), target_start, target_count, replacement))
+    local range_hunk = opts.hunk or hunk
+    local target_start, target_count = side_range(range_hunk, target_range_side)
+    local source_start, source_count = side_range(range_hunk, source_side)
+    local replacement = text.copy_range(side_lines(session, source_side), source_start, source_count)
+    if remove_target_for_absent_source(session, source_side, target_side, range_hunk) then
+      next_text = nil
+    else
+      next_text = text.to_text(text.replace_range(text.split_lines(current or ""), target_start, target_count, replacement))
+    end
   end
 
   local ok, write_err = write_target(ctx, target, next_text)
@@ -313,6 +455,9 @@ function M.unstage(session)
   local mode = ctx.opts.mode or "unstaged"
   if mode ~= "staged" and mode ~= "all" then
     return false, "unstage hunk is only available in staged or all Git diffs"
+  end
+  if mode == "all" and (ctx.opts.base or "HEAD") ~= staging_reference(ctx.opts) then
+    return apply_sides(session, "left", "left", { action = "unstage" })
   end
   if mode == "all" then
     local visible_hunk = active_hunk(session)
@@ -510,11 +655,28 @@ function M.staged_chunk_states(session)
     return states
   end
 
+  local base = ctx.opts.base or "HEAD"
+  local reference = staging_reference(ctx.opts)
+  if mode == "all" and base ~= reference then
+    -- The view's base (a merge base, an older revision) is not what staging
+    -- compares against: find the staged changes through the worktree.
+    local reference_text, index_text, worktree_text = all_mode_texts(session, ctx, reference)
+    if (reference_text or "") == (index_text or "") then
+      return states
+    end
+    for chunk_index, chunk in ipairs(session.view.chunks or {}) do
+      local hunk = session.hunks and session.hunks[chunk.index or chunk_index]
+      if hunk and #staged_parts(session, reference_text, index_text, worktree_text, hunk) > 0 then
+        states[chunk_index] = true
+      end
+    end
+    return states
+  end
+
   local has_staged = git_mod.snapshot_has_staged_changes(ctx.queue, ctx.path)
   if has_staged == false then
     return states
   end
-  local base = ctx.opts.base or "HEAD"
   -- Blobs read with the file's sources, while no git command has changed
   -- the index since.
   local blobs = session.left and session.left.git_stage_blobs
