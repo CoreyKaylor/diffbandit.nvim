@@ -194,6 +194,12 @@ local defaults = {
       preview_debounce_ms = 50,
       focus_on_open = "panel",
       icons = "auto",
+      -- "list" (flat, with parent folder hint) or "tree" (nested folders).
+      view = "list",
+      tree = {
+        indent = 2,
+        icons = { open = "▾", closed = "▸" },
+      },
       staged_indicator = {
         unstaged = "□",
         partial = "◧",
@@ -206,6 +212,8 @@ local defaults = {
         focus_commit = "cc",
         file_actions = "a",
         toggle_amend = "<Space>",
+        toggle_view = "t",
+        toggle_dir = "za",
         refresh = "R",
         toggle_panel = "gzp",
         close = "q",

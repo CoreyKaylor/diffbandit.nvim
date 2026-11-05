@@ -437,7 +437,10 @@ Git diff opened by |:DiffBanditGit|.
 Panel mappings:
 
   j / k         Move through changed files and preview the selected file.
-  <CR>          Focus the diff for the selected file.
+  <CR>          Focus the diff for the selected file, or collapse/expand
+                the selected folder in tree view.
+  t             Toggle between the flat list and the folder tree view.
+  za            Collapse/expand the selected folder in tree view.
   ]c / [c       Navigate hunks in the selected file preview.
   <Space>       Toggle staged state for the selected file.
   a             Open file actions for the selected file.
@@ -590,6 +593,11 @@ Common configuration:
         width = 42,
         commit_height = 10,
         preview_on_cursor = true,
+        view = "list",          -- or "tree"
+        tree = {
+          indent = 2,
+          icons = { open = "▾", closed = "▸" },
+        },
         keys = {
           toggle_stage = "<Space>",
           focus_diff = "<CR>",
@@ -597,6 +605,8 @@ Common configuration:
           focus_commit = "cc",
           file_actions = "a",
           toggle_amend = "<Space>",
+          toggle_view = "t",
+          toggle_dir = "za",
           refresh = "R",
           toggle_panel = "gzp",
           close = "q",

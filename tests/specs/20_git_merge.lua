@@ -561,6 +561,46 @@ if vim.fn.executable("git") == 1 then
   end
 
   do
+    local session = {
+      config = config,
+      file_queue = {
+        root = "/tmp/repo",
+        entries = {
+          { status = "M", path = "README.md", kind = "modified" },
+          { status = "M", path = "lua/diffbandit/git/init.lua", kind = "modified" },
+          { status = "M", path = "lua/diffbandit/git/sources.lua", kind = "modified" },
+          { status = "M", path = "lua/diffbandit/panel/init.lua", kind = "modified" },
+        },
+      },
+      panel = { view = "tree", stage_states = {}, collapsed_dirs = {} },
+    }
+    local rows = panel_mod._private.build_rows(session)
+    local texts = {}
+    for _, row in ipairs(rows) do
+      texts[#texts + 1] = row.type .. "|" .. vim.trim(row.text)
+    end
+    assert_eq(texts[1], "section|▾ Changes  4 files", "Tree view keeps group sections")
+    assert_eq(rows[2].type, "dir", "Tree view lists folders before files")
+    assert_eq(rows[2].dir, "lua/diffbandit", "Tree view compacts single-child folder chains")
+    assert_eq(vim.trim(rows[2].text), "▾ lua/diffbandit/", "Compacted folder row shows the joined path")
+    assert_eq(rows[3].dir, "lua/diffbandit/git", "Nested folder keeps its full path")
+    assert_eq(rows[4].entry.path, "lua/diffbandit/git/init.lua", "Files nest under their folder")
+    assert_eq(rows[4].text:find("lua/diffbandit", 1, true), nil, "Tree file rows omit the parent hint")
+    assert_eq(rows[6].dir, "lua/diffbandit/panel", "Sibling folder follows")
+    assert_eq(rows[8].entry.path, "README.md", "Root files come after folders")
+    assert_eq(#rows, 8, "Tree view row count")
+    assert_eq(rows[4].text:find("^%s+") ~= nil and #rows[4].text:match("^%s*") > #rows[3].text:match("^%s*"), true,
+      "Files are indented deeper than their folder")
+
+    session.panel.collapsed_dirs[rows[3].key] = true
+    rows = panel_mod._private.build_rows(session)
+    assert_eq(rows[3].collapsed, true, "Collapsed folder is marked")
+    assert_eq(vim.trim(rows[3].text), "▸ git/", "Collapsed folder uses the closed icon")
+    assert_eq(rows[4].dir, "lua/diffbandit/panel", "Collapsed folder hides its files")
+    assert_eq(#rows, 6, "Collapsed tree row count")
+  end
+
+  do
     local nav_buf = vim.api.nvim_create_buf(false, true)
     local original_file_stage_states = git_mod.file_stage_states
     local called = false

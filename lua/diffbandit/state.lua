@@ -18,6 +18,11 @@ local State = {
   -- Other DiffBandit windows the launcher counts as open views (the git log
   -- browser): view -> true, each with an is_open() method.
   views = {},
+  -- Commit panel file-list layout chosen with the toggle key; survives panel
+  -- rebuilds (diff <-> merge hand-offs). nil means use config.
+  panel_view = nil,
+  -- Collapsed tree folders, keyed by "<group>:<dir>".
+  panel_collapsed_dirs = {},
 }
 
 function State.set_config(user)

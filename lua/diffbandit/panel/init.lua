@@ -103,22 +103,24 @@ local function status_icon(session, entry)
   return icons_for(session)[entry_kind(entry)] or "M"
 end
 
-local function row_for_entry(session, entry, index, width)
+local function row_for_entry(session, entry, index, width, opts)
+  opts = opts or {}
+  local indent = opts.indent or ""
   local state = (session.panel and session.panel.stage_states or {})[index] or "unstaged"
   local name = filename(entry.path)
   local parent = dirname(entry.path)
   local prefix
   if entry_kind(entry) == "unmerged" then
-    prefix = string.format("  ! %s ", status_icon(session, entry))
+    prefix = string.format("  %s! %s ", indent, status_icon(session, entry))
   elseif is_review_panel(session) then
-    prefix = string.format("  %s ", status_icon(session, entry))
+    prefix = string.format("  %s%s ", indent, status_icon(session, entry))
   else
-    prefix = string.format("  %s %s ", stage_symbol(session, state), status_icon(session, entry))
+    prefix = string.format("  %s%s %s ", indent, stage_symbol(session, state), status_icon(session, entry))
   end
   local base = prefix .. name
   local parent_width = math.max(0, width - vim.fn.strdisplaywidth(base) - 1)
   local text
-  if parent ~= "" and parent_width > 3 then
+  if parent ~= "" and parent_width > 3 and not opts.hide_parent then
     text = base .. " " .. ui.truncate_dotted(parent, parent_width)
   else
     text = ui.truncate_dotted(base, width)
@@ -140,11 +142,150 @@ local function row_group(entry)
   return "Changes"
 end
 
+local function view_mode(session)
+  local panel = (session or {}).panel or {}
+  local mode = panel.view or state.panel_view or panel_config(session).view
+  if mode == "tree" then
+    return "tree"
+  end
+  return "list"
+end
+
+local function file_row(session, item, width, opts)
+  local row = row_for_entry(session, item.entry, item.index, width, opts)
+  return {
+    type = "file",
+    entry = item.entry,
+    index = item.index,
+    depth = opts and opts.depth or 0,
+    text = row.text,
+    name_col = row.name_col,
+    name_end_col = row.name_end_col,
+  }
+end
+
+local function dir_key(group_name, path)
+  return group_name .. ":" .. path
+end
+
+-- Build a directory tree from the group's entries, collapsing chains of
+-- directories that hold nothing but a single subdirectory ("a/b/c").
+local function build_tree(items)
+  local root = { dirs = {}, files = {} }
+  for _, item in ipairs(items) do
+    local node = root
+    local parts = vim.split(item.entry.path or "", "/", { plain = true })
+    for i = 1, #parts - 1 do
+      local part = parts[i]
+      node.dirs[part] = node.dirs[part] or { name = part, dirs = {}, files = {} }
+      node = node.dirs[part]
+    end
+    node.files[#node.files + 1] = item
+  end
+
+  local function compact(node)
+    for name, child in pairs(node.dirs) do
+      compact(child)
+      local only_child
+      local count = 0
+      for _, grandchild in pairs(child.dirs) do
+        count = count + 1
+        only_child = grandchild
+      end
+      if count == 1 and #child.files == 0 then
+        child.name = child.name .. "/" .. only_child.name
+        child.dirs = only_child.dirs
+        child.files = only_child.files
+      end
+      node.dirs[name] = child
+    end
+  end
+  compact(root)
+  return root
+end
+
+local function sorted_dirs(node)
+  local list = {}
+  for _, child in pairs(node.dirs) do
+    list[#list + 1] = child
+  end
+  table.sort(list, function(a, b)
+    return a.name < b.name
+  end)
+  return list
+end
+
+local function sorted_files(node)
+  local list = vim.list_extend({}, node.files)
+  table.sort(list, function(a, b)
+    return filename(a.entry.path) < filename(b.entry.path)
+  end)
+  return list
+end
+
+local function append_tree_rows(session, rows, group_name, items, width)
+  local panel = session.panel or {}
+  local collapsed = panel.collapsed_dirs or state.panel_collapsed_dirs
+  local tree_config = panel_config(session).tree or {}
+  local indent_width = math.max(1, tonumber(tree_config.indent) or 2)
+  local icons = tree_config.icons or {}
+  local open_icon = icons.open or "▾"
+  local closed_icon = icons.closed or "▸"
+
+  local function walk(node, depth, prefix_path)
+    for _, child in ipairs(sorted_dirs(node)) do
+      local path = prefix_path == "" and child.name or (prefix_path .. "/" .. child.name)
+      local key = dir_key(group_name, path)
+      local is_collapsed = collapsed[key] == true
+      local lead = string.rep(" ", 2 + depth * indent_width)
+        .. (is_collapsed and closed_icon or open_icon) .. " "
+      local label = child.name .. "/"
+      rows[#rows + 1] = {
+        type = "dir",
+        dir = path,
+        key = key,
+        group = group_name,
+        depth = depth,
+        collapsed = is_collapsed,
+        text = ui.truncate_dotted(lead .. label, width),
+        name_col = #lead,
+        name_end_col = #lead + #label,
+      }
+      if not is_collapsed then
+        walk(child, depth + 1, path)
+      end
+    end
+    for _, item in ipairs(sorted_files(node)) do
+      rows[#rows + 1] = file_row(session, item, width, {
+        depth = depth,
+        indent = string.rep(" ", depth * indent_width),
+        hide_parent = true,
+      })
+    end
+  end
+
+  walk(build_tree(items), 0, "")
+end
+
+-- Usable text width of the nav window; falls back to the configured width
+-- before the window exists.
+local function nav_text_width(session)
+  local panel = (session or {}).panel or {}
+  local win = panel.nav_win
+  if win and vim.api.nvim_win_is_valid(win) then
+    local info = vim.fn.getwininfo(win)[1]
+    local textoff = info and info.textoff or 0
+    return math.max(20, vim.api.nvim_win_get_width(win) - textoff - 1)
+  end
+  return math.max(20, tonumber(panel_config(session).width) or 42)
+end
+
 function M.build_rows(session)
   local queue = session.file_queue or {}
   local entries = queue.entries or {}
   local rows = {}
-  local width = math.max(20, tonumber(panel_config(session).width) or 42)
+  local width = nav_text_width(session)
+  local tree = view_mode(session) == "tree"
   local groups = {
     { name = "Merge Conflicts", entries = {} },
     { name = "Changes", entries = {} },
@@ -170,16 +311,12 @@ function M.build_rows(session)
         text = string.format("▾ %s  %d files", group.name, #group.entries),
         name_col = 0,
       }
-      for _, item in ipairs(group.entries) do
-        local row = row_for_entry(session, item.entry, item.index, width)
-        rows[#rows + 1] = {
-          type = "file",
-          entry = item.entry,
-          index = item.index,
-          text = row.text,
-          name_col = row.name_col,
-          name_end_col = row.name_end_col,
-        }
+      if tree then
+        append_tree_rows(session, rows, group.name, group.entries, width)
+      else
+        for _, item in ipairs(group.entries) do
+          rows[#rows + 1] = file_row(session, item, width)
+        end
       end
     end
   end
@@ -219,6 +356,27 @@ end
 local function find_file_row(rows, entry_index)
   for row_index, row in ipairs(rows or {}) do
     if row.type == "file" and row.index == entry_index then
+      return row_index
+    end
+  end
+  return nil
+end
+
+-- When the entry sits inside a collapsed folder, land on that folder's row.
+local function find_entry_row(rows, entry_index, entries)
+  local row = find_file_row(rows, entry_index)
+  if row or not entry_index then
+    return row
+  end
+  local entry = (entries or {})[entry_index]
+  local path = entry and entry.path
+  if not path then
+    return nil
+  end
+  local group_name = row_group(entry)
+  for row_index, candidate in ipairs(rows or {}) do
+    if candidate.type == "dir" and candidate.collapsed and candidate.group == group_name
+        and path:sub(1, #candidate.dir + 1) == candidate.dir .. "/" then
       return row_index
     end
   end
@@ -292,6 +450,8 @@ local function apply_nav_highlights(session)
   for line, row in ipairs(panel.rows or {}) do
     if row.type == "section" then
       vim.api.nvim_buf_add_highlight(panel.nav_buf, session.ns, "DiffBanditStatusAccent", line - 1, 0, -1)
+    elseif row.type == "dir" then
+      vim.api.nvim_buf_add_highlight(panel.nav_buf, session.ns, "Directory", line - 1, row.name_col or 0, row.name_end_col or -1)
     elseif row.type == "file" then
       local start_col = row.name_col or 0
       local end_col = row.name_end_col or -1
@@ -666,6 +826,9 @@ function M.render_nav(session, preferred_entry_index, opts)
 
   panel.stage_states = panel.stage_states or {}
   panel.rows = M.build_rows(session)
+  if panel.nav_win and vim.api.nvim_win_is_valid(panel.nav_win) then
+    panel.rendered_width = vim.api.nvim_win_get_width(panel.nav_win)
+  end
   local lines = {}
   for _, row in ipairs(panel.rows) do
     lines[#lines + 1] = row.text
@@ -681,8 +844,10 @@ function M.render_nav(session, preferred_entry_index, opts)
   if opts.no_initial_selection then
     target_row = first_non_file_row(panel.rows)
   else
-    target_row = preferred_entry_index and find_file_row(panel.rows, preferred_entry_index)
-      or find_file_row(panel.rows, session.file_queue_index)
+    local entries = (session.file_queue or {}).entries
+    target_row = opts.target_row
+      or preferred_entry_index and find_entry_row(panel.rows, preferred_entry_index, entries)
+      or find_entry_row(panel.rows, session.file_queue_index, entries)
       or first_file_row(panel.rows)
   end
   set_nav_cursor(session, target_row)
@@ -838,15 +1003,48 @@ function M.move(session, delta)
   end
   local row, current = selected_row(session)
   current = current or 1
-  local next_row = row and row.type == "file" and (current + delta) or current
+  local function selectable(model)
+    return model.type == "file" or model.type == "dir"
+  end
+  local next_row = row and selectable(row) and (current + delta) or current
   while next_row >= 1 and next_row <= #panel.rows do
-    if panel.rows[next_row].type == "file" then
+    if selectable(panel.rows[next_row]) then
       set_nav_cursor(session, next_row)
       M.preview_selected(session)
       return
     end
     next_row = next_row + delta
   end
+end
+
+-- Collapse or expand the folder under the cursor (tree view only).
+function M.toggle_dir(session)
+  local panel = session.panel
+  local row, row_index = selected_row(session)
+  if not panel or not row or row.type ~= "dir" then
+    return false
+  end
+  panel.collapsed_dirs = panel.collapsed_dirs or state.panel_collapsed_dirs
+  panel.collapsed_dirs[row.key] = not row.collapsed or nil
+  M.render_nav(session, nil, { target_row = row_index })
+  return true
+end
+
+-- Switch the file list between flat and tree layouts, keeping the selection.
+function M.toggle_view(session)
+  local panel = session.panel
+  if not panel then
+    return
+  end
+  local row = selected_row(session)
+  panel.view = view_mode(session) == "tree" and "list" or "tree"
+  state.panel_view = panel.view
+  local entry_index = row and row.type == "file" and row.index or session.file_queue_index
+  M.render_nav(session, entry_index)
+end
+
+function M.view_mode(session)
+  return view_mode(session)
 end
 
 function M.focus_diff(session)
@@ -1185,6 +1383,11 @@ function M.setup_keymaps(session)
   local focus_diff = function()
     M.focus_diff(session)
   end
+  local nav_focus_diff = function()
+    if not M.toggle_dir(session) then
+      M.focus_diff(session)
+    end
+  end
   local commit = function()
     M.commit(session)
   end
@@ -1229,7 +1432,12 @@ function M.setup_keymaps(session)
     { buf = "nav", lhs = keys.close, fn = close, section = "General", desc = "Close this view" },
     { buf = "nav", lhs = "j", fn = function() M.move(session, 1) end, section = "Files", desc = "Next file (previews it)" },
     { buf = "nav", lhs = "k", fn = function() M.move(session, -1) end, section = "Files", desc = "Previous file (previews it)" },
-    { buf = "nav", lhs = keys.focus_diff, fn = focus_diff, section = "Files", desc = "Focus the diff of the selected file" },
+    { buf = "nav", lhs = keys.focus_diff, fn = nav_focus_diff, section = "Files",
+      desc = "Focus the diff of the selected file (toggle a folder in tree view)" },
+    { buf = "nav", lhs = keys.toggle_view, fn = function() M.toggle_view(session) end,
+      section = "Files", desc = "Switch the file list between flat and tree views" },
+    { buf = "nav", lhs = keys.toggle_dir, fn = function() M.toggle_dir(session) end,
+      section = "Files", desc = "Collapse or expand the folder under the cursor" },
     { buf = "nav", lhs = file_keys.next, fn = navigate_file("next"), when = has_queue, section = "Files", desc = "Open the next file" },
     { buf = "nav", lhs = file_keys.prev, fn = navigate_file("prev"), when = has_queue, section = "Files", desc = "Open the previous file" },
     { buf = "nav", lhs = log_keys.next, fn = step_log(1), when = has_log, section = "Commits", desc = "Next commit in the log (older)" },
@@ -1282,11 +1490,40 @@ function M.setup_keymaps(session)
   end
 end
 
+-- Re-render rows when the nav window's width changes so truncation tracks it.
+local function watch_resize(session)
+  local panel = session.panel
+  if panel.resize_autocmd then
+    pcall(vim.api.nvim_del_autocmd, panel.resize_autocmd)
+  end
+  panel.resize_autocmd = vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
+    callback = function()
+      if session.disposed or session.panel ~= panel
+          or not (panel.nav_buf and vim.api.nvim_buf_is_valid(panel.nav_buf)) then
+        panel.resize_autocmd = nil
+        return true
+      end
+      local win = panel.nav_win
+      if not win or not vim.api.nvim_win_is_valid(win) then
+        return
+      end
+      local width = vim.api.nvim_win_get_width(win)
+      if width == panel.rendered_width then
+        return
+      end
+      local row, cursor_row = selected_row(session)
+      local entry_index = row and row.type == "file" and row.index or nil
+      M.render_nav(session, entry_index, { target_row = not entry_index and cursor_row or nil })
+    end,
+  })
+end
+
 function M.attach(session, opts)
   opts = opts or {}
   if not session.panel then
     return
   end
+  watch_resize(session)
   session.panel.visible = true
   session.panel.stage_states = {}
   session.panel.rows = {}
