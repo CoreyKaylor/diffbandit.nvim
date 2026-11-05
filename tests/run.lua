@@ -46,6 +46,7 @@ local specs = {
   "40_oracle.lua",
   "45_kitty.lua",
   "46_kitty_tmux.lua",
+  "50_jj.lua",
 }
 
 -- DIFFBANDIT_SPECS=20,45 runs only specs whose numeric prefix is listed

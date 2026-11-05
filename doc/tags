@@ -40,6 +40,7 @@ diffbandit-git	diffbandit.txt	/*diffbandit-git*
 diffbandit-gzp	diffbandit.txt	/*diffbandit-gzp*
 diffbandit-hunk-actions	diffbandit.txt	/*diffbandit-hunk-actions*
 diffbandit-installation	diffbandit.txt	/*diffbandit-installation*
+diffbandit-jj	diffbandit.txt	/*diffbandit-jj*
 diffbandit-launcher	diffbandit.txt	/*diffbandit-launcher*
 diffbandit-lua-api	diffbandit.txt	/*diffbandit-lua-api*
 diffbandit-mappings	diffbandit.txt	/*diffbandit-mappings*

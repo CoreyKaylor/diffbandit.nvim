@@ -377,6 +377,9 @@ function Folder.start(left_path, right_path, config, opts)
   self.left_root = left_root
   self.right_root = right_root
   self.open_file_diff = opts.open_file_diff
+  -- Diff-editor mode: the right folder is edited in place (jj split etc.).
+  self.editable_right = opts.editable_right == true
+  self.hide_patterns = opts.hide or {}
   self.disposed = false
   self.expanded = {}
   self.filter = "all"
@@ -467,6 +470,10 @@ function Folder:refresh()
   self.active_jobs = 0
   self.pending_batches = {}
   local filters = folder_config(self).filters or {}
+  if #self.hide_patterns > 0 then
+    local exclude = vim.list_extend(vim.deepcopy(filters.exclude or {}), self.hide_patterns)
+    filters = vim.tbl_extend("force", {}, filters, { exclude = exclude })
+  end
   self.left_entries = folder_model.scan_tree(self.left_root, filters)
   self.right_entries = folder_model.scan_tree(self.right_root, filters)
   self.rows, self.rows_by_rel = folder_model.build_rows(self.left_entries, self.right_entries)
@@ -829,8 +836,14 @@ function Folder:restore_from_child(context)
   if context and context.selected_rel then
     self.selected_rel = context.selected_rel
   end
-  self:build_visible_rows()
-  self:render()
+  if self.editable_right then
+    -- The child diff may have written the right side: rescan so statuses
+    -- (and newly created files) are current.
+    self:refresh()
+  else
+    self:build_visible_rows()
+    self:render()
+  end
   if context and context.topline then
     local win = context.cursor_side == "right" and self.right_win or self.left_win
     if win and vim.api.nvim_win_is_valid(win) then

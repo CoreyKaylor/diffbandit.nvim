@@ -1,7 +1,7 @@
 -- Git log browser: a bottom split listing commits with open/refresh
 -- keymaps. Extracted from git_workflows.lua, which keeps only workflow
 -- orchestration.
-local git = require("diffbandit.git")
+local git = require("diffbandit.vcs")
 local nvim = require("diffbandit.util.nvim")
 local ui = require("diffbandit.util.ui")
 local keyhelp = require("diffbandit.util.keyhelp")

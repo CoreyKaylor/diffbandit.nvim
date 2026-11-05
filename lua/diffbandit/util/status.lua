@@ -171,7 +171,8 @@ function M.build(session)
     local staged = tostring(count_staged_chunks(session))
       .. "/"
       .. tostring(#(session.view and session.view.chunks or {}))
-    center_parts[#center_parts + 1] = icons.git .. ":" .. mode
+    local vcs_name = (session.file_queue or {}).vcs
+    center_parts[#center_parts + 1] = icons.git .. ":" .. (vcs_name and vcs_name ~= "git" and (vcs_name .. " ") or "") .. mode
     center_parts[#center_parts + 1] = icons.file .. " " .. file_pos
     center_parts[#center_parts + 1] = icons.hunk .. " " .. hunk_pos
     if status and status ~= "" then

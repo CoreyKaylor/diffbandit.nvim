@@ -2,9 +2,15 @@ local pending = require("diffbandit.util.pending")
 
 local M = {}
 
-function M.run(cmd)
+-- opts.env: extra environment variables; opts.cwd: working directory
+-- (vim.system only).
+function M.run(cmd, opts)
   if vim.system then
-    local result = vim.system(cmd, { text = false }):wait()
+    local result = vim.system(cmd, {
+      text = false,
+      env = opts and opts.env or nil,
+      cwd = opts and opts.cwd or nil,
+    }):wait()
     if result.code ~= 0 then
       return nil, vim.trim(result.stderr or result.stdout or "")
     end
@@ -84,9 +90,9 @@ function M.run_async(cmd, callback)
   return false
 end
 
-function M.run_exit_code(cmd)
+function M.run_exit_code(cmd, opts)
   if vim.system then
-    local result = vim.system(cmd, { text = true }):wait()
+    local result = vim.system(cmd, { text = true, cwd = opts and opts.cwd or nil }):wait()
     return result.code, result.stdout or "", result.stderr or ""
   end
 

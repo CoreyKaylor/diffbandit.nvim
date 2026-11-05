@@ -33,6 +33,14 @@ usage: diffbandit [--cached] [--no-untracked] [<rev> [<rev>] | <a>..<b> | <a>...
 A subcommand wins over a branch or path with the same name; write
 `diffbandit -- log` to mean the path.
 
+External tool mode (jj merge-tools, git mergetool/difftool):
+  diffbandit merge <base> <left> <right> <output> [--path P]
+                  three-way merge; exits non-zero unless resolved with :w
+  diffbandit edit <left> <right>
+                  diff editor: edit the right folder/file (jj split, squash -i)
+  diffbandit diff <left> <right>
+                  read-only folder or file diff
+
 Environment:
   DIFFBANDIT_NVIM          nvim executable (default: nvim)
   DIFFBANDIT_NVIM_APPNAME  NVIM_APPNAME for a dedicated nvim config
@@ -55,8 +63,11 @@ if [ $# -gt 0 ]; then
   DIFFBANDIT_ARGV=$(printf '%s\037' "$@")
 fi
 DIFFBANDIT_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/diffbandit.XXXXXX") || exit 1
-export DIFFBANDIT_ARGV DIFFBANDIT_ERRFILE
-trap 'rm -f "$DIFFBANDIT_ERRFILE"' EXIT
+# The merge subcommand records "resolved" here; quitting without resolving
+# must fail so jj/git keep the conflict.
+DIFFBANDIT_STATUSFILE=$(mktemp "${TMPDIR:-/tmp}/diffbandit-status.XXXXXX") || exit 1
+export DIFFBANDIT_ARGV DIFFBANDIT_ERRFILE DIFFBANDIT_STATUSFILE
+trap 'rm -f "$DIFFBANDIT_ERRFILE" "$DIFFBANDIT_STATUSFILE"' EXIT
 
 # Prefer the command: lazy plugin managers load the plugin on its commands,
 # not on require().
@@ -76,5 +87,9 @@ trap 'rm -f "$DIFFBANDIT_ERRFILE"' EXIT
 status=$?
 if [ -s "$DIFFBANDIT_ERRFILE" ]; then
   cat "$DIFFBANDIT_ERRFILE" >&2
+fi
+if [ "$1" = merge ] && [ "$status" -eq 0 ] && ! grep -q resolved "$DIFFBANDIT_STATUSFILE"; then
+  echo "diffbandit: merge not resolved (save the result with :w)" >&2
+  status=1
 fi
 exit $status

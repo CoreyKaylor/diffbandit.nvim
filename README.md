@@ -37,6 +37,9 @@ documents without distorting either one.
 - Merge conflict group in the commit panel with a local/result/remote resolver,
   editable result pane with editor integrations, gutter-guided accept actions,
   and resolve-on-write staging.
+- Native [Jujutsu (jj)](https://github.com/jj-vcs/jj) support: the same
+  review, hunk staging (squash workflow into `@-`), commit panel, log, compare,
+  and conflict resolution, plus `bin/diffbandit` as jj's merge and diff editor.
 - Recursive folder comparison with efficient external digest checks and child
   file diffs that return to the folder view.
 - One-column overview gutters that show changed regions proportionally across
@@ -290,6 +293,80 @@ list that command among its load triggers. Set `DIFFBANDIT_NVIM_APPNAME` to use
 a dedicated config (`NVIM_APPNAME`) or `DIFFBANDIT_NVIM` to pick the nvim
 executable.
 
+### External merge and diff tool
+
+The same script can be called with file or folder paths, outside any
+repository. This is how jj and git use it as an external tool:
+
+```sh
+diffbandit merge BASE LEFT RIGHT OUTPUT [--path P]  # 3-way merge; :w resolves
+diffbandit edit LEFT RIGHT     # editable folder/file diff (jj split, squash -i)
+diffbandit diff LEFT RIGHT     # read-only folder/file diff
+```
+
+A branch or path named `merge`, `edit`, or `diff` needs a leading `--`
+(`diffbandit -- diff`). `merge` writes `OUTPUT` when you `:w` the result. Quitting without resolving
+exits non-zero, so the conflict is kept. In `edit`, you edit the right side in
+place, through hunk apply actions or by hand, and `:w` saves each file. `:cq`
+aborts the operation.
+
+Git:
+
+```sh
+git config --global mergetool.diffbandit.cmd 'diffbandit merge "$BASE" "$LOCAL" "$REMOTE" "$MERGED" --path "$MERGED"'
+git config --global mergetool.diffbandit.trustExitCode true
+git config --global difftool.diffbandit.cmd 'diffbandit diff "$LOCAL" "$REMOTE"'
+```
+
+## Jujutsu (jj)
+
+In a jj workspace (colocated or not), every Git command, the launcher, and the
+panel switch to the jj backend automatically. Set `vcs.prefer = "git"` to
+force Git in a colocated repo. Revisions accept any jj revset.
+
+| DiffBandit | jj |
+|---|---|
+| unstaged view (default) | `@-` → `@` (what `jj diff` shows) |
+| staged view (`--cached`) | `@--` → `@-` |
+| all view | `@--` → `@`, with stage indicators |
+| stage hunk / file | move it from `@` into the staging change `@-` (`@`'s content is unchanged) |
+| unstage hunk / file | move it from `@-` back into `@` |
+| discard | restore the file in `@` from `@-` |
+| commit (`:w` in the panel) | describe the staging change and open a fresh one under `@`. With nothing staged, all of `@` is committed. Without a staging change, `jj commit` |
+| amend | stage into and re-describe the commit `@-` |
+| conflicts | `jj resolve --list` entries open in the merge resolver; `:w` writes the working copy |
+| checkout | `jj new <rev>` |
+
+This is the jj "squash workflow". The staging change is an undescribed,
+mutable `@-`, and `@` is your scratch space. If `@-` is a described commit (for
+example right after `jj commit`), your first stage from the unstaged view
+creates an empty staging change under `@` (`jj new --insert-before @`), so an
+existing commit is never changed by accident. To change that commit, turn on
+amend: it abandons an empty staging change left by the last commit, stages
+straight into `@-`, and `:w` rewrites its description. `jj.default_mode = "all"`
+opens the all view instead.
+
+To use diffbandit as jj's merge and diff editor (`jj resolve`, `jj split`,
+`jj squash -i`, `jj commit -i`), add this to `~/.config/jj/config.toml`:
+
+```toml
+[merge-tools.diffbandit]
+program = "diffbandit"   # bin/diffbandit on PATH
+merge-args = ["merge", "$base", "$left", "$right", "$output", "--path", "$path"]
+edit-args = ["edit", "$left", "$right"]
+diff-args = ["diff", "$left", "$right"]
+merge-tool-edits-conflict-markers = false
+
+[ui]
+merge-editor = "diffbandit"
+diff-editor = "diffbandit"
+```
+
+Current limits:
+- Conflicts with more than two sides, or that involve a deletion, are left to
+  `jj resolve`.
+- When `@` is a merge commit, the review lists only its conflicts.
+
 ## Default Keys
 
 Press `g?` in any DiffBandit window to see its keys. The list comes from
@@ -481,6 +558,12 @@ require("diffbandit").setup({
     snap_key = "]s",
     close_key = "q",
     help_key = "g?",
+  },
+  vcs = {
+    prefer = "auto", -- "auto" (jj in jj workspaces), "git", or "jj"
+  },
+  jj = {
+    default_mode = "unstaged", -- or "all"
   },
   git = {
     default_mode = "all",
@@ -755,6 +838,7 @@ diffbandit.git_compare("main", "feature")
 diffbandit.git_compare_branches({})
 diffbandit.git_checkout("feature")
 diffbandit.merge("path/to/conflicted-file")
+diffbandit.merge_files({ base = "B", left = "L", right = "R", output = "O" }) -- external 3-way merge
 diffbandit.commit_panel({})
 diffbandit.git_panel({})             -- working-tree changes, panel open on the first file
 diffbandit.launch({ "main...HEAD" }) -- what bin/diffbandit runs (git diff-style args)

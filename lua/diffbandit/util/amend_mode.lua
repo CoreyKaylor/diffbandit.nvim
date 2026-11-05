@@ -2,7 +2,7 @@
 -- standalone commit panel): seeds the commit message from the last commit
 -- and reloads the file queue against the amend base.
 local nvim = require("diffbandit.util.nvim")
-local git = require("diffbandit.git")
+local git = require("diffbandit.vcs")
 local panel_mod = require("diffbandit.panel")
 local queue_host = require("diffbandit.host.queue")
 

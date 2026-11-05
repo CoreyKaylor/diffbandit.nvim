@@ -125,6 +125,16 @@ local defaults = {
     prompt_message = "Reached final change in this diff. Open next file with changes?",
     on_request_next_file = nil,
   },
+  vcs = {
+    -- "auto": jj when the repository has a .jj workspace (and jj is
+    -- installed), git otherwise. "git" / "jj" force a backend.
+    prefer = "auto",
+  },
+  jj = {
+    -- Initial review mode in jj repos: "unstaged" (@- -> @, like `jj diff`)
+    -- or "all" (@-- -> @, with stage indicators for hunks already in @-).
+    default_mode = "unstaged",
+  },
   git = {
     default_mode = "all",
     default_scope = "repo",

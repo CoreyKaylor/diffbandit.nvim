@@ -897,11 +897,13 @@ function M.log(root, opts)
 end
 
 function M.commit_metadata(root, rev)
-  local commits, err = M.log(root, { rev = "-1", max_count = 1 })
-  if not commits then
-    return nil, err
-  end
-  if rev and rev ~= "" then
+  local commits, err
+  if not rev or rev == "" then
+    commits, err = M.log(root, { rev = "-1", max_count = 1 })
+    if not commits then
+      return nil, err
+    end
+  else
     local args = { "log" }
     vim.list_extend(args, log_format_args())
     args[#args + 1] = "-1"
@@ -1340,10 +1342,6 @@ end
 
 function M.abs_path(root, path)
   return abs_path(root, path)
-end
-
-function M.relpath(root, path)
-  return relpath(root, path)
 end
 
 function M.git_output(root, args)
@@ -1854,6 +1852,20 @@ M._private = {
   parse_raw = parse_raw,
   discover_root = discover_root,
   split_char = split_char,
+}
+
+-- Worktree/buffer readers the jj backend reuses (the working copy is plain
+-- files in both systems).
+M._shared = {
+  abs_path = abs_path,
+  normalize_path = normalize_path,
+  read_worktree = read_worktree,
+  read_worktree_raw = read_worktree_raw,
+  read_worktree_symlink = read_worktree_symlink,
+  find_loaded_buffer = find_loaded_buffer,
+  has_modified_loaded_buffer = has_modified_loaded_buffer,
+  entry_uses_modified_buffer = entry_uses_modified_buffer,
+  worktree_mode = worktree_mode,
 }
 
 return M

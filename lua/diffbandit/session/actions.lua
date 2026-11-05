@@ -1,5 +1,5 @@
 local nvim = require("diffbandit.util.nvim")
-local git_mod = require("diffbandit.git")
+local git_mod = require("diffbandit.vcs")
 local diff_mod = require("diffbandit.diff")
 local source_mod = require("diffbandit.util.source")
 local text = require("diffbandit.util.text")
@@ -440,6 +440,12 @@ function M.stage(session)
   if mode ~= "unstaged" and mode ~= "all" then
     return false, "stage hunk is only available in unstaged or all Git diffs"
   end
+  -- Backends without an index (jj) may need to set up a stage target;
+  -- git has no prepare_stage (the proxy returns nil).
+  local ready, prep_err = git_mod.prepare_stage(ctx.root, ctx.opts, "stage")
+  if ready == false then
+    return false, prep_err
+  end
   return apply_sides(session, "right", "left", { action = "stage" })
 end
 
@@ -455,6 +461,10 @@ function M.unstage(session)
   local mode = ctx.opts.mode or "unstaged"
   if mode ~= "staged" and mode ~= "all" then
     return false, "unstage hunk is only available in staged or all Git diffs"
+  end
+  local ready, prep_err = git_mod.prepare_stage(ctx.root, ctx.opts, "unstage")
+  if ready == false then
+    return false, prep_err
   end
   if mode == "all" and (ctx.opts.base or "HEAD") ~= staging_reference(ctx.opts) then
     return apply_sides(session, "left", "left", { action = "unstage" })
