@@ -1480,10 +1480,6 @@ function M.abs_path(root, path)
   return abs_path(root, path)
 end
 
-function M.relpath(root, path)
-  return relpath(root, path)
-end
-
 function M.git_output(root, args)
   return git_output(root, args)
 end
@@ -2014,6 +2010,20 @@ M._private = {
   parse_raw = parse_raw,
   discover_root = discover_root,
   split_char = split_char,
+}
+
+-- Worktree/buffer readers the jj backend reuses (the working copy is plain
+-- files in both systems).
+M._shared = {
+  abs_path = abs_path,
+  normalize_path = normalize_path,
+  read_worktree = read_worktree,
+  read_worktree_raw = read_worktree_raw,
+  read_worktree_symlink = read_worktree_symlink,
+  find_loaded_buffer = find_loaded_buffer,
+  has_modified_loaded_buffer = has_modified_loaded_buffer,
+  entry_uses_modified_buffer = entry_uses_modified_buffer,
+  worktree_mode = worktree_mode,
 }
 
 return M

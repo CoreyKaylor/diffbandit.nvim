@@ -1,4 +1,4 @@
-local git = require("diffbandit.git")
+local git = require("diffbandit.vcs")
 local nvim = require("diffbandit.util.nvim")
 local log_view = require("diffbandit.util.log_view")
 

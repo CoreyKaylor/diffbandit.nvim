@@ -14,7 +14,7 @@
 --   diffbandit edit <left> <right>     (editable right side: jj diff-editor)
 --   diffbandit diff <left> <right>     (read-only)
 
-local git = require("diffbandit.git")
+local git = require("diffbandit.vcs")
 local panel_mod = require("diffbandit.panel")
 local state = require("diffbandit.state")
 
@@ -489,7 +489,7 @@ local function fail(err)
     return
   end
   pcall(vim.fn.writefile, { "diffbandit: " .. message }, errfile)
-  if message == "no git changes" then
+  if git.is_no_changes(message) then
     vim.cmd("qall!")
   else
     vim.cmd("cquit 1")

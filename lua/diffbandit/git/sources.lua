@@ -34,6 +34,13 @@ local function source_from_hex(text, path, label, metadata, opts)
   return source
 end
 
+-- Display names for the refs in labels; backends without an index (jj)
+-- override them through queue.opts.ref_labels.
+local function ref_label(opts, key, default)
+  local labels = opts and opts.ref_labels
+  return labels and labels[key] or default
+end
+
 local function source_from_binary_notice(path, label, metadata)
   local source = source_from_text("[DiffBandit: binary file hidden]\n", path, label, metadata)
   source.git_binary_hidden = true
@@ -269,7 +276,11 @@ function M.new(readers)
     end
 
     if side == "left" then
-      if entry.untracked or (entry.status == "A" and (mode == "staged" or mode == "all" or mode == "rev")) then
+      -- Without an index (jj), an added file is absent on the left in
+      -- every mode, including unstaged.
+      local added_absent = entry.status == "A"
+        and (mode == "staged" or mode == "all" or mode == "rev" or opts.index_tracks_additions == false)
+      if entry.untracked or added_absent then
         local label
         if entry.untracked then
           label = string.format("%s (not tracked)", label_path)
@@ -277,8 +288,10 @@ function M.new(readers)
           label = string.format("%s (%s: absent)", label_path, opts.base)
         elseif opts.unborn_head then
           label = string.format("%s (empty tree: absent)", label_path)
+        elseif mode == "unstaged" then
+          label = string.format("%s (%s: absent)", label_path, ref_label(opts, "index", "index"))
         else
-          label = string.format("%s (%s: absent)", label_path, opts.base_label or opts.base or "HEAD")
+          label = string.format("%s (%s: absent)", label_path, opts.base_label or ref_label(opts, "base", opts.base or "HEAD"))
         end
         local absent_ref = entry.untracked and "not tracked"
           or (opts.unborn_head and "empty tree" or (mode == "rev" and opts.base or opts.base_label or opts.base or "HEAD"))
@@ -292,17 +305,18 @@ function M.new(readers)
         })
       end
       if mode == "unstaged" then
-        return git_source(queue, path, string.format("%s (index)", label_path), function()
+        return git_source(queue, path, string.format("%s (%s)", label_path, ref_label(opts, "index", "index")), function()
           return read_blob(root, ":" .. path)
-        end, { git_side = side, git_target = "index", git_ref = "index", git_relpath = path, git_entry_kind = entry.kind })
+        end, { git_side = side, git_target = "index", git_ref = ref_label(opts, "index", "index"), git_relpath = path, git_entry_kind = entry.kind })
       elseif mode == "staged" then
-        return git_source(queue, path, string.format("%s (HEAD)", label_path), function()
+        return git_source(queue, path, string.format("%s (%s)", label_path, ref_label(opts, "base", opts.base or "HEAD")), function()
           return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
         end, { git_side = side, git_target = "head", git_ref = opts.base or "HEAD", git_relpath = path, git_entry_kind = entry.kind })
       elseif mode == "all" then
         -- base_label names a computed base (a merge base) for display.
         local ref = opts.unborn_head and "empty tree" or (opts.base_label or opts.base or "HEAD")
-        return git_source(queue, path, string.format("%s (%s)", label_path, opts.base_label or opts.base or "HEAD"), function()
+        local base_label = opts.base_label or ref_label(opts, "base", opts.base or "HEAD")
+        return git_source(queue, path, string.format("%s (%s)", label_path, base_label), function()
           return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
         end, { git_side = side, git_target = "head", git_ref = ref, git_relpath = path, git_entry_kind = entry.kind })
       elseif mode == "rev" then
@@ -319,7 +333,7 @@ function M.new(readers)
       elseif mode == "rev" then
         label = string.format("%s (%s: absent)", label_path, opts.target)
       else
-        label = string.format("%s (working tree: deleted)", label_path)
+        label = string.format("%s (%s: deleted)", label_path, ref_label(opts, "worktree", "working tree"))
       end
       return empty_source(abs_path(root, path), label, {
         git_state = "deleted",
@@ -331,9 +345,9 @@ function M.new(readers)
       })
     end
     if mode == "staged" then
-      return git_source(queue, path, string.format("%s (index)", label_path), function()
+      return git_source(queue, path, string.format("%s (%s)", label_path, ref_label(opts, "index", "index")), function()
         return read_blob(root, ":" .. path)
-      end, { git_side = side, git_target = "index", git_ref = "index", git_relpath = path, git_entry_kind = entry.kind })
+      end, { git_side = side, git_target = "index", git_ref = ref_label(opts, "index", "index"), git_relpath = path, git_entry_kind = entry.kind })
     elseif mode == "rev" then
       return git_source(queue, path, string.format("%s (%s)", label_path, opts.target), function()
         return read_blob(root, opts.target .. ":" .. path)
@@ -342,19 +356,19 @@ function M.new(readers)
 
     local worktree_path = abs_path(root, path)
     local worktree_bufnr = opts.use_buffer ~= false and find_loaded_buffer(worktree_path) or nil
-    return git_source(queue, path, string.format("%s (working tree)", label_path), function()
+    return git_source(queue, path, string.format("%s (%s)", label_path, ref_label(opts, "worktree", "working tree")), function()
       if opts.use_buffer ~= false and has_modified_loaded_buffer(root, path) then
         return read_worktree(root, path, opts.use_buffer)
       end
       local raw, raw_err = read_worktree_raw(root, path)
       if raw then
-        return raw, nil, "working tree"
+        return raw, nil, ref_label(opts, "worktree", "working tree")
       end
       return nil, raw_err
     end, {
       git_side = side,
       git_target = "worktree",
-      git_ref = "working tree",
+      git_ref = ref_label(opts, "worktree", "working tree"),
       git_relpath = path,
       git_entry_kind = entry.kind,
       editable = {
