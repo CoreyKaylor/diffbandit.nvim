@@ -281,6 +281,41 @@ function M.capture_message_lines(session)
   return panel.message_lines or { "" }
 end
 
+local function has_text(lines)
+  return vim.trim(table.concat(lines or {}, "\n")) ~= ""
+end
+
+local function draft_root(session)
+  if is_review_panel(session) then
+    return nil
+  end
+  local queue = (session or {}).file_queue
+  return queue and queue.kind == "git" and queue.root or nil
+end
+
+-- Remember an unfinished commit message per repository, so closing the view
+-- (q, :DiffBanditClose, :tabclose) never throws it away; the next panel
+-- opened for that repository restores it. A panel that never rendered its
+-- message (and carries none) leaves the saved draft alone, and so does amend
+-- mode, whose message is the amended commit's rather than a draft.
+function M.save_draft(session)
+  local panel = (session or {}).panel
+  local root = draft_root(session)
+  if not (panel and root) or panel.amend then
+    return
+  end
+  local lines
+  if panel.message_initialized and panel.commit_buf and vim.api.nvim_buf_is_valid(panel.commit_buf) then
+    lines = commit_message_lines_from_buffer(panel.commit_buf)
+  else
+    lines = panel.message_lines
+    if not has_text(lines) then
+      return
+    end
+  end
+  state.commit_drafts[root] = has_text(lines) and vim.deepcopy(lines) or nil
+end
+
 function M.clear_amend_opts(opts)
   local clean = vim.tbl_extend("force", {}, opts or {})
   clean.stage_base = nil
@@ -671,6 +706,11 @@ function M.render_commit(session)
   end
   if not panel.message_initialized then
     panel.message_initialized = true
+    local root = draft_root(session)
+    local draft = root and state.commit_drafts[root]
+    if draft and not panel.amend and not has_text(panel.message_lines) then
+      panel.message_lines = vim.deepcopy(draft)
+    end
     if #(panel.message_lines or {}) == 0 then
       panel.message_lines = { "" }
     end
@@ -929,6 +969,10 @@ function M.commit(session)
     nvim.notify_warn(panel.validation_message)
     return false, err
   end
+  local root = draft_root(session)
+  if root then
+    state.commit_drafts[root] = nil
+  end
   panel.message_lines = { "" }
   panel.message_initialized = false
   panel.validation_message = nil
@@ -943,11 +987,25 @@ function M.commit(session)
   return true, nil
 end
 
-function M.close(session)
-  if is_review_panel(session) and panel_api.has(session, "close") then
-    panel_api.close(session)
+-- Delete a closed host's panel buffers. The commit buffer is an acwrite
+-- buffer that is usually modified, so leaving it loaded would make :qa fail
+-- with E37; its text is already saved as a draft by save_draft().
+function M.delete_buffers(session)
+  local panel = (session or {}).panel
+  if not panel then
     return
   end
+  for _, buf in ipairs({ panel.nav_buf, panel.commit_buf }) do
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+      pcall(vim.api.nvim_set_option_value, "modified", false, { buf = buf })
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+  end
+end
+
+-- Hide the panel windows. Closing the whole view is the host's close(), which
+-- the panel's close key calls directly.
+function M.close(session)
   local panel = session.panel
   if not panel then
     return
@@ -1011,7 +1069,14 @@ function M.setup_keymaps(session)
       pcall(vim.cmd, "confirm qall")
       return
     end
-    M.close(session)
+    -- q closes the whole view (diff, merge, or standalone panel), the same
+    -- as q in the diff panes and :DiffBanditClose; the toggle_panel key
+    -- hides only the panel.
+    if panel_api.has(session, "close") then
+      panel_api.close(session)
+    else
+      M.close(session)
+    end
   end
 
   -- lhs = nil/false skips the map (unset config key or failed condition);

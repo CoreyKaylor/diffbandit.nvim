@@ -1430,8 +1430,57 @@ if vim.fn.executable("git") == 1 then
       "Panel preview should keep focus in the panel navigation window")
     assert_eq(merge_session.panel.message_lines[1], "draft merge commit",
       "Panel preview should carry commit message text into the merge resolver")
-    merge_session:close()
-    session:close()
+    assert_eq(session.disposed, true,
+      "Switching to a conflict should close the changed-file view instead of keeping its tab (issue #20)")
+    local tab_count = #vim.api.nvim_list_tabpages()
+
+    assert_eq(merge_session:goto_queue_file(1, "top"), true,
+      "Panel preview should switch from a conflict back to a changed file")
+    local back = state_mod.sessions[vim.api.nvim_get_current_tabpage()]
+    assert_eq(back ~= nil and back ~= merge_session and back.left_buf ~= nil, true,
+      "Switching back should land on the new changed-file view")
+    assert_eq(merge_session.disposed, true,
+      "Switching away from a conflict should close the merge view (issue #20)")
+    assert_eq(#vim.api.nvim_list_tabpages(), tab_count,
+      "Switching between conflicts and changes should reuse one tab, not stack them (issue #20)")
+
+    -- gzp hides and re-shows the panel without closing the diff.
+    vim.api.nvim_set_current_win(back.right_win)
+    buffer_keymap_callback(back.right_buf, "n", "gzp")()
+    assert_eq(back.panel.visible, false, "gzp in a diff pane should hide the commit panel")
+    assert_eq(back.disposed, false, "Hiding the panel should keep the diff open")
+    buffer_keymap_callback(back.right_buf, "n", "gzp")()
+    assert_eq(back.panel.visible, true, "gzp should show the commit panel again")
+    buffer_keymap_callback(back.panel.nav_buf, "n", "gzp")()
+    assert_eq(back.panel.visible, false, "gzp in the panel should hide the panel")
+    local focused = vim.api.nvim_get_current_win()
+    assert_eq(focused == back.left_win or focused == back.right_win, true,
+      "Hiding the focused panel should return focus to a diff pane")
+    back:show_commit_panel()
+
+    -- q in the panel closes the whole view and keeps the unfinished message.
+    assert_eq(vim.api.nvim_buf_get_lines(back.panel.commit_buf, 2, 3, false)[1], "draft merge commit",
+      "The message should survive both view switches")
+    local back_tab = back.tabpage
+    buffer_keymap_callback(back.panel.nav_buf, "n", "q")()
+    assert_eq(back.disposed, true, "q in the commit panel should close the whole diff view")
+    assert_eq(vim.api.nvim_tabpage_is_valid(back_tab), false, "q in the commit panel should close the view's tab")
+    assert_eq((state_mod.commit_drafts[queue.root] or {})[1], "draft merge commit",
+      "Closing a view should save the unfinished commit message for the repository")
+
+    local reloaded = assert((queue.load(1)))
+    local reopened = assert((Session.start({ left = reloaded.left, right = reloaded.right }, config, {
+      queue = queue,
+      panel = true,
+      panel_initial_selection = 1,
+    })))
+    state_mod.register(reopened)
+    assert_eq(vim.api.nvim_buf_get_lines(reopened.panel.commit_buf, 2, 3, false)[1], "draft merge commit",
+      "The next panel for the repository should restore the saved draft")
+    vim.api.nvim_buf_set_lines(reopened.panel.commit_buf, 2, -1, false, { "" })
+    reopened:close()
+    assert_eq(state_mod.commit_drafts[queue.root], nil,
+      "Closing with a cleared message should drop the saved draft")
   end
 
   do
@@ -2267,8 +2316,8 @@ do
     self.closed = true
   end
   panel_mod.close(fake)
-  assert_eq(fake.closed, true,
-    "Closing a review panel should close the owning diff session")
+  assert_eq(fake.closed, false,
+    "Hiding a review panel should not close the owning diff session (q calls the host's close)")
 end
 
 -- Document-navigation keymaps survive LspAttach handlers that install

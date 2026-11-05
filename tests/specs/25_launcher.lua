@@ -88,7 +88,7 @@ do
   session:close()
   assert_eq(launcher.has_live_view(), false, "Closing the session leaves no live view")
 
-  -- Launcher mode: the panel's q quits nvim instead of only hiding the panel.
+  -- Launcher mode: the panel's q quits nvim; otherwise it closes the view.
   do
     local state = require("diffbandit.state")
     local panel_q = function(launched)
@@ -107,8 +107,8 @@ do
 
     local launched = assert((launcher.launch({}, { cwd = repo })))
     local commands = panel_q(launched)
-    assert_eq(commands[1], nil, "Without launcher mode, panel q does not quit")
-    assert_eq(launched.panel.visible, false, "Without launcher mode, panel q hides the panel")
+    assert_eq(commands[1], "tabclose", "Without launcher mode, panel q closes the view's tab")
+    assert_eq(vim.tbl_contains(commands, "confirm qall"), false, "Without launcher mode, panel q does not quit")
     launched:close()
 
     launched = assert((launcher.launch({}, { cwd = repo })))

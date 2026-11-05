@@ -1919,6 +1919,11 @@ function Merge:goto_queue_file(index, chunk_position, opts)
     return false
   end
   state.register(session)
+  -- Replace this merge view rather than stacking a tab per switch (issue #20).
+  self:close()
+  if session.tabpage and vim.api.nvim_tabpage_is_valid(session.tabpage) then
+    pcall(vim.api.nvim_set_current_tabpage, session.tabpage)
+  end
   return true
 end
 
@@ -2157,6 +2162,7 @@ function Merge:close(from_autocmd)
   if self.disposed then
     return
   end
+  panel_mod.save_draft(self)
   self.disposed = true
   kitty.detach(self)
   self:clear_keymaps()

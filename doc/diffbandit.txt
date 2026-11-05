@@ -125,6 +125,12 @@ COMMANDS                                            *diffbandit-commands*
         Open a three-pane resolver for an unmerged Git conflict. If [path] is
         omitted, the current buffer path is used.
 
+                                                   *:DiffBanditClose*
+:DiffBanditClose
+        Close the DiffBandit view in the current tab: a diff, merge, or folder
+        session together with its tab page, or a standalone commit panel.
+        Equivalent to pressing `q`.
+
                                                   *:DiffBanditLaunch*
 :DiffBanditLaunch
         Entry point for the `bin/diffbandit` launcher; see
@@ -204,7 +210,11 @@ Diff view mappings:
   u             Undo the last DiffBandit hunk action for the current file.
 
                                                         *diffbandit-q*
-  q             Close the diff session.
+                                                      *diffbandit-gzp*
+  gzp           Show or hide the commit panel for a Git diff.
+
+  q             Close the diff session. Set by `navigation.close_key`;
+                false disables it.
 
 At a file boundary, |diffbandit-]c| and |diffbandit-[c| first notify that the
 next press will move to the next or previous file. This keeps file navigation
@@ -329,7 +339,14 @@ Panel mappings:
   a             Open file actions for the selected file.
   cc            Focus the commit message window.
   R             Refresh the panel.
-  q             Close the panel.
+  gzp           Hide the panel, keeping the diff open.
+  q             Close the whole view: the diff or merge resolver with its
+                tab page, or the standalone panel. Same as |:DiffBanditClose|.
+
+Closing a view keeps an unfinished commit message: it is saved for the
+repository and restored by the next commit panel opened there. Committing
+clears it. Moving the panel selection between a merge conflict and a changed
+file swaps the view in place, in the same tab page.
 
 Commit message window mappings:
 
@@ -414,6 +431,7 @@ Common configuration:
         bottom = "]d",
       },
       snap_key = "]s",
+      close_key = "q",
     },
     git = {
       default_mode = "all",
@@ -435,6 +453,7 @@ Common configuration:
           file_actions = "a",
           toggle_amend = "<Space>",
           refresh = "R",
+          toggle_panel = "gzp",
           close = "q",
         },
       },

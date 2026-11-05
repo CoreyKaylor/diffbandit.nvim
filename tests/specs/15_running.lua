@@ -77,3 +77,44 @@ do
   state_mod.sessions = saved_sessions
   state_mod.panels = saved_panels
 end
+
+-- Suite: :DiffBanditClose closes the current tab's view (issue #22)
+do
+  local diffbandit = require("diffbandit")
+  if vim.fn.exists(":DiffBanditClose") ~= 2 then
+    dofile(root .. "/plugin/diffbandit.lua")
+  end
+
+  local origin = vim.api.nvim_get_current_tabpage()
+  local session = assert(diffbandit.buffers(
+    (function()
+      local b = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(b, 0, -1, false, { "left" })
+      return b
+    end)(),
+    (function()
+      local b = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(b, 0, -1, false, { "right" })
+      return b
+    end)()))
+  local session_tab = session.tabpage
+  assert_ne(session_tab, origin, "Session opens in its own tab")
+  vim.cmd("DiffBanditClose")
+  assert_eq(session.disposed, true, ":DiffBanditClose disposes the current-tab session")
+  assert_eq(vim.api.nvim_tabpage_is_valid(session_tab), false, ":DiffBanditClose closes the session tab")
+  assert_eq(vim.api.nvim_get_current_tabpage(), origin, ":DiffBanditClose returns to the origin tab")
+
+  local closed = 0
+  state_mod.panels[origin] = {
+    disposed = false,
+    close = function(self)
+      closed = closed + 1
+      self.disposed = true
+    end,
+  }
+  assert_eq(diffbandit.close(), true, "close() reports closing a standalone panel")
+  assert_eq(closed, 1, "close() closes the standalone commit panel in this tab")
+  state_mod.panels[origin] = nil
+
+  assert_eq(diffbandit.close(), false, "close() is a no-op without a DiffBandit view in this tab")
+end

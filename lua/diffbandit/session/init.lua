@@ -558,9 +558,11 @@ function Session:setup_keymaps()
     map(buf, "[c", function()
       self:goto_prev_chunk()
     end)
-    map(buf, "q", function()
-      self:close()
-    end)
+    if navigation.close_key then
+      map(buf, navigation.close_key, function()
+        self:close()
+      end)
+    end
     if document_keys.top then
       map(buf, document_keys.top, function()
         self:goto_document_edge("top")
@@ -626,6 +628,14 @@ function Session:setup_keymaps()
     map(self.right_buf, panel_keys.focus_panel, function()
       self:focus_commit_panel_for_current_file()
     end)
+  end
+  if self.file_queue and self.file_queue.kind == "git" and panel_keys.toggle_panel then
+    for _, buf in ipairs({ self.left_buf, self.right_buf }) do
+      map(buf, panel_keys.toggle_panel, function()
+        self:toggle_commit_panel()
+      end)
+    end
+    self:map_panel_toggle()
   end
   map(self.left_buf, "<C-w>l", function()
     if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
@@ -1002,9 +1012,11 @@ function Session:dispose()
   if self.disposed then
     return
   end
+  panel_mod.save_draft(self)
   self.disposed = true
   kitty.detach(self)
   self:clear_keymaps()
+  panel_mod.delete_buffers(self)
   -- Editable right reuses the user's buffer; without this, band/intraline
   -- extmarks stay visible after q returns to that buffer (issue #5).
   self:clear_buffer_paint_namespaces(self.right_buf)
@@ -1048,6 +1060,22 @@ function Session:close()
     end
   else
     self:dispose()
+  end
+end
+
+-- Switching the panel between a changed file and a merge conflict starts a
+-- different host in its own tab; close this one so the switch replaces the
+-- view instead of stacking a tab per move (issue #20). Unlike close(), this
+-- never returns to a parent view: the replacement is where focus belongs.
+function Session:close_for_replacement(next_host)
+  if self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
+    pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
+    pcall(vim.cmd, "tabclose")
+  end
+  self:dispose()
+  local next_tab = next_host and next_host.tabpage
+  if next_tab and vim.api.nvim_tabpage_is_valid(next_tab) then
+    pcall(vim.api.nvim_set_current_tabpage, next_tab)
   end
 end
 
@@ -1486,6 +1514,7 @@ function Session:open_merge_file(index, opts)
     nvim.notify_error(tostring(start_err))
     return false
   end
+  self:close_for_replacement(session)
   if opts.navigate_change == "prev" then
     session:goto_prev_conflict()
   elseif opts.navigate_change == "next" then
@@ -1622,6 +1651,7 @@ function Session:show_commit_panel(opts)
   else
     panel_mod.attach(self)
   end
+  self:map_panel_toggle()
   self:resize_layout()
   panel_mod.focus_nav(self)
   return true
@@ -1644,12 +1674,41 @@ function Session:focus_commit_panel_for_current_file()
   return self:show_commit_panel({ select_current_file = true })
 end
 
+-- The toggle key also hides the panel while focused in it (as in merge).
+-- Panel buffers can be created after setup_keymaps, so show_commit_panel
+-- re-runs this.
+function Session:map_panel_toggle()
+  local key = config_mod.section(self.config, "git", "panel", "keys").toggle_panel
+  local panel = self.panel
+  if not (key and panel and self.file_queue and self.file_queue.kind == "git") then
+    return
+  end
+  for _, buf in ipairs({ panel.nav_buf, panel.commit_buf }) do
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+      self:set_buffer_keymap("n", buf, key, function()
+        self:toggle_commit_panel()
+      end, { nowait = true, noremap = true, silent = true })
+    end
+  end
+end
+
 function Session:hide_commit_panel()
   if not self.panel then
     return false
   end
+  local current = vim.api.nvim_get_current_win()
+  local in_panel = current == self.panel.nav_win or current == self.panel.commit_win
   panel_mod.close(self)
   self:resize_layout()
+  if in_panel then
+    local target = self.last_source_win
+    if not (target and vim.api.nvim_win_is_valid(target)) then
+      target = self.right_win
+    end
+    if target and vim.api.nvim_win_is_valid(target) then
+      pcall(vim.api.nvim_set_current_win, target)
+    end
+  end
   return true
 end
 

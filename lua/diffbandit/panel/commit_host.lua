@@ -77,8 +77,10 @@ function CommitPanel:close()
   if self.disposed then
     return
   end
+  panel_mod.save_draft(self)
   self:hide_commit_panel()
   self.disposed = true
+  panel_mod.delete_buffers(self)
   state.unregister_panel(self.tabpage)
 end
 

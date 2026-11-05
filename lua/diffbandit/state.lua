@@ -12,6 +12,9 @@ local State = {
   -- Set by the standalone launcher (bin/diffbandit): the panel's close key
   -- quits nvim instead of only hiding the panel.
   quit_on_close = false,
+  -- Unfinished commit messages by repository root, saved when a view with a
+  -- commit panel closes and restored the next time a panel opens there.
+  commit_drafts = {},
 }
 
 function State.set_config(user)
