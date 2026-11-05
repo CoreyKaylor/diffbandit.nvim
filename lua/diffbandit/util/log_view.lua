@@ -6,6 +6,7 @@ local nvim = require("diffbandit.util.nvim")
 local ui = require("diffbandit.util.ui")
 local keyhelp = require("diffbandit.util.keyhelp")
 local config_mod = require("diffbandit.config")
+local state = require("diffbandit.state")
 
 local M = {}
 
@@ -63,9 +64,29 @@ function M.open(config, opts, callbacks)
     ns = vim.api.nvim_create_namespace("DiffBanditGitLog"),
   }
   browser.buf = nvim.make_buffer("diffbandit-git-log", nil, { modifiable = false })
-  browser.win = vim.api.nvim_open_win(browser.buf, true, {
-    split = "below",
-    height = opts.height or 15,
+  if opts.fill then
+    -- The launcher's log takes the whole (empty) startup window.
+    browser.win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(browser.win, browser.buf)
+  else
+    browser.win = vim.api.nvim_open_win(browser.buf, true, {
+      split = "below",
+      height = opts.height or 15,
+    })
+  end
+  function browser.is_open(self)
+    return self.win ~= nil and vim.api.nvim_win_is_valid(self.win) and vim.api.nvim_win_get_buf(self.win) == self.buf
+  end
+  function browser.tabpage(self)
+    return self:is_open() and vim.api.nvim_win_get_tabpage(self.win) or nil
+  end
+  state.register_view(browser)
+  vim.api.nvim_create_autocmd({ "BufWipeout", "BufHidden" }, {
+    buffer = browser.buf,
+    once = true,
+    callback = function()
+      state.unregister_view(browser)
+    end,
   })
   nvim.set_window_options(browser.win, {
     number = false,
@@ -93,8 +114,16 @@ function M.open(config, opts, callbacks)
     end, map_opts("General", "Show this key help"))
   end
   vim.keymap.set("n", "q", function()
+    if require("diffbandit.launcher").should_quit_on_close(browser:tabpage()) then
+      pcall(vim.cmd, "confirm qall")
+      return
+    end
+    state.unregister_view(browser)
     if browser.win and vim.api.nvim_win_is_valid(browser.win) then
-      pcall(vim.api.nvim_win_close, browser.win, true)
+      if not pcall(vim.api.nvim_win_close, browser.win, true) then
+        -- The last window of the last tab cannot close; leave an empty one.
+        pcall(vim.api.nvim_win_set_buf, browser.win, vim.api.nvim_create_buf(true, true))
+      end
     end
   end, map_opts("General", "Close the log"))
   vim.keymap.set("n", "<CR>", function()

@@ -15,6 +15,9 @@ local State = {
   -- Unfinished commit messages by repository root, saved when a view with a
   -- commit panel closes and restored the next time a panel opens there.
   commit_drafts = {},
+  -- Other DiffBandit windows the launcher counts as open views (the git log
+  -- browser): view -> true, each with an is_open() method.
+  views = {},
 }
 
 function State.set_config(user)
@@ -45,6 +48,14 @@ end
 
 function State.unregister_panel(tabpage)
   State.panels[tabpage] = nil
+end
+
+function State.register_view(view)
+  State.views[view] = true
+end
+
+function State.unregister_view(view)
+  State.views[view] = nil
 end
 
 return State

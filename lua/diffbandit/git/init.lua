@@ -977,6 +977,43 @@ function M.merge_base(root, base, target)
   return output ~= "" and output or nil, nil
 end
 
+-- The branch a feature branch merges back into: the remote's HEAD
+-- (origin/HEAD -> origin/main), else a local main or master.
+function M.default_branch(root)
+  local remotes = {}
+  local upstream_remote = git_output(root, { "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}" })
+  upstream_remote = upstream_remote and vim.trim(upstream_remote):match("^([^/]+)/")
+  if upstream_remote then
+    remotes[#remotes + 1] = upstream_remote
+  end
+  if upstream_remote ~= "origin" then
+    remotes[#remotes + 1] = "origin"
+  end
+  for _, remote in ipairs(remotes) do
+    local ref = git_output(root, { "rev-parse", "--abbrev-ref", remote .. "/HEAD" })
+    ref = ref and vim.trim(ref) or ""
+    if ref ~= "" and ref ~= remote .. "/HEAD" and M.is_revision(root, ref) then
+      return ref, nil
+    end
+  end
+  for _, name in ipairs({ "main", "master" }) do
+    if M.is_revision(root, name) then
+      return name, nil
+    end
+  end
+  return nil, "no default branch found (no origin/HEAD, main, or master); name a base: diffbandit compare <base>"
+end
+
+-- The current branch's upstream (@{upstream}) as a short ref, or nil.
+function M.upstream(root)
+  local ref = git_output(root, { "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}" })
+  ref = ref and vim.trim(ref) or ""
+  if ref == "" then
+    return nil, "the current branch has no upstream"
+  end
+  return ref, nil
+end
+
 -- True when rev names a commit-ish (used to tell revisions from pathspecs).
 function M.is_revision(root, rev)
   if not rev or rev == "" or rev:sub(1, 1) == "-" then

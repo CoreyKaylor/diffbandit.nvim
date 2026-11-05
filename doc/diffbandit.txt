@@ -331,6 +331,23 @@ Arguments follow `git diff`:
   diffbandit show HEAD          # review a single commit
   diffbandit main -- lua/       # cwd-relative pathspecs
 <
+Subcommands:
+>sh
+  diffbandit compare [<base>]   # branch work, committed or not, against
+                                # its merge base with <base> (default:
+                                # origin/HEAD, else main or master)
+  diffbandit compare --direct <base>  # against <base> itself
+  diffbandit compare --unpushed # against the upstream
+  diffbandit compare <a> <b>    # read-only review, same as <a>...<b>
+  diffbandit log [--all] [-n <count>] [<rev>] [-- <path>...]
+  diffbandit stash [<n>]        # review stash@{<n>}
+<
+`compare` keeps the commit panel and the editable working tree; hunk
+staging stages only a hunk's pending lines, never committed ones. The log
+loads the latest 1000 commits unless `-n` is given, and closing a review
+opened from it returns to the log. A subcommand wins over a branch or path
+of the same name: `diffbandit -- log` means the path.
+
 The launcher uses your normal nvim config and runs |:DiffBanditLaunch|, so a
 lazy-loaded plugin should list that command among its load triggers.
 `DIFFBANDIT_NVIM_APPNAME` selects a dedicated config (`NVIM_APPNAME`) and

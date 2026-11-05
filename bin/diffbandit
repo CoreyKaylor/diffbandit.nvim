@@ -7,6 +7,9 @@ usage() {
   cat <<'EOF'
 usage: diffbandit [--cached] [--no-untracked] [<rev> [<rev>] | <a>..<b> | <a>...<b>] [--] [<path>...]
        diffbandit show <rev> [--] [<path>...]
+       diffbandit compare [--direct | --unpushed] [<base> [<target>]] [--] [<path>...]
+       diffbandit log [--all] [-n <count>] [<rev>] [--] [<path>...]
+       diffbandit stash [<n>] [--] [<path>...]
 
   (no revision)   working tree changes, with the commit panel
   --cached        staged changes
@@ -15,6 +18,20 @@ usage: diffbandit [--cached] [--no-untracked] [<rev> [<rev>] | <a>..<b> | <a>...
                   read-only review of <a> against <b>
   <a>...<b>       read-only review of <b> against its merge base with <a>
   show <rev>      read-only review of a single commit
+  compare [<base>]
+                  everything the branch changes, committed or not: the
+                  working tree against its merge base with <base> (default:
+                  origin/HEAD, else main or master), with the commit panel
+    --direct      compare with <base> itself, not the merge base
+    --unpushed    compare with the branch's upstream (what is not pushed)
+  compare <base> <target>
+                  read-only review, the same as <base>...<target>
+  log             commit log browser; Enter reviews a commit
+                  (latest 1000 commits unless -n is given)
+  stash [<n>]     read-only review of stash@{<n>} (default 0)
+
+A subcommand wins over a branch or path with the same name; write
+`diffbandit -- log` to mean the path.
 
 Environment:
   DIFFBANDIT_NVIM          nvim executable (default: nvim)

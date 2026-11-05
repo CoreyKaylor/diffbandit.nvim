@@ -1137,7 +1137,7 @@ function M.setup_keymaps(session)
     M.toggle_amend(session)
   end
   local close = function()
-    if state.quit_on_close then
+    if require("diffbandit.launcher").should_quit_on_close(session.tabpage) then
       pcall(vim.cmd, "confirm qall")
       return
     end

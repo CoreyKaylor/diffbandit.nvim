@@ -263,6 +263,25 @@ diffbandit show HEAD          # review a single commit
 diffbandit main -- lua/       # pathspecs, relative to the current directory
 ```
 
+Subcommands:
+
+```sh
+diffbandit compare            # the whole branch, committed or not, against its merge base
+                              # with the default branch (origin/HEAD, else main/master)
+diffbandit compare develop    # ... against the merge base with develop
+diffbandit compare --direct main   # against main itself
+diffbandit compare --unpushed # only what the upstream does not have yet
+diffbandit compare main feature    # read-only review, same as main...feature
+diffbandit log -n 50 -- lua/  # commit log browser; Enter reviews a commit
+diffbandit stash 1            # review stash@{1}
+```
+
+`compare` keeps the commit panel and the editable working tree. Hunk staging
+there stages only the pending part of a hunk; committed changes cannot be
+staged. A subcommand wins over a branch or path with the same name
+(`diffbandit -- log` means the path). Closing a review opened from the log
+returns to the log; `q` in the last open view quits.
+
 The launcher starts nvim with your normal config, so diffbandit.nvim must be
 installed there. It runs `:DiffBanditLaunch`, so a lazy-loaded plugin should
 list that command among its load triggers. Set `DIFFBANDIT_NVIM_APPNAME` to use

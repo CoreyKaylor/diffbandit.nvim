@@ -186,3 +186,129 @@ do
   assert_eq(vim.trim(result.stdout or ""), "lazy commands loaded",
     "the plugin file defines commands without requiring diffbandit; the first command loads it")
 end
+
+-- Subcommands: compare, log, stash.
+do
+  local launcher = require("diffbandit.launcher")
+  local known_revs = { HEAD = true, main = true, feature = true }
+  local function parse(args)
+    return launcher.parse(args, function(arg)
+      return known_revs[arg] == true
+    end)
+  end
+
+  local plan = assert(parse({ "compare" }))
+  assert_eq(plan.kind, "compare_worktree", "compare alone compares the working tree with the default branch")
+  assert_eq(plan.base, nil, "compare alone leaves the base to the default branch")
+  plan = assert(parse({ "compare", "main", "--", "lua" }))
+  assert_eq(plan.base, "main", "compare <base> names the base")
+  assert_eq(plan.opts.pathspecs[1], "lua", "compare forwards pathspecs")
+  plan = assert(parse({ "compare", "--direct", "main" }))
+  assert_eq(plan.direct, true, "--direct compares with the base itself")
+  plan = assert(parse({ "compare", "--unpushed" }))
+  assert_eq(plan.unpushed, true, "--unpushed compares with the upstream")
+  assert_eq(parse({ "compare", "--unpushed", "main" }), nil, "--unpushed takes no revision")
+  plan = assert(parse({ "compare", "main", "feature" }))
+  assert_eq(plan.kind, "compare", "compare <base> <target> is the read-only review")
+  assert_eq(plan.opts.direct, nil, "the two-ref review uses the merge base by default")
+  plan = assert(parse({ "compare", "main...feature" }))
+  assert_eq(plan.kind .. " " .. plan.base .. " " .. plan.target, "compare main feature", "compare accepts a...b")
+  assert_eq(plan.opts.direct, nil, "a...b is the merge-base review")
+  plan = assert(parse({ "compare", "main..feature" }))
+  assert_eq(plan.opts.direct, true, "a..b is the direct review")
+  assert_eq(parse({ "compare", "--bogus" }), nil, "compare rejects unknown options")
+
+  plan = assert(parse({ "log" }))
+  assert_eq(plan.kind, "log", "log opens the log browser")
+  plan = assert(parse({ "log", "--all", "-n", "5" }))
+  assert_eq(plan.opts.all and plan.opts.max_count, 5, "log --all -n 5")
+  assert_eq(assert(parse({ "log", "-n7" })).opts.max_count, 7, "-n<count> form")
+  assert_eq(assert(parse({ "log", "--max-count=9" })).opts.max_count, 9, "--max-count=<count> form")
+  plan = assert(parse({ "log", "main", "lua" }))
+  assert_eq(plan.opts.rev .. " " .. plan.opts.pathspecs[1], "main lua", "log <rev> <path>")
+  assert_eq(assert(parse({ "log", "main..feature" })).opts.rev, "main..feature", "log takes a range")
+  assert_eq(parse({ "log", "-n" }), nil, "-n needs a count")
+  assert_eq(parse({ "log", "--all", "main" }), nil, "log --all takes no revision")
+
+  assert_eq(assert(parse({ "stash" })).rev, "stash@{0}", "stash reviews the latest entry")
+  assert_eq(assert(parse({ "stash", "2" })).rev, "stash@{2}", "stash <n>")
+  assert_eq(assert(parse({ "stash", "stash@{1}" })).rev, "stash@{1}", "stash stash@{n}")
+  assert_eq(parse({ "stash", "nope" }), nil, "stash rejects other arguments")
+
+  plan = assert(parse({ "--", "log" }))
+  assert_eq(plan.kind .. " " .. plan.opts.pathspecs[1], "status log", "-- log means the path, not the subcommand")
+end
+
+do
+  local launcher = require("diffbandit.launcher")
+  local state = require("diffbandit.state")
+  local remote = vim.fn.tempname()
+  vim.fn.mkdir(remote, "p")
+  git_test_command({ "init", "-q", "--bare" }, remote)
+  local repo = make_git_repo()
+  git_test_command({ "checkout", "-q", "-b", "main" }, repo)
+  write_repo_file(repo, "shared.txt", { "base" })
+  write_repo_file(repo, "pending.txt", { "one" })
+  commit_baseline(repo)
+  git_test_command({ "remote", "add", "origin", remote }, repo)
+  git_test_command({ "push", "-q", "origin", "main" }, repo)
+  git_test_command({ "remote", "set-head", "origin", "main" }, repo)
+  git_test_command({ "switch", "-q", "-c", "topic" }, repo)
+  write_repo_file(repo, "shared.txt", { "base", "committed on topic" })
+  git_test_command({ "commit", "-q", "-am", "topic work" }, repo)
+  write_repo_file(repo, "pending.txt", { "one", "pending" })
+  local merge_base = vim.trim(git_test_command({ "merge-base", "origin/main", "HEAD" }, repo))
+
+  assert_eq(require("diffbandit.git").default_branch(repo), "origin/main", "the default branch comes from origin/HEAD")
+  local session = assert((launcher.launch({ "compare" }, { cwd = repo })))
+  local opts = session.file_queue.opts
+  assert_eq(opts.base, merge_base, "compare diffs against the merge base with origin/main")
+  assert_eq(opts.base_label, "merge-base origin/main", "the base is labelled for display")
+  local paths = {}
+  for _, entry in ipairs(session.file_queue.entries) do
+    paths[#paths + 1] = entry.path
+  end
+  assert_eq(table.concat(paths, ","), "pending.txt,shared.txt", "committed and pending changes both appear")
+  assert_eq(session.left.label:find("merge-base origin/main", 1, true) ~= nil, true, "the left pane names the base")
+  assert_eq(session.panel ~= nil, true, "compare keeps the commit panel")
+  session:close()
+
+  session = assert((launcher.launch({ "compare", "--direct", "main" }, { cwd = repo })))
+  assert_eq(session.file_queue.opts.base, "main", "--direct compares with the base itself")
+  session:close()
+  local _, err = launcher.launch({ "compare", "--unpushed" }, { cwd = repo })
+  assert_eq(err, "the current branch has no upstream", "--unpushed explains a missing upstream")
+  git_test_command({ "push", "-q", "-u", "origin", "topic" }, repo)
+  session = assert((launcher.launch({ "compare", "--unpushed" }, { cwd = repo })))
+  assert_eq(#session.file_queue.entries, 1, "--unpushed shows only what the upstream lacks")
+  session:close()
+
+  -- log: the browser counts as a live view, so closing a review opened from
+  -- it returns to the log instead of quitting the launcher.
+  vim.cmd("tabnew")
+  local log_tab = vim.api.nvim_get_current_tabpage()
+  local browser = assert((launcher.launch({ "log", "-n", "1" }, { cwd = repo })))
+  assert_eq(#browser.commits, 1, "-n limits the log")
+  assert_eq(vim.api.nvim_get_current_win(), browser.win, "the launcher's log fills the current window")
+  assert_eq(launcher.has_live_view(), true, "the log is a live view")
+  state.quit_on_close = true
+  assert_eq(launcher.should_quit_on_close(log_tab), true, "closing the only view quits")
+  local review = assert((require("diffbandit").git_commit("HEAD", { root = repo })))
+  assert_eq(launcher.should_quit_on_close(review.tabpage), false, "closing a review opened from the log does not quit")
+  state.quit_on_close = false
+  review:close()
+  assert_eq(launcher.has_live_view(), true, "the log stays open after the review closes")
+  browser = assert((launcher.launch({ "log" }, { cwd = repo })))
+  assert_eq(#browser.commits, 2, "without -n the log lists the history (up to the default cap)")
+  state.unregister_view(browser)
+  vim.cmd("tabclose")
+
+  -- stash: a read-only review of the stash entry against its parent.
+  git_test_command({ "stash", "-q" }, repo)
+  session = assert((launcher.launch({ "stash" }, { cwd = repo })))
+  assert_eq(session.file_queue.opts.read_only, true, "a stash review is read-only")
+  assert_eq(session.file_queue.entries[1].path, "pending.txt", "the stash review shows the stashed change")
+  session:close()
+  _, err = launcher.launch({ "stash", "3" }, { cwd = repo })
+  assert_eq(err, "no stash entry stash@{3}", "a missing stash entry is reported")
+end

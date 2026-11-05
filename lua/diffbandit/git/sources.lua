@@ -273,10 +273,10 @@ function M.new(readers)
         elseif opts.unborn_head then
           label = string.format("%s (empty tree: absent)", label_path)
         else
-          label = string.format("%s (%s: absent)", label_path, opts.base or "HEAD")
+          label = string.format("%s (%s: absent)", label_path, opts.base_label or opts.base or "HEAD")
         end
         local absent_ref = entry.untracked and "not tracked"
-          or (opts.unborn_head and "empty tree" or (mode == "rev" and opts.base or opts.base or "HEAD"))
+          or (opts.unborn_head and "empty tree" or (mode == "rev" and opts.base or opts.base_label or opts.base or "HEAD"))
         return empty_source(abs_path(root, path), label, {
           git_state = entry.untracked and "untracked" or "absent",
           empty_reason = entry.untracked and "New untracked file" or "New file",
@@ -295,8 +295,9 @@ function M.new(readers)
           return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
         end, { git_side = side, git_target = "head", git_ref = opts.base or "HEAD", git_relpath = path, git_entry_kind = entry.kind })
       elseif mode == "all" then
-        local ref = opts.unborn_head and "empty tree" or (opts.base or "HEAD")
-        return git_source(queue, path, string.format("%s (%s)", label_path, opts.base or "HEAD"), function()
+        -- base_label names a computed base (a merge base) for display.
+        local ref = opts.unborn_head and "empty tree" or (opts.base_label or opts.base or "HEAD")
+        return git_source(queue, path, string.format("%s (%s)", label_path, opts.base_label or opts.base or "HEAD"), function()
           return read_blob(root, (opts.base or "HEAD") .. ":" .. path)
         end, { git_side = side, git_target = "head", git_ref = ref, git_relpath = path, git_entry_kind = entry.kind })
       elseif mode == "rev" then

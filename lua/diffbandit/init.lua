@@ -615,7 +615,7 @@ function M.close()
     nvim.notify_info("no DiffBandit view in this tab")
     return false
   end
-  if state.quit_on_close then
+  if require("diffbandit.launcher").should_quit_on_close(tab) then
     pcall(vim.cmd, "confirm qall")
     return true
   end
