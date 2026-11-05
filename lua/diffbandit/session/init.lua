@@ -13,6 +13,7 @@ local keymaps = require("diffbandit.util.keymaps")
 local session_layout = require("diffbandit.session.layout")
 local render_host = require("diffbandit.session.render_host")
 local config_mod = require("diffbandit.config")
+local keyhelp = require("diffbandit.util.keyhelp")
 local view_builder = require("diffbandit.diff.view")
 local diff_document = require("diffbandit.diff.document")
 local kitty = require("diffbandit.kitty")
@@ -535,14 +536,15 @@ end
 
 function Session:setup_keymaps()
   local opts = { nowait = true, noremap = true, silent = true }
-  local function map(buf, lhs, rhs)
-    self:set_buffer_keymap("n", buf, lhs, rhs, opts)
+  -- section/desc label the mapping for the help window (util/keyhelp).
+  local function map(buf, lhs, rhs, section, desc)
+    self:set_buffer_keymap("n", buf, lhs, rhs, keyhelp.opts(buf, section, desc, opts))
   end
-  local function action_map(buf, lhs, command, fallback)
+  local function action_map(buf, lhs, command, fallback, desc)
     if vim.fn.exists(":" .. command) == 2 then
-      map(buf, lhs, "<Cmd>" .. command .. "<CR>")
+      map(buf, lhs, "<Cmd>" .. command .. "<CR>", "Staging and actions", desc)
     else
-      map(buf, lhs, fallback)
+      map(buf, lhs, fallback, "Staging and actions", desc)
     end
   end
   local navigation = self.config.navigation or {}
@@ -550,68 +552,74 @@ function Session:setup_keymaps()
   local git_keys = config_mod.section(self.config, "git", "file_keys")
   local panel_keys = config_mod.section(self.config, "git", "panel", "keys")
   local action_keys = ((self.config.actions or {}).keys or {})
+  local is_git = self.file_queue and self.file_queue.kind == "git"
 
   local function buffer_maps(buf)
-    map(buf, "]c", function()
-      self:goto_next_chunk()
-    end)
-    map(buf, "[c", function()
-      self:goto_prev_chunk()
-    end)
+    if navigation.help_key then
+      map(buf, navigation.help_key, function()
+        self:show_key_help()
+      end, "General", "Show this key help")
+    end
     if navigation.close_key then
       map(buf, navigation.close_key, function()
         self:close()
-      end)
+      end, "General", "Close this view")
     end
+    map(buf, "]c", function()
+      self:goto_next_chunk()
+    end, "Hunks", "Next hunk")
+    map(buf, "[c", function()
+      self:goto_prev_chunk()
+    end, "Hunks", "Previous hunk")
     if document_keys.top then
       map(buf, document_keys.top, function()
         self:goto_document_edge("top")
-      end)
+      end, "Navigation", "Align both panes to the top")
     end
     if document_keys.bottom then
       map(buf, document_keys.bottom, function()
         self:goto_document_edge("bottom")
-      end)
+      end, "Navigation", "Align both panes to the bottom")
     end
     if navigation.snap_key then
       map(buf, navigation.snap_key, function()
         self:snap_to_cursor()
-      end)
+      end, "Navigation", "Line up the other pane with the cursor line")
     end
     if self.file_queue and git_keys.next then
       map(buf, git_keys.next, function()
         self:goto_next_file()
-      end)
+      end, "Files", "Next file")
     end
     if self.file_queue and git_keys.prev then
       map(buf, git_keys.prev, function()
         self:goto_prev_file()
-      end)
+      end, "Files", "Previous file")
     end
     if action_keys.toggle_stage then
       action_map(buf, action_keys.toggle_stage, "DiffBanditToggleStageHunk", function()
         self:toggle_stage_hunk()
-      end)
+      end, "Stage or unstage the active hunk")
     end
     if action_keys.apply_left then
       action_map(buf, action_keys.apply_left, "DiffBanditApplyLeftHunk", function()
         self:apply_left_hunk()
-      end)
+      end, "Copy the left side of the hunk to the right")
     end
     if action_keys.apply_right then
       action_map(buf, action_keys.apply_right, "DiffBanditApplyRightHunk", function()
         self:apply_right_hunk()
-      end)
+      end, "Copy the right side of the hunk to the left")
     end
     if action_keys.undo then
       if buf == self.right_buf and self.right and self.right.editable then
         map(buf, action_keys.undo, function()
           self:undo_edit_or_action()
-        end)
+        end, "Staging and actions", "Undo the last edit or hunk action")
       else
         action_map(buf, action_keys.undo, "DiffBanditUndo", function()
           self:undo_action()
-        end)
+        end, "Undo the last hunk action")
       end
     end
   end
@@ -622,18 +630,17 @@ function Session:setup_keymaps()
   buffer_maps(self.right_num_buf)
   buffer_maps(self.right_buf)
   if self.file_queue and panel_keys.focus_panel then
-    map(self.left_buf, panel_keys.focus_panel, function()
-      self:focus_commit_panel_for_current_file()
-    end)
-    map(self.right_buf, panel_keys.focus_panel, function()
-      self:focus_commit_panel_for_current_file()
-    end)
+    for _, buf in ipairs({ self.left_buf, self.right_buf }) do
+      map(buf, panel_keys.focus_panel, function()
+        self:focus_commit_panel_for_current_file()
+      end, "Panel", "Open or focus the commit panel")
+    end
   end
-  if self.file_queue and self.file_queue.kind == "git" and panel_keys.toggle_panel then
+  if is_git and panel_keys.toggle_panel then
     for _, buf in ipairs({ self.left_buf, self.right_buf }) do
       map(buf, panel_keys.toggle_panel, function()
         self:toggle_commit_panel()
-      end)
+      end, "Panel", "Show or hide the commit panel")
     end
     self:map_panel_toggle()
   end
@@ -641,13 +648,39 @@ function Session:setup_keymaps()
     if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
       vim.api.nvim_set_current_win(self.right_win)
     end
-  end)
+  end, "Navigation", "Go to the right pane")
   map(self.right_buf, "<C-w>h", function()
     if self.left_win and vim.api.nvim_win_is_valid(self.left_win) then
       vim.api.nvim_set_current_win(self.left_win)
     end
-  end)
+  end, "Navigation", "Go to the left pane")
   keymaps.reassert_later(self, { self.left_buf, self.right_buf })
+end
+
+-- Header legend for the help window: what the compact status fields mean.
+function Session:key_help_notes()
+  if not self.status_enabled then
+    return nil
+  end
+  local rows = {}
+  if self.file_queue and self.file_queue.kind == "git" then
+    rows[#rows + 1] = { keys = "all/unstg/stg", desc = "Which changes this review shows" }
+    rows[#rows + 1] = { keys = "2/6", desc = "File 2 of 6 in the review" }
+    rows[#rows + 1] = { keys = "h3/5", desc = "Hunk 3 of 5 (h-/5: cursor is between hunks)" }
+    rows[#rows + 1] = { keys = "M A D R ??", desc = "Git status of this file (?? untracked)" }
+    rows[#rows + 1] = { keys = "1/5", desc = "Hunks of this file that are staged" }
+  else
+    rows[#rows + 1] = { keys = "h3/5", desc = "Hunk 3 of 5 (h-/5: cursor is between hunks)" }
+  end
+  return { { title = "Header", rows = rows } }
+end
+
+function Session:show_key_help()
+  keyhelp.open(vim.api.nvim_get_current_buf(), {
+    title = "Diff",
+    notes = self:key_help_notes(),
+    help_key = (self.config.navigation or {}).help_key,
+  })
 end
 
 function Session:set_buffer_keymap(mode, buf, lhs, rhs, opts)
@@ -1116,7 +1149,13 @@ function Session:render_status_headers()
   self.status_lines = lines
   ui.set_header_line(self.left_header_buf, self.ns, self.status_lines.left, vim.api.nvim_win_get_width(self.left_header_win))
   ui.set_header_line(self.center_header_buf, self.ns, self.status_lines.center, center_width)
-  ui.set_header_line(self.right_header_buf, self.ns, self.status_lines.right, vim.api.nvim_win_get_width(self.right_header_win))
+  ui.set_header_line_with_right(
+    self.right_header_buf,
+    self.ns,
+    self.status_lines.right,
+    keyhelp.hint((self.config.navigation or {}).help_key),
+    vim.api.nvim_win_get_width(self.right_header_win)
+  )
 end
 
 function Session:replace_sources(sources, opts)
@@ -1687,7 +1726,7 @@ function Session:map_panel_toggle()
     if buf and vim.api.nvim_buf_is_valid(buf) then
       self:set_buffer_keymap("n", buf, key, function()
         self:toggle_commit_panel()
-      end, { nowait = true, noremap = true, silent = true })
+      end, keyhelp.opts(buf, "Panel", "Hide the commit panel", { nowait = true, noremap = true, silent = true }))
     end
   end
 end

@@ -271,6 +271,12 @@ executable.
 
 ## Default Keys
 
+Press `g?` in any DiffBandit window to see its keys. The list comes from
+the window's live mappings, so it reflects your remaps, and it explains the
+compact diff header and the panel's staged symbols. Headers show a `g? help`
+hint; set `navigation.help_key = false` to turn both off. Every mapping also
+has a `DiffBandit: ...` description, so which-key and `:map` list them.
+
 Inside a diff view:
 
 | Key | Action |
@@ -289,6 +295,7 @@ Inside a diff view:
 | `<<` | Apply the right side to the left target |
 | `u` | Undo the last DiffBandit hunk action |
 | `q` | Close the diff session (`navigation.close_key`) |
+| `g?` | Show the keys of the current window (`navigation.help_key`) |
 
 At a file boundary, `]c` and `[c` first notify that the next press will move to
 the next or previous file. This keeps hunk navigation deliberate while still
@@ -451,6 +458,8 @@ require("diffbandit").setup({
       bottom = "]d",
     },
     snap_key = "]s",
+    close_key = "q",
+    help_key = "g?",
   },
   git = {
     default_mode = "all",

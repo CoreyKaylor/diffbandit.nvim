@@ -168,7 +168,19 @@ COMMANDS                                            *diffbandit-commands*
 ==============================================================================
 DEFAULT MAPPINGS                                  *diffbandit-mappings*
 
-Mappings are buffer-local inside DiffBandit buffers.
+Mappings are buffer-local inside DiffBandit buffers. Every DiffBandit view
+answers |diffbandit-g?| with the keys of the window you are in, and each
+mapping carries a "DiffBandit: ..." description, so `:map`, which-key, and
+keymap pickers explain them too.
+
+                                                       *diffbandit-g?*
+  g?            Show the keys of the current window in a floating window,
+                grouped by purpose, with a legend for the diff header and the
+                panel's staged symbols. The list is read from the live
+                mappings, so remapped and disabled keys are shown as they are.
+                q, <Esc>, or g? closes it. Headers show a "g? help" hint.
+                Set by `navigation.help_key`; false disables the key and the
+                hints.
 
 Diff view mappings:
 
@@ -209,10 +221,10 @@ Diff view mappings:
                                                         *diffbandit-u*
   u             Undo the last DiffBandit hunk action for the current file.
 
-                                                        *diffbandit-q*
                                                       *diffbandit-gzp*
   gzp           Show or hide the commit panel for a Git diff.
 
+                                                        *diffbandit-q*
   q             Close the diff session. Set by `navigation.close_key`;
                 false disables it.
 
@@ -432,6 +444,7 @@ Common configuration:
       },
       snap_key = "]s",
       close_key = "q",
+      help_key = "g?",
     },
     git = {
       default_mode = "all",

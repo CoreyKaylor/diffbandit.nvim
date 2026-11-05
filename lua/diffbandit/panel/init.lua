@@ -5,6 +5,7 @@ local config_mod = require("diffbandit.config")
 local layout = require("diffbandit.util.layout")
 local panel_api = require("diffbandit.host.panel_api")
 local state = require("diffbandit.state")
+local keyhelp = require("diffbandit.util.keyhelp")
 
 local M = {}
 
@@ -640,6 +641,8 @@ function M.render_nav(session, preferred_entry_index, opts)
   vim.api.nvim_buf_set_lines(panel.nav_buf, 0, -1, false, lines)
   nvim.set_buffer_options(panel.nav_buf, { modifiable = false })
   apply_nav_highlights(session)
+  keyhelp.place_hint(panel.nav_buf, session.ns, 0,
+    keyhelp.hint(config_mod.section(session.config, "navigation").help_key))
 
   local target_row
   if opts.no_initial_selection then
@@ -677,9 +680,10 @@ function M.render_commit(session)
     if details.date and details.date ~= "" then
       lines[#lines + 1] = "Date: " .. tostring(details.date)
     end
-    if details.help and details.help ~= "" then
+    local help = M.review_help(session)
+    if help ~= "" then
       lines[#lines + 1] = ""
-      lines[#lines + 1] = details.help
+      lines[#lines + 1] = help
     end
     nvim.set_buffer_options(panel.commit_buf, { modifiable = true })
     vim.api.nvim_buf_set_lines(panel.commit_buf, 0, -1, false, lines)
@@ -703,6 +707,13 @@ function M.render_commit(session)
       "  " .. panel.validation_message,
       "DiffBanditDelete",
     }
+  else
+    local keys = panel_config(session).keys or {}
+    local hint = ":w commit"
+    if keys.toggle_amend and keys.toggle_amend ~= "" then
+      hint = hint .. "  " .. keys.toggle_amend .. " amend"
+    end
+    message_label_chunks[#message_label_chunks + 1] = { "  " .. hint, "Comment" }
   end
   if not panel.message_initialized then
     panel.message_initialized = true
@@ -1018,6 +1029,67 @@ function M.close(session)
   panel.visible = false
 end
 
+-- Staged-state symbols, explained in the help window.
+local function staged_indicator_notes(session)
+  local indicator = panel_config(session).staged_indicator or {}
+  local rows = {}
+  for _, item in ipairs({
+    { indicator.unstaged, "Not staged" },
+    { indicator.partial, "Partly staged" },
+    { indicator.staged, "Staged" },
+  }) do
+    if item[1] and item[1] ~= "" then
+      rows[#rows + 1] = { keys = item[1], desc = item[2] }
+    end
+  end
+  return rows
+end
+
+function M.show_key_help(session)
+  local buf = vim.api.nvim_get_current_buf()
+  local panel = session.panel or {}
+  local notes = {}
+  if buf == panel.commit_buf and not is_review_panel(session) then
+    notes[#notes + 1] = {
+      title = "Commit",
+      rows = { { keys = ":w", desc = "Commit staged changes with this message" } },
+    }
+  elseif not is_review_panel(session) then
+    local rows = staged_indicator_notes(session)
+    if #rows > 0 then
+      notes[#notes + 1] = { title = "File list", rows = rows }
+    end
+  end
+  keyhelp.open(buf, {
+    title = buf == panel.commit_buf and not is_review_panel(session) and "Commit message" or "Commit panel",
+    notes = notes,
+    order = { "General", "Files", "Staging and actions", "Commit" },
+    help_key = config_mod.section(session.config, "navigation").help_key,
+  })
+end
+
+-- One-line key summary shown in read-only reviews, built from the
+-- configured keys so remaps and disabled keys stay accurate.
+function M.review_help(session)
+  local keys = panel_config(session).keys or {}
+  local file_keys = config_mod.section((session or {}).config, "git", "file_keys")
+  local help_key = config_mod.section((session or {}).config, "navigation").help_key
+  local parts = {}
+  local function add(lhs, label)
+    if lhs and lhs ~= "" then
+      parts[#parts + 1] = lhs .. " " .. label
+    end
+  end
+  add(keys.focus_diff, "focus diff")
+  if session.file_queue and file_keys.next and file_keys.prev then
+    add(file_keys.next .. "/" .. file_keys.prev, "files")
+  end
+  add("]c/[c", "hunks")
+  add(keys.close, "close")
+  add(help_key, "help")
+  return table.concat(parts, "  ")
+end
+
 local function setup_commit_write_command(session)
   local panel = session.panel
   if not panel or not panel.commit_buf or not vim.api.nvim_buf_is_valid(panel.commit_buf) then
@@ -1081,31 +1153,43 @@ function M.setup_keymaps(session)
 
   -- lhs = nil/false skips the map (unset config key or failed condition);
   -- when = false skips it explicitly.
+  local help_key = config_mod.section((session or {}).config, "navigation").help_key
+  local show_help = function()
+    M.show_key_help(session)
+  end
+
+  -- section/desc label each mapping for the help window (util/keyhelp).
   local specs = {
-    { buf = "nav", lhs = "j", fn = function() M.move(session, 1) end },
-    { buf = "nav", lhs = "k", fn = function() M.move(session, -1) end },
-    { buf = "nav", lhs = keys.toggle_stage, fn = function() M.toggle_stage(session) end },
-    { buf = "nav", lhs = keys.focus_diff, fn = focus_diff },
-    { buf = "nav", lhs = keys.focus_commit, fn = function() M.focus_commit(session) end },
-    { buf = "nav", lhs = keys.file_actions, fn = function() M.open_file_actions(session) end, when = not review },
-    { buf = "nav", lhs = "]c", fn = navigate_change("next") },
-    { buf = "nav", lhs = "[c", fn = navigate_change("prev") },
-    { buf = "nav", lhs = file_keys.next, fn = navigate_file("next"), when = has_queue },
-    { buf = "nav", lhs = file_keys.prev, fn = navigate_file("prev"), when = has_queue },
-    { buf = "nav", lhs = keys.commit, fn = commit, when = not review },
-    { buf = "nav", lhs = keys.toggle_amend, fn = toggle_amend, when = keys.toggle_amend ~= keys.toggle_stage and not review },
-    { buf = "nav", lhs = keys.refresh, fn = function() session:refresh_git_queue() end },
-    { buf = "nav", lhs = keys.close, fn = close },
+    { buf = "nav", lhs = help_key, fn = show_help, section = "General", desc = "Show this key help" },
+    { buf = "nav", lhs = keys.close, fn = close, section = "General", desc = "Close this view" },
+    { buf = "nav", lhs = "j", fn = function() M.move(session, 1) end, section = "Files", desc = "Next file (previews it)" },
+    { buf = "nav", lhs = "k", fn = function() M.move(session, -1) end, section = "Files", desc = "Previous file (previews it)" },
+    { buf = "nav", lhs = keys.focus_diff, fn = focus_diff, section = "Files", desc = "Focus the diff of the selected file" },
+    { buf = "nav", lhs = file_keys.next, fn = navigate_file("next"), when = has_queue, section = "Files", desc = "Open the next file" },
+    { buf = "nav", lhs = file_keys.prev, fn = navigate_file("prev"), when = has_queue, section = "Files", desc = "Open the previous file" },
+    { buf = "nav", lhs = "]c", fn = navigate_change("next"), section = "Hunks", desc = "Next hunk in the selected file" },
+    { buf = "nav", lhs = "[c", fn = navigate_change("prev"), section = "Hunks", desc = "Previous hunk in the selected file" },
+    { buf = "nav", lhs = keys.toggle_stage, fn = function() M.toggle_stage(session) end,
+      section = "Staging and actions", desc = "Stage or unstage the selected file" },
+    { buf = "nav", lhs = keys.file_actions, fn = function() M.open_file_actions(session) end, when = not review,
+      section = "Staging and actions", desc = "File actions (discard, delete, ignore, ...)" },
+    { buf = "nav", lhs = keys.focus_commit, fn = function() M.focus_commit(session) end,
+      section = "Commit", desc = review and "Focus the review details" or "Write the commit message" },
+    { buf = "nav", lhs = keys.commit, fn = commit, when = not review, section = "Commit", desc = "Commit staged changes" },
+    { buf = "nav", lhs = keys.toggle_amend, fn = toggle_amend, when = keys.toggle_amend ~= keys.toggle_stage and not review,
+      section = "Commit", desc = "Toggle amend mode" },
+    { buf = "nav", lhs = keys.refresh, fn = function() session:refresh_git_queue() end, section = "Panel", desc = "Refresh the file list" },
 
-    { buf = "commit", lhs = keys.focus_diff, fn = focus_diff, when = review },
-    { buf = "commit", lhs = "]c", fn = navigate_change("next"), when = review },
-    { buf = "commit", lhs = "[c", fn = navigate_change("prev"), when = review },
-    { buf = "commit", lhs = file_keys.next, fn = navigate_file("next"), when = review and has_queue },
-    { buf = "commit", lhs = file_keys.prev, fn = navigate_file("prev"), when = review and has_queue },
-    { buf = "commit", lhs = keys.close, fn = close, when = review },
+    { buf = "commit", lhs = help_key, fn = show_help, section = "General", desc = "Show this key help" },
+    { buf = "commit", lhs = keys.close, fn = close, when = review, section = "General", desc = "Close this view" },
+    { buf = "commit", lhs = keys.focus_diff, fn = focus_diff, when = review, section = "Files", desc = "Focus the diff" },
+    { buf = "commit", lhs = file_keys.next, fn = navigate_file("next"), when = review and has_queue, section = "Files", desc = "Open the next file" },
+    { buf = "commit", lhs = file_keys.prev, fn = navigate_file("prev"), when = review and has_queue, section = "Files", desc = "Open the previous file" },
+    { buf = "commit", lhs = "]c", fn = navigate_change("next"), when = review, section = "Hunks", desc = "Next hunk" },
+    { buf = "commit", lhs = "[c", fn = navigate_change("prev"), when = review, section = "Hunks", desc = "Previous hunk" },
 
-    { buf = "commit", lhs = keys.commit, fn = commit, when = not review },
-    { buf = "commit", lhs = keys.toggle_amend, fn = toggle_amend, when = not review },
+    { buf = "commit", lhs = keys.commit, fn = commit, when = not review, section = "Commit", desc = "Commit staged changes" },
+    { buf = "commit", lhs = keys.toggle_amend, fn = toggle_amend, when = not review, section = "Commit", desc = "Toggle amend mode" },
   }
 
   local buffers = { nav = panel.nav_buf }
@@ -1119,7 +1203,8 @@ function M.setup_keymaps(session)
   for _, spec in ipairs(specs) do
     local buf = buffers[spec.buf]
     if buf and spec.lhs and spec.when ~= false then
-      vim.keymap.set("n", spec.lhs, spec.fn, { buffer = buf, nowait = true, noremap = true, silent = true })
+      vim.keymap.set("n", spec.lhs, spec.fn,
+        keyhelp.opts(buf, spec.section, spec.desc, { buffer = buf, nowait = true, noremap = true, silent = true }))
     end
   end
 end
