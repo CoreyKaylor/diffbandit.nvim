@@ -6,6 +6,7 @@ local ui = require("diffbandit.util.ui")
 local layout = require("diffbandit.util.layout")
 local winbar = require("diffbandit.util.winbar")
 local config_mod = require("diffbandit.config")
+local keyhelp = require("diffbandit.util.keyhelp")
 
 local Folder = {}
 Folder.__index = Folder
@@ -540,7 +541,9 @@ function Folder:render()
   local columns = folder_config(self).columns or {}
   local left_lines = { header_text("left", self.left_root, self.left_entries, left_width) }
   local gutter_lines = { center_text(compact_filter_label(self.filter), self.gutter_width) }
-  local right_lines = { header_text("right", self.right_root, self.right_entries, right_width) }
+  local help_hint = keyhelp.hint(config_mod.section(self.config, "navigation").help_key)
+  local hint_width = help_hint and (vim.fn.strdisplaywidth(help_hint) + 2) or 0
+  local right_lines = { header_text("right", self.right_root, self.right_entries, math.max(10, right_width - hint_width)) }
   local left_meta = {}
   local right_meta = {}
 
@@ -581,6 +584,7 @@ function Folder:render()
     vim.api.nvim_buf_clear_namespace(buf, self.ns, 0, -1)
     vim.api.nvim_buf_add_highlight(buf, self.ns, "DiffBanditStatus", 0, 0, -1)
   end
+  keyhelp.place_hint(self.right_buf, self.ns, 0, help_hint, "DiffBanditStatusMuted")
 
   for index, row in ipairs(self.visible_rows or {}) do
     local line = index
@@ -1035,55 +1039,60 @@ end
 function Folder:setup_keymaps()
   local opts = { nowait = true, noremap = true, silent = true }
   local keys = folder_config(self).keys or {}
-  local function map(buf, lhs, rhs)
+  local help_key = config_mod.section(self.config, "navigation").help_key
+  -- section/desc label the mapping for the help window (util/keyhelp).
+  local function map(buf, lhs, rhs, section, desc)
     if lhs and lhs ~= "" then
-      vim.keymap.set("n", lhs, rhs, vim.tbl_extend("force", opts, { buffer = buf }))
+      vim.keymap.set("n", lhs, rhs, keyhelp.opts(buf, section, desc, vim.tbl_extend("force", opts, { buffer = buf })))
     end
   end
   local function maps(buf)
-    map(buf, keys.open or "<CR>", function()
-      self:open_selected()
-    end)
-    map(buf, keys.alternate_open or "o", function()
-      self:open_selected()
-    end)
-    map(buf, keys.toggle_expand or "<Space>", function()
-      self:toggle_expand()
-    end)
-    map(buf, keys.alternate_toggle_expand or "za", function()
-      self:toggle_expand()
-    end)
-    map(buf, keys.expand_all or "zR", function()
-      self:expand_all()
-    end)
-    map(buf, keys.collapse_all or "zM", function()
-      self:collapse_all()
-    end)
-    map(buf, keys.next_diff or "]c", function()
-      self:goto_diff(1)
-    end)
-    map(buf, keys.prev_diff or "[c", function()
-      self:goto_diff(-1)
-    end)
-    map(buf, keys.refresh or "R", function()
-      self:refresh()
-    end)
-    map(buf, keys.filter or "s", function()
-      self:select_filter()
-    end)
+    map(buf, help_key, function()
+      keyhelp.open(buf, { title = "Folder diff", order = { "General", "Folder" }, help_key = help_key })
+    end, "General", "Show this key help")
     map(buf, keys.close or "q", function()
       self:close()
-    end)
+    end, "General", "Close this view")
+    map(buf, keys.open or "<CR>", function()
+      self:open_selected()
+    end, "Folder", "Open the file pair, or expand the directory")
+    map(buf, keys.alternate_open or "o", function()
+      self:open_selected()
+    end, "Folder", "Open the file pair, or expand the directory")
+    map(buf, keys.toggle_expand or "<Space>", function()
+      self:toggle_expand()
+    end, "Folder", "Expand or collapse the directory")
+    map(buf, keys.alternate_toggle_expand or "za", function()
+      self:toggle_expand()
+    end, "Folder", "Expand or collapse the directory")
+    map(buf, keys.expand_all or "zR", function()
+      self:expand_all()
+    end, "Folder", "Expand all directories")
+    map(buf, keys.collapse_all or "zM", function()
+      self:collapse_all()
+    end, "Folder", "Collapse all directories")
+    map(buf, keys.next_diff or "]c", function()
+      self:goto_diff(1)
+    end, "Navigation", "Next difference")
+    map(buf, keys.prev_diff or "[c", function()
+      self:goto_diff(-1)
+    end, "Navigation", "Previous difference")
+    map(buf, keys.filter or "s", function()
+      self:select_filter()
+    end, "Folder", "Choose which entries to show")
+    map(buf, keys.refresh or "R", function()
+      self:refresh()
+    end, "Folder", "Compare again")
     map(buf, "<C-w>l", function()
       if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
         vim.api.nvim_set_current_win(self.right_win)
       end
-    end)
+    end, "Navigation", "Go to the right side")
     map(buf, "<C-w>h", function()
       if self.left_win and vim.api.nvim_win_is_valid(self.left_win) then
         vim.api.nvim_set_current_win(self.left_win)
       end
-    end)
+    end, "Navigation", "Go to the left side")
   end
   maps(self.left_buf)
   maps(self.right_buf)

@@ -268,7 +268,6 @@ local function review_panel_details(queue)
       target = review.target,
       author = commit.author,
       date = commit.date,
-      help = "<CR> focus diff  ]f/[f files  ]c/[c hunks  q close",
     }
   elseif review.kind == "compare" then
     return {
@@ -276,12 +275,10 @@ local function review_panel_details(queue)
       subtitle = review.direct and "Direct branch comparison" or "Merge-base branch comparison",
       base = review.base,
       target = review.target,
-      help = "<CR> focus diff  ]f/[f files  ]c/[c hunks  q close",
     }
   end
   return {
     title = "Git review",
-    help = "<CR> focus diff  ]f/[f files  ]c/[c hunks  q close",
   }
 end
 

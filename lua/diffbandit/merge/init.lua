@@ -3,6 +3,7 @@ local git = require("diffbandit.git")
 local merge_model = require("diffbandit.merge.model")
 local nvim = require("diffbandit.util.nvim")
 local keymaps = require("diffbandit.util.keymaps")
+local keyhelp = require("diffbandit.util.keyhelp")
 local layout = require("diffbandit.util.layout")
 local winbar = require("diffbandit.util.winbar")
 local document = require("diffbandit.util.document")
@@ -844,21 +845,30 @@ end
 function Merge:setup_keymaps()
   local keys = config_mod.section(self.config, "merge", "keys")
   local document_keys = config_mod.section(self.config, "navigation", "document_keys")
-  local function map(buf, lhs, rhs)
-    self:set_buffer_keymap("n", buf, lhs, rhs, { nowait = true, noremap = true, silent = true })
+  local help_key = config_mod.section(self.config, "navigation").help_key
+  -- section/desc label the mapping for the help window (util/keyhelp).
+  local function map(buf, lhs, rhs, section, desc)
+    self:set_buffer_keymap("n", buf, lhs, rhs,
+      keyhelp.opts(buf, section, desc, { nowait = true, noremap = true, silent = true }))
   end
   for _, buf in ipairs({ self.local_buf, self.result_buf, self.remote_buf }) do
-    map(buf, keys.next_conflict, function() self:goto_next_hunk() end)
-    map(buf, keys.prev_conflict, function() self:goto_prev_hunk() end)
-    map(buf, keys.accept_local, function() self:accept("local") end)
-    map(buf, keys.accept_remote, function() self:accept("remote") end)
-    map(buf, keys.accept_both, function() self:accept("both") end)
-    map(buf, keys.apply_non_conflicting, function() self:apply_non_conflicting() end)
-    map(buf, keys.focus_panel, function() self:focus_commit_panel_for_current_file() end)
-    map(buf, document_keys.top, function() self:goto_document_edge("top") end)
-    map(buf, document_keys.bottom, function() self:goto_document_edge("bottom") end)
-    map(buf, keys.snap, function() self:snap_to_cursor() end)
-    map(buf, keys.close, function() self:close() end)
+    map(buf, help_key, function() self:show_key_help() end, "General", "Show this key help")
+    map(buf, keys.close, function() self:close() end, "General", "Close this view")
+    map(buf, keys.next_conflict, function() self:goto_next_hunk() end, "Merge", "Next conflict")
+    map(buf, keys.prev_conflict, function() self:goto_prev_hunk() end, "Merge", "Previous conflict")
+    map(buf, keys.accept_local, function() self:accept("local") end, "Merge", "Accept local (ours) into the result")
+    map(buf, keys.accept_remote, function() self:accept("remote") end, "Merge", "Accept remote (theirs) into the result")
+    map(buf, keys.accept_both, function() self:accept("both") end, "Merge", "Accept both, local then remote")
+    map(buf, keys.apply_non_conflicting, function() self:apply_non_conflicting() end,
+      "Merge", "Apply every non-conflicting change")
+    map(buf, keys.focus_panel, function() self:focus_commit_panel_for_current_file() end,
+      "Panel", "Open or focus the commit panel")
+    map(buf, document_keys.top, function() self:goto_document_edge("top") end,
+      "Navigation", "Align the panes to the top")
+    map(buf, document_keys.bottom, function() self:goto_document_edge("bottom") end,
+      "Navigation", "Align the panes to the bottom")
+    map(buf, keys.snap, function() self:snap_to_cursor() end,
+      "Navigation", "Line up the other panes with the cursor line")
   end
   -- Visibility toggles also work from the panel buffers, so the panel can be
   -- hidden while focused in it and panes re-shown from anywhere.
@@ -869,13 +879,32 @@ function Merge:setup_keymaps()
   end
   for _, buf in ipairs(toggle_bufs) do
     if buf and vim.api.nvim_buf_is_valid(buf) then
-      map(buf, keys.toggle_panel, function() self:toggle_panel_visibility() end)
-      map(buf, keys.toggle_local, function() self:toggle_pane("local") end)
-      map(buf, keys.toggle_remote, function() self:toggle_pane("remote") end)
-      map(buf, keys.show_all, function() self:show_all() end)
+      map(buf, keys.toggle_panel, function() self:toggle_panel_visibility() end,
+        "Layout", "Show or hide the commit panel")
+      map(buf, keys.toggle_local, function() self:toggle_pane("local") end,
+        "Layout", "Show or hide the local (left) pane")
+      map(buf, keys.toggle_remote, function() self:toggle_pane("remote") end,
+        "Layout", "Show or hide the remote (right) pane")
+      map(buf, keys.show_all, function() self:show_all() end,
+        "Layout", "Show every hidden pane and the panel")
     end
   end
   keymaps.reassert_later(self, { self.local_buf, self.result_buf, self.remote_buf })
+end
+
+function Merge:show_key_help()
+  keyhelp.open(vim.api.nvim_get_current_buf(), {
+    title = "Merge",
+    notes = {
+      {
+        title = "Result",
+        rows = {
+          { keys = ":w", desc = "Write the result and mark the file resolved" },
+        },
+      },
+    },
+    help_key = config_mod.section(self.config, "navigation").help_key,
+  })
 end
 
 function Merge:status_text()
@@ -952,7 +981,13 @@ function Merge:render_headers()
     )
   end
   if remote_width then
-    ui.set_header_line(self.remote_header_buf, self.header_ns, lines.remote, remote_width)
+    ui.set_header_line_with_right(
+      self.remote_header_buf,
+      self.header_ns,
+      lines.remote,
+      keyhelp.hint(config_mod.section(self.config, "navigation").help_key),
+      remote_width
+    )
   end
 end
 

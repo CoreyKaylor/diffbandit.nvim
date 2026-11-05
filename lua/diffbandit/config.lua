@@ -121,6 +121,7 @@ local defaults = {
     },
     snap_key = "]s",
     close_key = "q",
+    help_key = "g?",
     prompt_message = "Reached final change in this diff. Open next file with changes?",
     on_request_next_file = nil,
   },

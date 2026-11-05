@@ -4,6 +4,8 @@
 local git = require("diffbandit.git")
 local nvim = require("diffbandit.util.nvim")
 local ui = require("diffbandit.util.ui")
+local keyhelp = require("diffbandit.util.keyhelp")
+local config_mod = require("diffbandit.config")
 
 local M = {}
 
@@ -35,6 +37,8 @@ local function render_log(browser)
   vim.api.nvim_buf_set_lines(browser.buf, 0, -1, false, lines)
   vim.api.nvim_buf_clear_namespace(browser.buf, browser.ns, 0, -1)
   vim.api.nvim_buf_add_highlight(browser.buf, browser.ns, "DiffBanditStatusAccent", 0, 0, -1)
+  keyhelp.place_hint(browser.buf, browser.ns, 0,
+    keyhelp.hint(config_mod.section(browser.config, "navigation").help_key))
   nvim.set_buffer_options(browser.buf, { modifiable = false })
 end
 
@@ -78,19 +82,28 @@ function M.open(config, opts, callbacks)
     pcall(vim.api.nvim_win_set_cursor, browser.win, { 2, 0 })
   end
 
-  local map_opts = { buffer = browser.buf, nowait = true, noremap = true, silent = true }
+  local base_opts = { buffer = browser.buf, nowait = true, noremap = true, silent = true }
+  local function map_opts(section, desc)
+    return keyhelp.opts(browser.buf, section, desc, base_opts)
+  end
+  local help_key = config_mod.section(config, "navigation").help_key
+  if help_key then
+    vim.keymap.set("n", help_key, function()
+      keyhelp.open(browser.buf, { title = "Git log", help_key = help_key })
+    end, map_opts("General", "Show this key help"))
+  end
   vim.keymap.set("n", "q", function()
     if browser.win and vim.api.nvim_win_is_valid(browser.win) then
       pcall(vim.api.nvim_win_close, browser.win, true)
     end
-  end, map_opts)
+  end, map_opts("General", "Close the log"))
   vim.keymap.set("n", "<CR>", function()
     local line = vim.api.nvim_win_get_cursor(browser.win)[1]
     local commit = browser.commits[line - 1]
     if commit and callbacks.open_commit then
       callbacks.open_commit(commit.hash, { root = root })
     end
-  end, map_opts)
+  end, map_opts("Log", "Review the commit under the cursor"))
   vim.keymap.set("n", "R", function()
     local next_commits, refresh_err = git.log(root, opts)
     if not next_commits then
@@ -99,7 +112,7 @@ function M.open(config, opts, callbacks)
     end
     browser.commits = next_commits
     render_log(browser)
-  end, map_opts)
+  end, map_opts("Log", "Refresh the log"))
 
   return browser, nil
 end
