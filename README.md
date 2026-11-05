@@ -17,6 +17,8 @@ documents without distorting either one.
 
 - Three-part diff layout with left content, connector gutter, and right content.
 - Independent source scrolling with synchronized line-number panes.
+- Native `'wrap'` (and virtual lines) in the source panes: line numbers, bands, and
+  connectors follow wrapped rows, including `'smoothscroll'`.
 - Connector routes for additions, deletions, changes, mixed hunks, and
   scroll-clipped regions.
 - Smooth bezier connector ribbons in terminals that support the Kitty graphics

@@ -4,6 +4,7 @@
 -- stage takes the session as its first argument and renders into the
 -- session's buffers and namespaces.
 local nvim = require("diffbandit.util.nvim")
+local rowmap = require("diffbandit.util.rowmap")
 local connector = require("diffbandit.connector")
 local diff_mod = require("diffbandit.diff")
 local connector_width = require("diffbandit.connector.width")
@@ -101,6 +102,7 @@ end
 -- not change this; open / replace_sources / width / padding / stage markers do.
 local function structural_buffer_key(self, left_n, right_n, connector_height)
   return table.concat({
+    tostring(self.row_map_signature),
     tostring(left_n),
     tostring(right_n),
     tostring(connector_height),
@@ -227,13 +229,44 @@ local function highlight_for_right(meta)
   return get_highlight(HIGHLIGHT_RIGHT, meta, "filler_right")
 end
 
+-- Source pane text must be in place before the row maps measure it (wrapped
+-- heights come from the window). Written once per display-line array — the
+-- cache is rebuilt on every content or padding change.
+local function write_source_text(self, left_lines, right_lines)
+  if not self.preserve_left_buffer_lines and vim.api.nvim_buf_is_valid(self.left_buf)
+      and (self.written_left_lines ~= left_lines or self.written_left_buf ~= self.left_buf) then
+    set_buffer_options(self.left_buf, { modifiable = true })
+    vim.api.nvim_buf_set_lines(self.left_buf, 0, -1, false, left_lines)
+    set_buffer_options(self.left_buf, { modifiable = false })
+    self.written_left_lines = left_lines
+    self.written_left_buf = self.left_buf
+  end
+  if not self.preserve_right_buffer_lines and vim.api.nvim_buf_is_valid(self.right_buf)
+      and (self.written_right_lines ~= right_lines or self.written_right_buf ~= self.right_buf) then
+    set_buffer_options(self.right_buf, { modifiable = true })
+    vim.api.nvim_buf_set_lines(self.right_buf, 0, -1, false, right_lines)
+    set_buffer_options(self.right_buf, { modifiable = self.right.editable ~= nil })
+    self.written_right_lines = right_lines
+    self.written_right_buf = self.right_buf
+  end
+end
+
 -- Gather everything the render stages need in one pass: display lines,
 -- viewport toplines, projected routes with their plan, and the per-row index
 -- sets that steer number-pane and background styling.
 local function build_render_context(self)
   local left_lines, right_lines = self:display_lines()
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
+  write_source_text(self, left_lines, right_lines)
+  -- Row space: gutters, connector rows and route geometry count screen rows
+  -- (a wrapped line spans several); source panes are painted by line. The
+  -- toplines below are screen rows; *_top_line are the source toplines.
+  local left_map, right_map = self:row_maps({ verify = true })
+  local left_top_line = get_win_view_topline(self.left_win)
+  local right_top_line = get_win_view_topline(self.right_win)
+  local left_topline = rowmap.topline_row(self.left_win, left_map)
+  local right_topline = rowmap.topline_row(self.right_win, right_map)
+  local left_rows_total = left_map:total_rows(#left_lines)
+  local right_rows_total = right_map:total_rows(#right_lines)
   local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
   local right_text_hl_mode = self.right.editable and "combine" or "replace"
 
@@ -436,11 +469,11 @@ local function build_render_context(self)
         -- (projection maps right rows into it via the screen alignment), NOT
         -- line_meta display indexes: map back directly.
         for row = p.viewport_solid_start, p.viewport_solid_end do
-          if row >= 1 and row <= #left_lines then
+          if row >= 1 and row <= left_rows_total then
             solid_change_number_left_indexes[row] = true
           end
           local right_index = right_topline + (row - left_topline)
-          if right_index >= 1 and right_index <= #right_lines then
+          if right_index >= 1 and right_index <= right_rows_total then
             solid_change_number_right_indexes[right_index] = true
           end
         end
@@ -487,7 +520,7 @@ local function build_render_context(self)
       return meta.right_index
     end
     local right_index = right_topline + ((display_row or left_topline) - left_topline)
-    if right_index >= 1 and right_index <= #right_lines then
+    if right_index >= 1 and right_index <= right_rows_total then
       return right_index
     end
     return nil
@@ -496,13 +529,13 @@ local function build_render_context(self)
   -- The connector buffer owns the aligned display model and must include the
   -- same scroll padding as the source panes so routes can remain visible while
   -- either side is scrolled past real EOF.
-  local connector_height = math.max(#self.view.line_meta, #left_lines, #right_lines)
+  local connector_height = math.max(#self.view.line_meta, left_rows_total, right_rows_total)
 
   -- Structural buffer text (numbers, blank connector rows, non-preserved
   -- sources) is document-model state: rewrite only when the fingerprint
   -- changes. Pure viewport paints reuse existing buffer lines and only
   -- re-project / replan / repaint extmarks.
-  local struct_key = structural_buffer_key(self, #left_lines, #right_lines, connector_height)
+  local struct_key = structural_buffer_key(self, left_rows_total, right_rows_total, connector_height)
   local write_structural = self.structural_buffer_key ~= struct_key
 
   local connector_lines = nil
@@ -576,10 +609,15 @@ local function build_render_context(self)
   -- connector solid projection stays strict-window.
   local right_height = win_height
   local clip_pad = connector_width.viewport_clip_pad(left_height, right_height)
-  local left_row_min = math.max(1, (left_topline or 1) - clip_pad)
-  local left_row_max = (left_topline or 1) + left_height + clip_pad
-  local right_row_min = math.max(1, (right_topline or 1) - clip_pad)
-  local right_row_max = (right_topline or 1) + right_height + clip_pad
+  local left_row_min = math.max(1, (left_top_line or 1) - clip_pad)
+  local left_row_max = (left_top_line or 1) + left_height + clip_pad
+  local right_row_min = math.max(1, (right_top_line or 1) - clip_pad)
+  local right_row_max = (right_top_line or 1) + right_height + clip_pad
+  -- The same clip in gutter (screen-row) space.
+  local left_nrow_min = left_map:first_row(left_row_min)
+  local left_nrow_max = left_map:last_row(left_row_max)
+  local right_nrow_min = right_map:first_row(right_row_min)
+  local right_nrow_max = right_map:last_row(right_row_max)
   local function left_row_visible(row)
     return row ~= nil and row >= left_row_min and row <= left_row_max
   end
@@ -666,11 +704,15 @@ local function build_render_context(self)
     left_max = left_row_max,
     right_min = right_row_min,
     right_max = right_row_max,
+    left_nmin = left_nrow_min,
+    left_nmax = left_nrow_max,
+    right_nmin = right_nrow_min,
+    right_nmax = right_nrow_max,
     meta_min = meta_min,
     meta_max = meta_max,
     meta_ranges = meta_ranges,
-    connector_min = left_row_min,
-    connector_max = math.min(left_row_max, connector_height),
+    connector_min = left_nrow_min,
+    connector_max = math.min(left_nrow_max, connector_height),
   }
 
   -- Navigation uses this to decide whether a target viewport is already
@@ -732,6 +774,12 @@ local function build_render_context(self)
     diag_sign_text = diag_sign_text,
     left_lines = left_lines,
     right_lines = right_lines,
+    left_map = left_map,
+    right_map = right_map,
+    left_rows_total = left_rows_total,
+    right_rows_total = right_rows_total,
+    left_top_line = left_top_line,
+    right_top_line = right_top_line,
     left_topline = left_topline,
     right_topline = right_topline,
     left_height = left_height,
@@ -747,6 +795,10 @@ local function build_render_context(self)
     left_row_max = left_row_max,
     right_row_min = right_row_min,
     right_row_max = right_row_max,
+    left_nrow_min = left_nrow_min,
+    left_nrow_max = left_nrow_max,
+    right_nrow_min = right_nrow_min,
+    right_nrow_max = right_nrow_max,
     paths = paths,
     route_paths = route_paths,
     route_plan = route_plan,
@@ -774,34 +826,40 @@ end
 -- Build the fixed-width number-pane text for both sides, including stage
 -- markers when enabled.
 local function render_number_panes(self, ctx)
-  -- Left and right buffers now have different line counts
+  -- One number-pane row per screen row of the source pane: the number sits
+  -- on a line's first row, wrapped continuation rows stay blank.
+  local left_map, right_map = ctx.left_map, ctx.right_map
   ctx.left_num_lines = {}
-  for i = 1, #ctx.left_lines do
-    ctx.left_num_lines[i] = string.rep(" ", self.left_number_pane_width)
+  local left_blank = string.rep(" ", self.left_number_pane_width)
+  for i = 1, ctx.left_rows_total do
+    ctx.left_num_lines[i] = left_blank
   end
   ctx.right_num_lines = {}
-  for i = 1, #ctx.right_lines do
-    ctx.right_num_lines[i] = string.rep(" ", self.right_number_pane_width)
+  local right_blank = string.rep(" ", self.right_number_pane_width)
+  for i = 1, ctx.right_rows_total do
+    ctx.right_num_lines[i] = right_blank
   end
   for _, meta in ipairs(self.view.line_meta) do
     if meta.left_index then
+      local left_row = left_map:first_row(meta.left_index)
       if (self.left_stage_marker_width or 0) > 0 then
-        ctx.left_num_lines[meta.left_index] = " "
+        ctx.left_num_lines[left_row] = " "
           .. format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false)
           .. " "
       else
-        ctx.left_num_lines[meta.left_index] = format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false) .. " "
+        ctx.left_num_lines[left_row] = format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false) .. " "
       end
     end
     if meta.right_index then
+      local right_row = right_map:first_row(meta.right_index)
       if self.mirror_connector_sides then
-        ctx.right_num_lines[meta.right_index] = format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, false) .. " "
+        ctx.right_num_lines[right_row] = format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, false) .. " "
       elseif (self.right_stage_marker_width or 0) > 0 then
-        ctx.right_num_lines[meta.right_index] = " "
+        ctx.right_num_lines[right_row] = " "
           .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
           .. (ctx.right_stage_markers[meta.right_index] or " ")
       else
-        ctx.right_num_lines[meta.right_index] = " " .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
+        ctx.right_num_lines[right_row] = " " .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
       end
     end
   end
@@ -813,13 +871,8 @@ local function apply_buffer_lines(self, ctx)
   if not ctx.write_structural then
     return
   end
-  if not self.preserve_left_buffer_lines then
-    vim.api.nvim_buf_set_lines(self.left_buf, 0, -1, false, ctx.left_lines)
-  end
+  -- Source text was written by write_source_text before the row maps.
   vim.api.nvim_buf_set_lines(self.left_num_buf, 0, -1, false, ctx.left_num_lines)
-  if not self.preserve_right_buffer_lines then
-    vim.api.nvim_buf_set_lines(self.right_buf, 0, -1, false, ctx.right_lines)
-  end
   vim.api.nvim_buf_set_lines(self.right_num_buf, 0, -1, false, ctx.right_num_lines)
   vim.api.nvim_buf_set_lines(self.connector_buf, 0, -1, false, ctx.connector_lines)
   self.structural_buffer_key = ctx.structural_key
@@ -846,19 +899,25 @@ end
 
 -- Union of previous and current viewport clips (1-based inclusive ranges).
 -- Shared by namespace clear and path_ns clear so pad/coord changes stay in sync.
-local function union_clip_ranges(prev, cur_left_min, cur_left_max, cur_right_min, cur_right_max, cur_conn_min, cur_conn_max)
-  local left_min, left_max = cur_left_min, cur_left_max
-  local right_min, right_max = cur_right_min, cur_right_max
-  local connector_min, connector_max = cur_conn_min, cur_conn_max
-  if prev then
-    left_min = math.min(left_min, prev.left_min or left_min)
-    left_max = math.max(left_max, prev.left_max or left_max)
-    right_min = math.min(right_min, prev.right_min or right_min)
-    right_max = math.max(right_max, prev.right_max or right_max)
-    connector_min = math.min(connector_min, prev.connector_min or connector_min)
-    connector_max = math.max(connector_max, prev.connector_max or connector_max)
+local CLIP_FIELDS = {
+  { "left_min", "left_max" },
+  { "right_min", "right_max" },
+  { "left_nmin", "left_nmax" },
+  { "right_nmin", "right_nmax" },
+  { "connector_min", "connector_max" },
+}
+
+local function union_clip_ranges(prev, cur)
+  local out = {}
+  for _, pair in ipairs(CLIP_FIELDS) do
+    local lo, hi = pair[1], pair[2]
+    out[lo], out[hi] = cur[lo], cur[hi]
+    if prev then
+      out[lo] = math.min(out[lo], prev[lo] or out[lo])
+      out[hi] = math.max(out[hi], prev[hi] or out[hi])
+    end
   end
-  return left_min, left_max, right_min, right_max, connector_min, connector_max
+  return out
 end
 
 -- Reset paint namespaces. Structural (document) paints clear everything;
@@ -866,8 +925,10 @@ end
 -- do not accumulate off-screen while scroll stays O(viewport).
 --
 -- Coordinate spaces (do not mix):
---   left_*/right_*  → source + number pane buffer rows
---   connector_*     → connector buffer rows (= left-row/screen space; the
+--   left_*/right_*  → source buffer lines
+--   left_n*/right_n* → number pane buffer rows (screen-row space; equal to
+--                     source lines unless lines wrap)
+--   connector_*     → connector buffer rows (= left screen-row space; the
 --                     connector window shares the left pane's topline)
 --   meta_*          → line_meta indexes only (iteration bounds), NOT buffer rows
 --
@@ -878,35 +939,29 @@ local function clear_render_namespaces(self, ctx)
   self.linenum_ns = self.linenum_ns or vim.api.nvim_create_namespace("DiffBanditLineNums" .. self.id)
 
   local full = ctx.write_structural or not self.last_paint_clip
-  local cur = ctx.paint_clip
-  local left_min, left_max, right_min, right_max, connector_min, connector_max =
-      union_clip_ranges(
-        (not full) and self.last_paint_clip or nil,
-        cur.left_min, cur.left_max, cur.right_min, cur.right_max,
-        cur.connector_min, cur.connector_max)
+  local u = union_clip_ranges((not full) and self.last_paint_clip or nil, ctx.paint_clip)
+  local left_min, left_max = u.left_min, u.left_max
+  local right_min, right_max = u.right_min, u.right_max
+  local connector_min, connector_max = u.connector_min, u.connector_max
 
-  clear_ns_range(self.left_buf, self.ns, left_min, left_max, full)
-  clear_ns_range(self.left_num_buf, self.ns, left_min, left_max, full)
-  clear_ns_range(self.right_buf, self.ns, right_min, right_max, full)
-  clear_ns_range(self.right_num_buf, self.ns, right_min, right_max, full)
-  clear_ns_range(self.connector_buf, self.ns, connector_min, connector_max, full)
+  for _, ns in ipairs({ self.ns, self.extmark_ns }) do
+    clear_ns_range(self.left_buf, ns, left_min, left_max, full)
+    clear_ns_range(self.left_num_buf, ns, u.left_nmin, u.left_nmax, full)
+    clear_ns_range(self.right_buf, ns, right_min, right_max, full)
+    clear_ns_range(self.right_num_buf, ns, u.right_nmin, u.right_nmax, full)
+    clear_ns_range(self.connector_buf, ns, connector_min, connector_max, full)
+  end
 
-  clear_ns_range(self.left_buf, self.extmark_ns, left_min, left_max, full)
-  clear_ns_range(self.left_num_buf, self.extmark_ns, left_min, left_max, full)
-  clear_ns_range(self.right_buf, self.extmark_ns, right_min, right_max, full)
-  clear_ns_range(self.right_num_buf, self.extmark_ns, right_min, right_max, full)
-  clear_ns_range(self.connector_buf, self.extmark_ns, connector_min, connector_max, full)
-
-  clear_ns_range(self.left_num_buf, self.linenum_ns, left_min, left_max, full)
+  clear_ns_range(self.left_num_buf, self.linenum_ns, u.left_nmin, u.left_nmax, full)
   clear_ns_range(self.connector_buf, self.linenum_ns, connector_min, connector_max, full)
-  clear_ns_range(self.right_num_buf, self.linenum_ns, right_min, right_max, full)
+  clear_ns_range(self.right_num_buf, self.linenum_ns, u.right_nmin, u.right_nmax, full)
 
   -- Carry the clear window so path-glyph clear uses the identical range.
   ctx.clear_full = full
-  ctx.clear_left_min = left_min
-  ctx.clear_left_max = left_max
-  ctx.clear_right_min = right_min
-  ctx.clear_right_max = right_max
+  ctx.clear_left_nmin = u.left_nmin
+  ctx.clear_left_nmax = u.left_nmax
+  ctx.clear_right_nmin = u.right_nmin
+  ctx.clear_right_nmax = u.right_nmax
   ctx.clear_connector_min = connector_min
   ctx.clear_connector_max = connector_max
 
@@ -1043,6 +1098,8 @@ local function render_connector_backgrounds(self, ctx)
   -- the wedge column, so the cell underline spacers there are skipped.
   local kitty = kitty_mode(self)
 
+  -- `row` is a 0-based left number-pane row (= connector row - 1); the
+  -- origin underline sits on the origin line's bottom screen row.
   local function add_origin_core_underline(origin_row, row, meta)
     if meta.origin == "add" and not kitty then
       if row < 0 or row >= ctx.connector_height then
@@ -1055,14 +1112,108 @@ local function render_connector_backgrounds(self, ctx)
       })
       local right_index_at_row = ctx.right_topline + ((row + 1) - ctx.left_topline)
       if ctx.add_origin_row_has_transition[origin_row]
-          and ctx.right_row_visible(right_index_at_row)
-          and right_index_at_row <= #ctx.right_lines then
+          and right_index_at_row >= ctx.right_nrow_min and right_index_at_row <= ctx.right_nrow_max
+          and right_index_at_row <= ctx.right_rows_total then
         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, right_index_at_row - 1, self:right_triangle_col(), {
           virt_text = { { " ", "DiffBanditAddLeftSeparatorConnector" } },
           virt_text_pos = "overlay",
           hl_mode = "combine",
         })
       end
+    end
+  end
+
+  local left_map, right_map = ctx.left_map, ctx.right_map
+
+  -- Number-pane rows are screen rows: a wrapped line paints its band on
+  -- every row it spans (lookups below are keyed by row, like the paths).
+  -- Underline variants only decorate the line's bottom row.
+  local function paint_left_row(meta, r, is_last)
+    local row = r - 1
+    local origin_underline = meta.origin == "add" and is_last
+      and not ctx.embedded_add_origin_left_indexes[r]
+    local left_num_hl
+    if origin_underline then
+      left_num_hl = "DiffBanditLineNumberLeftUnderline"
+    elseif meta.kind == "delete" then
+      left_num_hl = "DiffBanditLineNumberLeftDelete"
+    elseif ctx.change_number_left_indexes[r] then
+      left_num_hl = "DiffBanditLineNumberLeftChange"
+    else
+      left_num_hl = "DiffBanditLineNumberLeft"
+    end
+
+    vim.api.nvim_buf_add_highlight(self.left_num_buf, self.linenum_ns, left_num_hl, row,
+      self:left_number_text_start_col(), self:left_number_text_end_col())
+    if meta.kind == "delete" then
+      -- The wedge/spacer column stays clear on delete rows EXCEPT when the
+      -- row sits inside the chunk's solid overlap (an embedded delete row
+      -- of a merged change block whose band shares this screen row with
+      -- the right side): the band must run contiguously through it.
+      -- Everywhere else the wedge alone marks the transition and the
+      -- corridor carries route lines.
+      local solid = ctx.solid_change_number_left_indexes[r]
+      local start_col = solid and 0 or self:left_number_text_start_col()
+      local end_col = solid and -1 or self:left_number_text_end_col()
+      paint_num_band(self.left_num_buf, row, "DiffBanditConnectorDelete", start_col, end_col)
+    elseif ctx.change_number_left_indexes[r] then
+      -- The wedge/spacer column carries the band only on solid rows (the
+      -- side-by-side overlap; wedges paint the transitions there). On
+      -- non-overlapping band rows the corridor shows the route line, so
+      -- the fill stops at the number text.
+      local start_col = ctx.solid_change_number_left_indexes[r] and 0 or self:left_number_text_start_col()
+      local end_col = ctx.solid_change_number_left_indexes[r] and -1 or self:left_number_text_end_col()
+      paint_num_band(self.left_num_buf, row, "DiffBanditConnectorChange", start_col, end_col)
+    end
+    if is_last and not ctx.embedded_add_origin_left_indexes[r] then
+      add_origin_core_underline(r, row, meta)
+    end
+  end
+
+  local function paint_right_row(meta, r, is_last)
+    local row = r - 1
+    local is_delete_origin = is_last and meta.right_line and ctx.delete_origin_right_lines[meta.right_line] ~= nil
+    local right_num_hl
+    if is_delete_origin then
+      right_num_hl = "DiffBanditLineNumberRightUnderline"
+    elseif ctx.change_number_right_indexes[r] then
+      right_num_hl = "DiffBanditLineNumberRightChange"
+    elseif meta.kind == "add" then
+      right_num_hl = "DiffBanditLineNumberRightAdd"
+    else
+      right_num_hl = "DiffBanditLineNumberRight"
+    end
+
+    if is_delete_origin and not kitty then
+      -- "combine" keeps the number pane's own background (e.g. a change
+      -- band) under the underline spacer so the origin underline decorates
+      -- the row instead of punching a dark cell into it.
+      vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, row, self:right_triangle_col(), {
+        virt_text = { { " ", "DiffBanditDeleteRightSeparatorConnector" } },
+        virt_text_pos = "overlay",
+        hl_mode = "combine",
+      })
+    end
+
+    vim.api.nvim_buf_add_highlight(self.right_num_buf, self.linenum_ns, right_num_hl, row,
+      self:right_number_text_start_col(), self:right_number_text_end_col())
+    if ctx.change_number_right_indexes[r] then
+      -- Solid rows (side-by-side overlap) fill from the pane edge so the
+      -- band flows through the wedge/spacer column; other band rows stop
+      -- at the number text and leave the corridor to the route line.
+      -- Delete-origin rows keep the full fill so the underline spacer
+      -- combines over the band instead of a bare cell.
+      local full_fill = ctx.solid_change_number_right_indexes[r] or is_delete_origin
+      local start_col = full_fill and 0 or self:right_number_text_start_col()
+      local end_col = full_fill and -1 or self:right_number_text_end_col()
+      paint_num_band(self.right_num_buf, row, "DiffBanditConnectorChange", start_col, end_col)
+    elseif meta.kind == "add" then
+      -- Mirror of the delete rule: embedded add rows inside the chunk's
+      -- solid overlap carry the band through the wedge/spacer column.
+      local solid = ctx.solid_change_number_right_indexes[r]
+      local start_col = solid and 0 or self:right_number_text_start_col()
+      local end_col = solid and -1 or self:right_number_text_end_col()
+      paint_num_band(self.right_num_buf, row, "DiffBanditConnectorAdd", start_col, end_col)
     end
   end
 
@@ -1073,91 +1224,18 @@ local function render_connector_backgrounds(self, ctx)
       return
     end
     if meta.left_index and ctx.left_row_visible(meta.left_index) then
-      local row = meta.left_index - 1
-
-      local left_num_hl
-      if meta.origin == "add" and not ctx.embedded_add_origin_left_indexes[meta.left_index] then
-        left_num_hl = "DiffBanditLineNumberLeftUnderline"
-      elseif meta.kind == "delete" then
-        left_num_hl = "DiffBanditLineNumberLeftDelete"
-      elseif ctx.change_number_left_indexes[meta.left_index] then
-        left_num_hl = "DiffBanditLineNumberLeftChange"
-      else
-        left_num_hl = "DiffBanditLineNumberLeft"
-      end
-
-      vim.api.nvim_buf_add_highlight(self.left_num_buf, self.linenum_ns, left_num_hl, row,
-        self:left_number_text_start_col(), self:left_number_text_end_col())
-      if meta.kind == "delete" then
-        -- The wedge/spacer column stays clear on delete rows EXCEPT when the
-        -- row sits inside the chunk's solid overlap (an embedded delete row
-        -- of a merged change block whose band shares this screen row with
-        -- the right side): the band must run contiguously through it.
-        -- Everywhere else the wedge alone marks the transition and the
-        -- corridor carries route lines.
-        local solid = ctx.solid_change_number_left_indexes[meta.left_index]
-        local start_col = solid and 0 or self:left_number_text_start_col()
-        local end_col = solid and -1 or self:left_number_text_end_col()
-        paint_num_band(self.left_num_buf, row, "DiffBanditConnectorDelete", start_col, end_col)
-      elseif ctx.change_number_left_indexes[meta.left_index] then
-        -- The wedge/spacer column carries the band only on solid rows (the
-        -- side-by-side overlap; wedges paint the transitions there). On
-        -- non-overlapping band rows the corridor shows the route line, so
-        -- the fill stops at the number text.
-        local start_col = ctx.solid_change_number_left_indexes[meta.left_index] and 0 or self:left_number_text_start_col()
-        local end_col = ctx.solid_change_number_left_indexes[meta.left_index] and -1 or self:left_number_text_end_col()
-        paint_num_band(self.left_num_buf, row, "DiffBanditConnectorChange", start_col, end_col)
-      end
-      if not ctx.embedded_add_origin_left_indexes[meta.left_index] then
-        add_origin_core_underline(meta.left_index, row, meta)
+      local first = left_map:first_row(meta.left_index)
+      local last = first + left_map:height(meta.left_index) - 1
+      for r = first, last do
+        paint_left_row(meta, r, r == last)
       end
     end
 
     if meta.right_index and ctx.right_row_visible(meta.right_index) then
-      local row = meta.right_index - 1
-
-      local is_delete_origin = meta.right_line and ctx.delete_origin_right_lines[meta.right_line] ~= nil
-      local right_num_hl
-      if is_delete_origin then
-        right_num_hl = "DiffBanditLineNumberRightUnderline"
-      elseif ctx.change_number_right_indexes[meta.right_index] then
-        right_num_hl = "DiffBanditLineNumberRightChange"
-      elseif meta.kind == "add" then
-        right_num_hl = "DiffBanditLineNumberRightAdd"
-      else
-        right_num_hl = "DiffBanditLineNumberRight"
-      end
-
-      if is_delete_origin and not kitty then
-        -- "combine" keeps the number pane's own background (e.g. a change
-        -- band) under the underline spacer so the origin underline decorates
-        -- the row instead of punching a dark cell into it.
-        vim.api.nvim_buf_set_extmark(self.right_num_buf, self.linenum_ns, row, self:right_triangle_col(), {
-          virt_text = { { " ", "DiffBanditDeleteRightSeparatorConnector" } },
-          virt_text_pos = "overlay",
-          hl_mode = "combine",
-        })
-      end
-
-      vim.api.nvim_buf_add_highlight(self.right_num_buf, self.linenum_ns, right_num_hl, row,
-        self:right_number_text_start_col(), self:right_number_text_end_col())
-      if ctx.change_number_right_indexes[meta.right_index] then
-        -- Solid rows (side-by-side overlap) fill from the pane edge so the
-        -- band flows through the wedge/spacer column; other band rows stop
-        -- at the number text and leave the corridor to the route line.
-        -- Delete-origin rows keep the full fill so the underline spacer
-        -- combines over the band instead of a bare cell.
-        local full_fill = ctx.solid_change_number_right_indexes[meta.right_index] or is_delete_origin
-        local start_col = full_fill and 0 or self:right_number_text_start_col()
-        local end_col = full_fill and -1 or self:right_number_text_end_col()
-        paint_num_band(self.right_num_buf, row, "DiffBanditConnectorChange", start_col, end_col)
-      elseif meta.kind == "add" then
-        -- Mirror of the delete rule: embedded add rows inside the chunk's
-        -- solid overlap carry the band through the wedge/spacer column.
-        local solid = ctx.solid_change_number_right_indexes[meta.right_index]
-        local start_col = solid and 0 or self:right_number_text_start_col()
-        local end_col = solid and -1 or self:right_number_text_end_col()
-        paint_num_band(self.right_num_buf, row, "DiffBanditConnectorAdd", start_col, end_col)
+      local first = right_map:first_row(meta.right_index)
+      local last = first + right_map:height(meta.right_index) - 1
+      for r = first, last do
+        paint_right_row(meta, r, r == last)
       end
     end
   end)
@@ -1168,15 +1246,15 @@ local function render_route_backgrounds(self, ctx)
   -- sidecar number panes; the connector core is reserved for routes.
   for _, p in ipairs(ctx.paths) do
     if p.kind == "add" and not p.embedded_in_change then
-      local first = math.max(p.target_start_index or p.display_start_row, ctx.right_row_min)
-      local last = math.min(p.target_end_index or p.display_end_row, ctx.right_row_max)
+      local first = math.max(p.target_start_index or p.display_start_row, ctx.right_nrow_min)
+      local last = math.min(p.target_end_index or p.display_end_row, ctx.right_nrow_max)
       for right_index = first, last do
         vim.api.nvim_buf_add_highlight(self.right_num_buf, self.ns, "DiffBanditConnectorAdd", right_index - 1,
           self:right_number_text_start_col(), self:right_number_text_end_col())
       end
     elseif p.kind == "delete" then
-      local first = math.max(p.target_start_index or p.display_start_row, ctx.left_row_min)
-      local last = math.min(p.target_end_index or p.display_end_row, ctx.left_row_max)
+      local first = math.max(p.target_start_index or p.display_start_row, ctx.left_nrow_min)
+      local last = math.min(p.target_end_index or p.display_end_row, ctx.left_nrow_max)
       for left_index = first, last do
         vim.api.nvim_buf_add_highlight(self.left_num_buf, self.ns, "DiffBanditConnectorDelete", left_index - 1,
           self:left_number_text_start_col(), self:left_number_text_end_col())
@@ -1189,8 +1267,8 @@ local function render_route_backgrounds(self, ctx)
   if kitty_mode(self) then
     return
   end
-  local conn_lo = ctx.left_row_min or 1
-  local conn_hi = math.min(ctx.left_row_max or ctx.connector_height, ctx.connector_height)
+  local conn_lo = ctx.left_nrow_min or 1
+  local conn_hi = math.min(ctx.left_nrow_max or ctx.connector_height, ctx.connector_height)
   for _, p in ipairs(ctx.route_paths) do
     if p.kind == "change" and p.viewport_solid_start and p.viewport_solid_end then
       local lo = math.max(p.viewport_solid_start, conn_lo)
@@ -1352,7 +1430,7 @@ local function render_intraline_spans(self, ctx)
       local row_r = meta.right_index - 1
       local line_content = self.right.lines and self.right.lines[meta.right_line] or ""
       local line_len = #line_content
-      local is_embedded_terminal = ctx.embedded_add_terminal_right_indexes[meta.right_index] == true
+      local is_embedded_terminal = ctx.embedded_add_terminal_right_indexes[ctx.right_map:last_row(meta.right_index)] == true
       if is_embedded_terminal then
         pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, 0, {
           line_hl_group = "DiffBanditChangeRight",
@@ -1377,7 +1455,9 @@ local function render_intraline_spans(self, ctx)
         local win_width = vim.api.nvim_win_get_width(self.right_win)
         local text_width = vim.fn.strdisplaywidth(line_content)
         local padding_len = math.max(0, win_width - text_width)
-        if padding_len > 0 then
+        -- Inline padding takes real cells: under 'wrap' it would spill onto
+        -- an extra screen row (the hl_eol mark above already fills the row).
+        if padding_len > 0 and not vim.wo[self.right_win].wrap then
           pcall(vim.api.nvim_buf_set_extmark, self.right_buf, self.extmark_ns, row_r, line_len, {
             virt_text = { { string.rep(" ", padding_len), "DiffBanditChangeRight" } },
             virt_text_pos = "inline",
@@ -1442,7 +1522,8 @@ local function render_origin_underlines(self, ctx)
   local meta_list = self.view.line_meta
   for_each_meta_index(ctx, function(idx)
     local meta = meta_list[idx]
-    if meta and meta.origin == "add" and not ctx.embedded_add_origin_left_indexes[meta.left_index]
+    if meta and meta.origin == "add" and meta.left_index
+        and not ctx.embedded_add_origin_left_indexes[ctx.left_map:last_row(meta.left_index)]
         and ctx.left_row_visible(meta.left_index) then
       underline_origin_row(self, self.left_buf, self.left_win, meta.left_index - 1,
         "DiffBanditAddLeftSeparator", "combine", 100)
@@ -1466,10 +1547,10 @@ local function render_route_glyphs(self, ctx)
   -- Clear window is computed once in clear_render_namespaces and carried on ctx
   -- so ns + path clears stay structurally identical.
   local full = ctx.clear_full
-  local left_min = ctx.clear_left_min
-  local left_max = ctx.clear_left_max
-  local right_min = ctx.clear_right_min
-  local right_max = ctx.clear_right_max
+  local left_min = ctx.clear_left_nmin
+  local left_max = ctx.clear_left_nmax
+  local right_min = ctx.clear_right_nmin
+  local right_max = ctx.clear_right_nmax
   local connector_min = ctx.clear_connector_min
   local connector_max = ctx.clear_connector_max
   clear_ns_range(self.left_num_buf, self.path_ns, left_min, left_max, full)
@@ -1487,8 +1568,8 @@ local function render_route_glyphs(self, ctx)
   local cur = ctx.paint_clip
   local paint_conn_min = cur.connector_min
   local paint_conn_max = cur.connector_max
-  local paint_left_min, paint_left_max = cur.left_min, cur.left_max
-  local paint_right_min, paint_right_max = cur.right_min, cur.right_max
+  local paint_left_min, paint_left_max = cur.left_nmin, cur.left_nmax
+  local paint_right_min, paint_right_max = cur.right_nmin, cur.right_nmax
 
   local function connector_row_paintable(row)
     return row ~= nil and row >= paint_conn_min and row <= paint_conn_max
@@ -1538,7 +1619,7 @@ local function render_route_glyphs(self, ctx)
     if side == "left" then
       local left_index = row
       if left_index and left_index >= paint_left_min and left_index <= paint_left_max
-          and left_index <= #ctx.left_lines then
+          and left_index <= ctx.left_rows_total then
         vim.api.nvim_buf_set_extmark(self.left_num_buf, self.path_ns, left_index - 1, self:left_triangle_col(), {
           virt_text = { { glyph, "DiffBanditConnectorExpansionChange" } },
           virt_text_pos = "overlay",
@@ -1547,7 +1628,7 @@ local function render_route_glyphs(self, ctx)
     else
       local right_index = ctx.right_topline + (row - ctx.left_topline)
       if right_index >= paint_right_min and right_index <= paint_right_max
-          and right_index <= #ctx.right_lines then
+          and right_index <= ctx.right_rows_total then
         vim.api.nvim_buf_set_extmark(self.right_num_buf, self.path_ns, right_index - 1, self:right_triangle_col(), {
           virt_text = { { glyph, "DiffBanditConnectorExpansionChange" } },
           virt_text_pos = "overlay",

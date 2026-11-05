@@ -1,0 +1,31 @@
+l1 ctx 1
+l2 ctx 2
+l3 ctx 3
+l4 ctx 4 Message::SurfaceEvents(surfaces) => session.surfaces.extend(surfaces), then more text to wrap
+l5 ctx 5
+l6 ctx 6
+l7 ctx 7
+l8 ctx 8
+l9 ctx 9
+l10 ctx 10
+l11 ctx 11
+l12 changed 12 Message::SurfaceEvents(surfaces) => session.surfaces.extend(surfaces), then more text to wrap
+l13 ctx 13
+l14 ctx 14
+l15 ctx 15
+l16 ctx 16
+l17 ctx 17
+l18 ctx 18
+l19 ctx 19
+l20 ctx 20
+l21 ctx 21
+l22 ctx 22
+l23 ctx 23
+l24 ctx 24
+l25 deleted Message::SurfaceEvents(surfaces) => session.surfaces.extend(surfaces), then more text to wrap
+l26 ctx 25
+l27 ctx 26
+l28 ctx 27
+l29 ctx 28
+l30 ctx 29
+l31 ctx 30

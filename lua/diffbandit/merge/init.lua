@@ -31,6 +31,13 @@ local set_win_width = nvim.set_window_width
 local set_win_height = nvim.set_window_height
 local set_win_view_topline = nvim.set_win_view_topline
 local get_win_view_topline = nvim.get_win_view_topline
+local rowmap = require("diffbandit.util.rowmap")
+
+-- Screen-row topline of a content pane: what its gutters scroll to (equal
+-- to the topline unless lines above it wrap).
+local function gutter_row(win)
+  return rowmap.topline_row(win, rowmap.get(win, { stale_ok = true }))
+end
 local get_win_width = nvim.get_window_width
 local get_win_height = nvim.get_window_height
 local set_win_options = nvim.set_window_options
@@ -537,6 +544,25 @@ function Merge:setup_autocmds()
     self:sync_gutter_viewports()
     self:render()
   end)
+  -- Wrapped heights follow pane width and wrap-related options; the view
+  -- key carries each pane's row-map version, so a render picks them up.
+  vim.api.nvim_create_autocmd("OptionSet", {
+    group = self.augroup,
+    pattern = rowmap.HEIGHT_OPTIONS,
+    callback = function()
+      if not self.disposed then
+        self:request_render()
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
+    group = self.augroup,
+    callback = function()
+      if not self.disposed then
+        self:request_render()
+      end
+    end,
+  })
   -- The three content panes scroll independently; DiffBandit owns gutter
   -- synchronization (same contract as two-way sessions — no scrollbind).
   vim.api.nvim_create_autocmd("WinScrolled", {
@@ -580,9 +606,9 @@ function Merge:sync_gutter_viewports()
     return
   end
   self.syncing_scroll = true
-  local local_topline = get_win_view_topline(self.local_win)
-  local result_topline = get_win_view_topline(self.result_win)
-  local remote_topline = get_win_view_topline(self.remote_win)
+  local local_topline = gutter_row(self.local_win)
+  local result_topline = gutter_row(self.result_win)
+  local remote_topline = gutter_row(self.remote_win)
   set_win_view_topline(self.local_num_win, local_topline)
   set_win_view_topline(self.local_result_connector_win, local_topline)
   set_win_view_topline(self.result_left_num_win, result_topline)
@@ -813,6 +839,10 @@ function Merge:render_view_key(result_tick)
     tostring(get_win_view_topline(self.local_win)),
     tostring(get_win_view_topline(self.result_win)),
     tostring(get_win_view_topline(self.remote_win)),
+    -- Wrapped-row geometry (rebuilt maps mean new gutter rows).
+    rowmap.version_of(self.local_win),
+    rowmap.version_of(self.result_win),
+    rowmap.version_of(self.remote_win),
     tostring(get_win_width(self.local_win)),
     tostring(get_win_width(self.result_win)),
     tostring(get_win_width(self.remote_win)),
@@ -1558,14 +1588,17 @@ end
 
 function Merge:set_viewports(local_topline, result_topline, remote_topline, opts)
   set_win_view_topline(self.local_win, local_topline, opts)
-  set_win_view_topline(self.local_num_win, local_topline, opts)
-  set_win_view_topline(self.local_result_connector_win, local_topline, opts)
   set_win_view_topline(self.result_win, result_topline, opts)
-  set_win_view_topline(self.result_left_num_win, result_topline, opts)
-  set_win_view_topline(self.result_right_num_win, result_topline, opts)
   set_win_view_topline(self.remote_win, remote_topline, opts)
-  set_win_view_topline(self.remote_num_win, remote_topline, opts)
-  set_win_view_topline(self.result_remote_connector_win, remote_topline, opts)
+  local local_row = gutter_row(self.local_win)
+  local result_row = gutter_row(self.result_win)
+  local remote_row = gutter_row(self.remote_win)
+  set_win_view_topline(self.local_num_win, local_row, opts)
+  set_win_view_topline(self.local_result_connector_win, local_row, opts)
+  set_win_view_topline(self.result_left_num_win, result_row, opts)
+  set_win_view_topline(self.result_right_num_win, result_row, opts)
+  set_win_view_topline(self.remote_num_win, remote_row, opts)
+  set_win_view_topline(self.result_remote_connector_win, remote_row, opts)
 end
 
 function Merge:rerender_pair_viewports(opts)
