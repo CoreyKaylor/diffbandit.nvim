@@ -19,6 +19,7 @@ local view_builder = require("diffbandit.diff.view")
 local diff_document = require("diffbandit.diff.document")
 local kitty = require("diffbandit.kitty")
 local winbar = require("diffbandit.util.winbar")
+local layout = require("diffbandit.util.layout")
 
 local Session = {}
 Session.__index = Session
@@ -221,6 +222,25 @@ end
 
 function Session:resize_layout()
   session_layout.resize(self)
+  self.foreign_layout_key = layout.foreign_layout_key(self.tabpage, self:owned_windows())
+end
+
+-- Split windows this session lays out (content, gutters, sidecars, headers,
+-- and the attached commit panel).
+function Session:owned_windows()
+  local panel = self.panel or {}
+  local wins = {}
+  for _, win in ipairs({
+    self.left_overview_win, self.left_win, self.left_num_win, self.connector_win,
+    self.right_num_win, self.right_win, self.right_overview_win,
+    self.left_header_win, self.center_header_win, self.right_header_win,
+    panel.nav_win, panel.commit_win,
+  }) do
+    if win then
+      wins[#wins + 1] = win
+    end
+  end
+  return wins
 end
 
 function Session:render_overviews()
@@ -426,7 +446,26 @@ function Session:setup_autocmds()
     end
     refresh_row_maps()
   end
-  vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, { group = augroup, callback = on_height_change })
+  -- A foreign split (a file tree, quickfix, …) opening or closing in this
+  -- tabpage, or the editor resizing, hands columns to whichever DiffBandit
+  -- window is adjacent; re-run the width layout so the panel and gutters
+  -- return to their sizes and the source panes split what is left. Resizes
+  -- of DiffBandit's own windows (a dragged separator) keep the key and stay.
+  local function on_resize()
+    if self.disposed then
+      return
+    end
+    on_height_change()
+    ui.schedule_once(self, "foreign_layout_scheduled", function()
+      if self.disposed or vim.api.nvim_get_current_tabpage() ~= self.tabpage then
+        return
+      end
+      if layout.foreign_layout_key(self.tabpage, self:owned_windows()) ~= self.foreign_layout_key then
+        self:resize_layout()
+      end
+    end, 0)
+  end
+  vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, { group = augroup, callback = on_resize })
   vim.api.nvim_create_autocmd("OptionSet", {
     group = augroup,
     pattern = rowmap.HEIGHT_OPTIONS,
