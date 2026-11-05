@@ -2662,3 +2662,15 @@ do
   local untracked_loaded = assert(queue.load(2))
   assert_eq(untracked_loaded.left.git_stage_blobs, nil, "untracked files have no stage markers to compare")
 end
+
+-- git.current_branch() names the checked-out branch, or the detached commit.
+do
+  local repo = make_git_repo()
+  write_repo_file(repo, "a.txt", { "one" })
+  commit_baseline(repo)
+  git_test_command({ "switch", "-q", "-c", "topic" }, repo)
+  assert_eq(git_mod.current_branch(repo), "topic", "current_branch names the checked-out branch")
+  git_test_command({ "switch", "-q", "--detach" }, repo)
+  local short = vim.trim(git_test_command({ "rev-parse", "--short", "HEAD" }, repo))
+  assert_eq(git_mod.current_branch(repo), "detached " .. short, "a detached HEAD reports its commit")
+end

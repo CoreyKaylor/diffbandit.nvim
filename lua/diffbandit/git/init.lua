@@ -808,10 +808,6 @@ function M.queue(opts, config)
   return queue, nil
 end
 
-function M.current_branch(root)
-  return current_branch_label(root)
-end
-
 function M.root(opts)
   opts = opts or {}
   local uv = vim.uv or vim.loop
@@ -1216,6 +1212,12 @@ local function current_branch_label(root)
   end
   local short = short_commit(root, "HEAD")
   return short and ("detached " .. short) or "detached HEAD"
+end
+
+-- Defined after current_branch_label: above it, the name would resolve to
+-- an (unset) global instead of the local.
+function M.current_branch(root)
+  return current_branch_label(root)
 end
 
 local function commit_name(root, rev)
