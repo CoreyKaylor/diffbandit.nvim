@@ -1,6 +1,6 @@
-#!/usr/bin/env lua
--- Verify tmux capture output for expected visual elements
--- Usage: lua verify.lua <capture_file> [test_name]
+-- Visual checks over a captured screen (plain text rows + ANSI SGR rows).
+-- Captures come from tests/helpers/child.lua (or tmux capture-pane -e for the
+-- optional smoke test); both use the same SGR conventions.
 
 local function strip_ansi(s)
   return s:gsub("\27%[[%d;:]*m", "")
@@ -9,8 +9,7 @@ end
 local function read_capture(filepath)
   local file = io.open(filepath, "r")
   if not file then
-    io.stderr:write("ERROR: Cannot open capture file: " .. filepath .. "\n")
-    os.exit(1)
+    error("cannot open capture file: " .. filepath)
   end
 
   local lines = {}
@@ -2665,83 +2664,76 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
   return errors
 end
 
--- Main
-local capture_file = arg[1]
-local test_name = arg[2] or "extreme"
-local ansi_capture_file = arg[3]
+-- Entry point: check(test_name, plain_lines, ansi_lines) -> list of errors.
+-- test_name is a fixture name ("mixed") or "<scenario>:<phase>" ("scroll-mixed:initial").
+local M = {}
 
-if not capture_file then
-  io.stderr:write("Usage: lua verify.lua <capture_file> [test_name]\n")
-  io.stderr:write("  test_name: 'extreme' or 'pure' (default: extreme)\n")
-  os.exit(1)
+function M.check(test_name, lines, ansi_lines)
+  test_name = test_name or "extreme"
+  if not lines or #lines == 0 then
+    return { "Capture is empty" }
+  end
+  local errors
+  local scroll_base, scroll_phase = test_name:match("^([^:]+):(.+)$")
+  if scroll_base == "scroll-additions" then
+    errors = verify_scroll_additions(lines, ansi_lines, scroll_phase)
+  elseif scroll_base == "scroll-deletions" then
+    errors = verify_scroll_deletions(lines, ansi_lines, scroll_phase)
+  elseif scroll_base == "scroll-mixed" then
+    errors = verify_scroll_mixed(lines, ansi_lines, scroll_phase)
+  elseif scroll_base == "scroll-dense-mixed" then
+    errors = verify_dense_mixed(lines, ansi_lines, scroll_phase)
+  elseif scroll_base == "scroll-changes" then
+    errors = verify_scroll_changes(lines, ansi_lines, scroll_phase)
+  elseif scroll_base == "git" then
+    errors = verify_git(lines, ansi_lines, scroll_phase)
+  elseif test_name == "pure" then
+    errors = verify_pure_additions(lines, ansi_lines)
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New line 1", "New line 6" })) do
+      table.insert(errors, err)
+    end
+  elseif test_name == "deletions" then
+    errors = verify_deletions(lines, ansi_lines)
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Line to delete 1", "Line to delete 4" })) do
+      table.insert(errors, err)
+    end
+  elseif test_name == "mixed" then
+    errors = verify_mixed(lines, ansi_lines)
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
+      table.insert(errors, err)
+    end
+  elseif test_name == "dense-mixed" then
+    errors = verify_dense_mixed(lines, ansi_lines)
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New dense value A", "Deleted dense top 01", "Added dense A 01" })) do
+      table.insert(errors, err)
+    end
+  elseif test_name == "theme-default" then
+    errors = verify_theme_default(lines, ansi_lines)
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
+      table.insert(errors, err)
+    end
+  elseif test_name == "comprehensive" then
+    errors = verify_comprehensive(lines, ansi_lines)
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "\"time\"", "This section will", "Added performance" })) do
+      table.insert(errors, err)
+    end
+  else
+    errors = verify_extreme_additions(lines, ansi_lines)
+    for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New after Foxtrot 1", "New after Hotel 1" })) do
+      table.insert(errors, err)
+    end
+  end
+  return errors
 end
 
-local lines = read_capture(capture_file)
-local ansi_lines = ansi_capture_file and read_capture(ansi_capture_file) or nil
+--- Read a capture file into lines (for checking captures saved on disk).
+M.read_capture = read_capture
 
-if #lines == 0 then
-  io.stderr:write("ERROR: Capture file is empty\n")
-  os.exit(1)
-end
+-- Shared helpers, for scenario-specific assertions in the test files.
+M.strip_ansi = strip_ansi
+M.count_occurrences = count_occurrences
+M.ansi_bg_at_plain_byte = ansi_bg_at_plain_byte
+M.ansi_bg_for_text = ansi_bg_for_text
+M.ansi_final_bg = ansi_final_bg
 
-local errors
-local scroll_base, scroll_phase = test_name:match("^([^:]+):(.+)$")
-if scroll_base == "scroll-additions" then
-  errors = verify_scroll_additions(lines, ansi_lines, scroll_phase)
-elseif scroll_base == "scroll-deletions" then
-  errors = verify_scroll_deletions(lines, ansi_lines, scroll_phase)
-elseif scroll_base == "scroll-mixed" then
-  errors = verify_scroll_mixed(lines, ansi_lines, scroll_phase)
-elseif scroll_base == "scroll-dense-mixed" then
-  errors = verify_dense_mixed(lines, ansi_lines, scroll_phase)
-elseif scroll_base == "scroll-changes" then
-  errors = verify_scroll_changes(lines, ansi_lines, scroll_phase)
-elseif scroll_base == "git" then
-  errors = verify_git(lines, ansi_lines, scroll_phase)
-elseif test_name == "pure" then
-  errors = verify_pure_additions(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New line 1", "New line 6" })) do
-    table.insert(errors, err)
-  end
-elseif test_name == "deletions" then
-  errors = verify_deletions(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Line to delete 1", "Line to delete 4" })) do
-    table.insert(errors, err)
-  end
-elseif test_name == "mixed" then
-  errors = verify_mixed(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
-    table.insert(errors, err)
-  end
-elseif test_name == "dense-mixed" then
-  errors = verify_dense_mixed(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New dense value A", "Deleted dense top 01", "Added dense A 01" })) do
-    table.insert(errors, err)
-  end
-elseif test_name == "theme-default" then
-  errors = verify_theme_default(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "Old value A", "Delete this line", "Added line 1" })) do
-    table.insert(errors, err)
-  end
-elseif test_name == "comprehensive" then
-  errors = verify_comprehensive(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "\"time\"", "This section will", "Added performance" })) do
-    table.insert(errors, err)
-  end
-else
-  errors = verify_extreme_additions(lines, ansi_lines)
-  for _, err in ipairs(verify_ansi_backgrounds(ansi_lines, { "New after Foxtrot 1", "New after Hotel 1" })) do
-    table.insert(errors, err)
-  end
-end
-
-if #errors > 0 then
-  io.stderr:write("Integration test FAILED:\n")
-  for _, err in ipairs(errors) do
-    io.stderr:write("  - " .. err .. "\n")
-  end
-  os.exit(1)
-end
-
-print("Integration test passed!")
-os.exit(0)
+return M

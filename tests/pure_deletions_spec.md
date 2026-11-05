@@ -152,7 +152,7 @@ The deletion visual tells a story: "content on the left was removed, leaving a g
 
 ## Integration Regression Checks
 
-The tmux integration verifier should protect these visual details:
+The integration verifier (`tests/helpers/verify.lua`) should protect these visual details:
 
 - Plain capture contains delete triangles in the left number pane (`3◤`, `8◤`).
 - ANSI capture shows delete background before the triangle but not under the triangle cell.
@@ -164,4 +164,4 @@ The tmux integration verifier should protect these visual details:
 
 ## Testing
 
-Use tmux for interactive sessions and capture-pane -e to ensure colors are captured as well.
+Integration tests capture the screen with `tests/helpers/child.lua`, which records colors as well (same SGR format as `tmux capture-pane -e`).

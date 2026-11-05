@@ -1,3 +1,5 @@
+local pending = require("diffbandit.util.pending")
+
 local M = {}
 
 function M.run(cmd)
@@ -62,15 +64,21 @@ end
 
 function M.run_async(cmd, callback)
   if vim.system then
-    vim.system(cmd, { text = false }, function(result)
+    local token = pending.begin("process")
+    local ok, spawn_err = pcall(vim.system, cmd, { text = false }, function(result)
       local err
       if result.code ~= 0 then
         err = vim.trim(result.stderr or result.stdout or "")
       end
       vim.schedule(function()
+        pending.done(token)
         callback(result.code == 0, err, result.stdout or "")
       end)
     end)
+    if not ok then
+      pending.done(token)
+      error(spawn_err, 0)
+    end
     return true
   end
   return false
@@ -88,11 +96,17 @@ end
 
 function M.run_raw_async(cmd, callback)
   if vim.system then
-    vim.system(cmd, { text = false }, function(result)
+    local token = pending.begin("process")
+    local ok, spawn_err = pcall(vim.system, cmd, { text = false }, function(result)
       vim.schedule(function()
+        pending.done(token)
         callback(result.code or 0, result.stdout or "", result.stderr or "")
       end)
     end)
+    if not ok then
+      pending.done(token)
+      error(spawn_err, 0)
+    end
     return
   end
   local output = vim.fn.system(cmd)

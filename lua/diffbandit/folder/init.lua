@@ -1,6 +1,7 @@
 local state = require("diffbandit.state")
 local folder_model = require("diffbandit.folder.model")
 local nvim = require("diffbandit.util.nvim")
+local pending = require("diffbandit.util.pending")
 local process = require("diffbandit.util.process")
 local ui = require("diffbandit.util.ui")
 local layout = require("diffbandit.util.layout")
@@ -629,7 +630,9 @@ function Folder:request_render()
   end
   self.render_scheduled = true
   local delay = tonumber(compare_config(self).debounce_ms) or 50
+  local token = pending.begin("folder_render")
   vim.defer_fn(function()
+    pending.done(token)
     self.render_scheduled = false
     if self.disposed then
       return

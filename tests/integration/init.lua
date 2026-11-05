@@ -14,10 +14,14 @@ do
   local Session = require("diffbandit.session")
   if not Session._diffbandit_integration_perf_wrapped then
     Session._diffbandit_integration_perf_wrapped = true
-    local original_render = Session.render
-    function Session:render(...)
+    -- Count paints, not Session:render calls: debounced scroll repaints go
+    -- through rerender_for_viewport, which calls session.render.render
+    -- directly (as does the full Session:render path), so this sees both.
+    local session_render = require("diffbandit.session.render")
+    local original_paint = session_render.render
+    session_render.render = function(self, ...)
       self.test_render_count = (self.test_render_count or 0) + 1
-      return original_render(self, ...)
+      return original_paint(self, ...)
     end
 
     local original_request_viewport_rerender = Session.request_viewport_rerender
@@ -305,14 +309,6 @@ function _G.DiffBanditTestWritePerfState(path)
   vim.fn.writefile(lines, path)
 end
 
-function _G.DiffBanditTestRapidScroll(count)
-  count = tonumber(count) or 1
-  local key = vim.api.nvim_replace_termcodes("<C-E>", true, false, true)
-  for _ = 1, count do
-    vim.api.nvim_feedkeys(key, "nx", false)
-  end
-end
-
 function _G.DiffBanditTestWriteGitState(path)
   local session = _G.DiffBanditTestSession()
   if not session then
@@ -498,10 +494,6 @@ vim.api.nvim_create_user_command("DBWritePerfState", function(opts)
   _G.DiffBanditTestWritePerfState(opts.fargs[1])
   vim.cmd("redraw!")
 end, { nargs = 1, complete = "file" })
-
-vim.api.nvim_create_user_command("DBRapidScroll", function(opts)
-  _G.DiffBanditTestRapidScroll(opts.fargs[1])
-end, { nargs = 1 })
 
 vim.api.nvim_create_user_command("DBWriteGitState", function(opts)
   _G.DiffBanditTestWriteGitState(opts.fargs[1])

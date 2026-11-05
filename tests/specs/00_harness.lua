@@ -694,3 +694,113 @@ do
 end
 
 -- ==============================================================================
+
+-- Git fixture helpers shared by the git, launcher, keyhelp, and document-cache
+-- specs (kept here so any spec subset can run with DIFFBANDIT_SPECS).
+local function git_test_command(args, cwd)
+  if vim.system then
+    local cmd = vim.list_extend({ "git" }, args)
+    local result = vim.system(cmd, { cwd = cwd, text = true }):wait()
+    if result.code ~= 0 then
+      error("git command failed: git " .. table.concat(args, " ") .. "\n" .. tostring(result.stderr or result.stdout))
+    end
+    return result.stdout or ""
+  end
+
+  local uv = vim.uv or vim.loop
+  local old_cwd = uv.cwd()
+  if cwd then
+    uv.chdir(cwd)
+  end
+  local output = vim.fn.system(vim.list_extend({ "git" }, args))
+  local code = vim.v.shell_error
+  if cwd then
+    uv.chdir(old_cwd)
+  end
+  if code ~= 0 then
+    error("git command failed: git " .. table.concat(args, " ") .. "\n" .. tostring(output))
+  end
+  return output
+end
+
+local function git_status_command(args, cwd)
+  if vim.system then
+    local cmd = vim.list_extend({ "git" }, args)
+    local result = vim.system(cmd, { cwd = cwd, text = true }):wait()
+    return result.code, result.stdout or "", result.stderr or ""
+  end
+
+  local uv = vim.uv or vim.loop
+  local old_cwd = uv.cwd()
+  if cwd then
+    uv.chdir(cwd)
+  end
+  local output = vim.fn.system(vim.list_extend({ "git" }, args))
+  local code = vim.v.shell_error
+  if cwd then
+    uv.chdir(old_cwd)
+  end
+  return code, output or "", ""
+end
+
+local function make_git_repo()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  git_test_command({ "init" }, dir)
+  git_test_command({ "config", "user.email", "diffbandit@example.test" }, dir)
+  git_test_command({ "config", "user.name", "DiffBandit Test" }, dir)
+  return dir
+end
+
+local function write_repo_file(root_dir, path, lines)
+  local full = root_dir .. "/" .. path
+  vim.fn.mkdir(vim.fn.fnamemodify(full, ":h"), "p")
+  vim.fn.writefile(lines, full)
+end
+
+local function commit_baseline(root_dir)
+  git_test_command({ "add", "." }, root_dir)
+  git_test_command({ "commit", "-m", "baseline" }, root_dir)
+end
+
+-- util/pending: the idle signal integration tests settle on.
+do
+  local pending = require("diffbandit.util.pending")
+  local base = pending.count()
+  local a = pending.begin("a")
+  local b = pending.begin("b")
+  assert_eq(pending.count(), base + 2, "pending counts armed tokens")
+  assert_eq(pending.idle(), false, "pending is busy while tokens are armed")
+  pending.done(a)
+  pending.done(a)
+  assert_eq(pending.count(), base + 1, "pending.done is idempotent per token")
+  pending.done(nil)
+  local wrapped = pending.wrap(b, function(x)
+    return x * 2
+  end)
+  assert_eq(wrapped(21), 42, "pending.wrap passes through the result")
+  assert_eq(pending.count(), base, "pending.wrap releases its token")
+
+  -- Timers armed by earlier specs may still be pending, so track this spec's
+  -- own tokens by label instead of the global count.
+  local function armed(label)
+    return vim.tbl_contains(pending.list(), label)
+  end
+  local ui = require("diffbandit.util.ui")
+  local host = {}
+  local fired = 0
+  ui.schedule_once(host, "pending_spec_fire", function()
+    fired = fired + 1
+  end, 5)
+  assert_eq(armed("pending_spec_fire"), true, "schedule_once holds a pending token while armed")
+  vim.wait(500, function()
+    return fired == 1
+  end, 5)
+  assert_eq(armed("pending_spec_fire"), false, "schedule_once releases its token when the timer fires")
+  ui.reschedule_once(host, "pending_spec_cancel", function() end, 5)
+  ui.cancel_schedule_once(host, "pending_spec_cancel")
+  vim.wait(500, function()
+    return not armed("pending_spec_cancel")
+  end, 5)
+  assert_eq(armed("pending_spec_cancel"), false, "a cancelled schedule_once still releases its token")
+end

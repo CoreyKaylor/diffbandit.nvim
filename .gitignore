@@ -79,3 +79,6 @@ tools/corpus/
 
 # Demo recording scratch frames (regenerate with demo/record.sh)
 docs/demo/.frames/
+
+# Test dependencies (tests/deps.sh)
+deps/

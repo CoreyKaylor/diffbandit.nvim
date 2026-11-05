@@ -146,7 +146,7 @@ The lane system tells a story: "multiple expansions from the left side flow into
 
 ## Integration Regression Checks
 
-The tmux integration verifier should protect these visual details:
+The integration verifier (`tests/helpers/verify.lua`) should protect these visual details:
 
 - Plain capture contains the expected `◥` triangles and `│` rails.
 - ANSI capture contains native underline rows for the left-side origins.
@@ -156,4 +156,4 @@ The tmux integration verifier should protect these visual details:
 
 ## Testing
 
-Use tmux for interactive sessions and capture-pane -e to ensure colors are captured as well.
+Integration tests capture the screen with `tests/helpers/child.lua`, which records colors as well (same SGR format as `tmux capture-pane -e`).

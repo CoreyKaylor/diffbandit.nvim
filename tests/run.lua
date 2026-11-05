@@ -48,6 +48,31 @@ local specs = {
   "46_kitty_tmux.lua",
 }
 
+-- DIFFBANDIT_SPECS=20,45 runs only specs whose numeric prefix is listed
+-- (00_harness always runs: it defines the shared assert helpers).
+local only = vim.env.DIFFBANDIT_SPECS
+if only and only ~= "" then
+  local wanted = { ["00"] = true }
+  for prefix in only:gmatch("%d+") do
+    wanted[prefix] = true
+  end
+  specs = vim.tbl_filter(function(name)
+    return wanted[name:match("^(%d+)_")] == true
+  end, specs)
+end
+-- DIFFBANDIT_SPECS_SKIP=20,25 runs every spec except those (tests/run_all.lua
+-- shards the unit suite this way, so a new spec lands in a shard by default).
+local skip = vim.env.DIFFBANDIT_SPECS_SKIP
+if skip and skip ~= "" then
+  local skipped = {}
+  for prefix in skip:gmatch("%d+") do
+    skipped[prefix] = prefix ~= "00"
+  end
+  specs = vim.tbl_filter(function(name)
+    return not skipped[name:match("^(%d+)_")]
+  end, specs)
+end
+
 local map_entries = {}
 local bodies = {}
 for _, name in ipairs(specs) do
@@ -142,9 +167,16 @@ local src = table.concat(parts)
 -- Chunkname is absolute path of the runner so debug.getinfo fallbacks stay valid.
 local chunk, err = load(src, "@" .. vim.fn.fnamemodify(runner_source, ":p"))
 if not chunk then
-  error("test load failed: " .. tostring(err))
+  vim.api.nvim_err_writeln("test load failed: " .. tostring(err))
+  vim.cmd("cquit 1")
 end
-chunk()
+-- A failure must exit non-zero instead of leaving headless nvim idling on the
+-- startup error message.
+local ok, run_err = xpcall(chunk, debug.traceback)
+if not ok then
+  io.stderr:write("FAILED: " .. tostring(run_err) .. "\n")
+  vim.cmd("cquit 1")
+end
 
 vim.api.nvim_out_write("OK\n")
 vim.cmd("qa")

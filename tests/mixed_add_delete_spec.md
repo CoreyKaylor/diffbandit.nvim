@@ -52,7 +52,7 @@ never fuse.
 
 ## Integration Regression Checks
 
-The tmux integration verifier should protect these visual details:
+The integration verifier (`tests/helpers/verify.lua`) should protect these visual details:
 
 - Plain capture contains the delete triangle at `6◤` and the change/add wedges.
 - ANSI capture shows left changed-token emphasis for `Old` and `Original`.

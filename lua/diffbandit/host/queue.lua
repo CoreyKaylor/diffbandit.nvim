@@ -1,5 +1,6 @@
 -- Shared file-queue helpers for Session, Merge, and CommitPanel hosts.
 local nvim = require("diffbandit.util.nvim")
+local pending = require("diffbandit.util.pending")
 local diff_document = require("diffbandit.diff.document")
 local M = {}
 
@@ -57,7 +58,9 @@ function M.prefetch_neighbors(host, index, delay)
   end
   host.prefetch_token = (host.prefetch_token or 0) + 1
   local token = host.prefetch_token
+  local pending_token = pending.begin("prefetch")
   vim.defer_fn(function()
+    pending.done(pending_token)
     if host.disposed or host.prefetch_token ~= token then
       return
     end
