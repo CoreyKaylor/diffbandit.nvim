@@ -1,5 +1,11 @@
 -- Rapid <C-e> bursts over a 5000-line git file: the debounced viewport
--- rerender must keep render counts well below the scroll event count.
+-- rerender must keep paint counts well below the scroll event count.
+--
+-- Each <C-e> is typed separately and followed by a round-trip request, so the
+-- child processes it (scroll, redraw, WinScrolled) before the next one: every
+-- key is its own scroll event, like a held key or a fast wheel. render_count
+-- counts paints on every path (tests/integration/init.lua wraps
+-- session.render.render), including debounced viewport repaints.
 local child_mod = require("helpers.child")
 local state = require("helpers.state")
 
@@ -53,7 +59,10 @@ T["rapid scroll bursts"] = function()
 
   local function burst(label, scroll_events, min_top)
     child:cmd("DBResetPerf")
-    child:cmd("DBRapidScroll " .. scroll_events)
+    for _ = 1, scroll_events do
+      child:keys("<C-e>")
+      child:lua("return 0") -- wait until the key has been processed
+    end
     child:settle()
     local lines, path = child:state("DBWritePerfState", dir, label)
     local dump = table.concat(lines, "\n")
@@ -74,6 +83,12 @@ T["rapid scroll bursts"] = function()
     end
     if request_count <= 0 then
       error("Git scroll perf failed: rapid scroll did not hit viewport rerender scheduling (" .. label .. ")\n" .. dump, 0)
+    end
+    -- If the scrolls reach DiffBandit as a few coalesced events, the render
+    -- check below passes no matter what the debounce does.
+    if request_count < math.floor(scroll_events / 2) then
+      error(string.format("Git scroll perf failed: scroll events were coalesced before DiffBandit saw them (%s)\nevents=%d requests=%d\n%s",
+        label, scroll_events, request_count, dump), 0)
     end
     -- bash: (( render_count >= scroll_events / 2 )) with integer division
     if render_count >= math.floor(scroll_events / 2) then
