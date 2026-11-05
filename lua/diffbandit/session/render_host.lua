@@ -6,6 +6,7 @@
 local connector = require("diffbandit.connector")
 local connector_width = require("diffbandit.connector.width")
 local nvim = require("diffbandit.util.nvim")
+local rowmap = require("diffbandit.util.rowmap")
 local session_render = require("diffbandit.session.render")
 local ui = require("diffbandit.util.ui")
 
@@ -16,8 +17,7 @@ local get_win_view_topline = nvim.get_win_view_topline
 -- Live window key: used only for the pre-paint dedupe gate (is this event a
 -- no-op?). After paint, stamp from session._paint_viewport_key (ctx toplines).
 local function live_viewport_render_key(self)
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
+  local left_topline, right_topline = self:gutter_toplines()
   local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
   local right_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
   return ui.viewport_render_key(left_topline, right_topline, left_height, right_height, self.current_chunk)
@@ -61,6 +61,7 @@ end
 
 function M.invalidate_render_caches(self)
   self.base_paths_cache = nil
+  self.row_paths_cache = nil
   self.overview_marks_cache = nil
   self.changed_spans_cache = nil
   self.display_lines_cache = nil
@@ -79,21 +80,66 @@ function M.invalidate_render_caches(self)
   end
 end
 
-function M.base_paths(self)
-  if not self.base_paths_cache then
-    self.base_paths_cache = connector.compute_paths(self.view.chunks, self.view.line_meta)
+-- Row maps of the two source panes (util/rowmap). Wrapped lines and virtual
+-- lines make a buffer line taller than one screen row; the gutters, the
+-- connector and the route geometry all work in screen-row space. A change in
+-- either map drops every cache derived from row geometry. `opts.verify`
+-- re-measures the visible lines (decorations change heights without
+-- touching the text) — the render path asks for it once per paint.
+function M.row_maps(self, opts)
+  local get = (opts and opts.verify) and rowmap.verified or rowmap.get
+  local left_map = get(self.left_win, opts)
+  local right_map = get(self.right_win, opts)
+  local sig = rowmap.signature(left_map, right_map)
+  if sig ~= self.row_map_signature then
+    local first = self.row_map_signature == nil
+    self.row_map_signature = sig
+    self.row_paths_cache = nil
     self.document_path_indexes_cache = nil
-    self.meta_side_index_cache = nil
+    if not first then
+      self.route_plan_cache = nil
+      self.structural_buffer_key = nil
+      self.last_paint_clip = nil
+      self.last_viewport_render_key = nil
+    end
   end
-  return self.base_paths_cache
+  return left_map, right_map
 end
 
--- Document-stable index sets from base paths (not viewport projection).
+--- Screen-row toplines of the two source panes (what their number panes
+--- and the connector scroll to). Uses the maps the gutters were last
+--- painted with: sync runs per keystroke, and the gutter text only changes
+--- on paint anyway.
+function M.gutter_toplines(self)
+  local left_map, right_map = self:row_maps({ stale_ok = true })
+  return rowmap.topline_row(self.left_win, left_map), rowmap.topline_row(self.right_win, right_map)
+end
+
+-- Paths in screen-row space. Without wrapped lines that is line space and
+-- the document model's paths are used as-is.
+function M.base_paths(self)
+  local left_map, right_map = self:row_maps()
+  if left_map.identity and right_map.identity then
+    if not self.base_paths_cache then
+      self.base_paths_cache = connector.compute_paths(self.view.chunks, self.view.line_meta)
+      self.meta_side_index_cache = nil
+    end
+    return self.base_paths_cache
+  end
+  if not self.row_paths_cache then
+    local expanded = rowmap.expand_view(self.view, left_map, right_map)
+    self.row_paths_cache = connector.compute_paths(expanded.chunks, expanded.line_meta)
+  end
+  return self.row_paths_cache
+end
+
+-- Document-stable index sets from base paths (not viewport projection),
+-- keyed by screen row like the paths themselves.
 function M.document_path_indexes(self)
-  if self.document_path_indexes_cache then
+  local paths = self:base_paths()
+  if self.document_path_indexes_cache and self.document_path_indexes_cache.paths == paths then
     return self.document_path_indexes_cache
   end
-  local paths = self:base_paths()
   local embedded_add_terminal_right_indexes = {}
   local embedded_add_origin_left_indexes = {}
   local change_number_left_indexes = {}
@@ -120,6 +166,7 @@ function M.document_path_indexes(self)
     end
   end
   self.document_path_indexes_cache = {
+    paths = paths,
     embedded_add_terminal_right_indexes = embedded_add_terminal_right_indexes,
     embedded_add_origin_left_indexes = embedded_add_origin_left_indexes,
     change_number_left_indexes = change_number_left_indexes,
@@ -273,8 +320,7 @@ function M.project_paths_for_toplines(self, paths, left_topline, right_topline, 
 end
 
 function M.project_paths_for_viewport(self, paths)
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
+  local left_topline, right_topline = self:gutter_toplines()
   local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
   local right_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
   return self:project_paths_for_toplines(paths, left_topline, right_topline, left_height, right_height)
@@ -412,10 +458,24 @@ function M.rerender_for_viewport(self)
     return
   end
 
-  local left_topline = get_win_view_topline(self.left_win)
-  local right_topline = get_win_view_topline(self.right_win)
-  local left_cursor = vim.api.nvim_win_is_valid(self.left_win) and vim.api.nvim_win_get_cursor(self.left_win) or nil
-  local right_cursor = vim.api.nvim_win_is_valid(self.right_win) and vim.api.nvim_win_get_cursor(self.right_win) or nil
+  -- Full views (not just topline + cursor): a 'smoothscroll' skipcol on a
+  -- wrapped topline must survive the paint.
+  local function save_view(win)
+    if not (win and vim.api.nvim_win_is_valid(win)) then
+      return nil
+    end
+    local ok, view = pcall(vim.api.nvim_win_call, win, vim.fn.winsaveview)
+    return ok and view or nil
+  end
+  local function restore_view(win, view)
+    if view and win and vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_call, win, function()
+        vim.fn.winrestview(view)
+      end)
+    end
+  end
+  local left_view = save_view(self.left_win)
+  local right_view = save_view(self.right_win)
 
   -- Dedupe against the last stamped (ctx-derived) key using live window state
   -- before paint — if they match, this event is a pure jiggle no-op.
@@ -433,17 +493,12 @@ function M.rerender_for_viewport(self)
   session_render.render(self)
   self:finish_viewport_paint(self._paint_viewport_key)
 
-  set_win_view_topline(self.left_win, left_topline)
-  set_win_view_topline(self.left_num_win, left_topline)
-  set_win_view_topline(self.connector_win, left_topline)
-  set_win_view_topline(self.right_win, right_topline)
-  set_win_view_topline(self.right_num_win, right_topline)
-  if left_cursor and vim.api.nvim_win_is_valid(self.left_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.left_win, left_cursor)
-  end
-  if right_cursor and vim.api.nvim_win_is_valid(self.right_win) then
-    pcall(vim.api.nvim_win_set_cursor, self.right_win, right_cursor)
-  end
+  restore_view(self.left_win, left_view)
+  restore_view(self.right_win, right_view)
+  local left_row, right_row = self:gutter_toplines()
+  set_win_view_topline(self.left_num_win, left_row)
+  set_win_view_topline(self.connector_win, left_row)
+  set_win_view_topline(self.right_num_win, right_row)
   self.rendering_viewport = false
 end
 

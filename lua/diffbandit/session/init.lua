@@ -8,6 +8,7 @@ local overview = require("diffbandit.util.overview")
 local amend_mode = require("diffbandit.util.amend_mode")
 local queue_host = require("diffbandit.host.queue")
 local ui = require("diffbandit.util.ui")
+local rowmap = require("diffbandit.util.rowmap")
 local connector_width = require("diffbandit.connector.width")
 local keymaps = require("diffbandit.util.keymaps")
 local session_layout = require("diffbandit.session.layout")
@@ -403,6 +404,35 @@ function Session:setup_autocmds()
     self:render()
   end)
 
+  -- Wrapped line heights follow the source panes' width and wrap-related
+  -- options ('wrap', 'linebreak', 'tabstop', …). When either row map
+  -- changes, the gutters and routes must be rebuilt in the new row space.
+  local function refresh_row_maps()
+    ui.schedule_once(self, "row_map_refresh_scheduled", function()
+      if self.disposed then
+        return
+      end
+      local before = self.row_map_signature
+      self:row_maps({ verify = true })
+      if self.row_map_signature ~= before then
+        self:render()
+        self:sync_gutter_viewports()
+      end
+    end, 0)
+  end
+  local function on_height_change()
+    if self.disposed or self.rendering_viewport then
+      return
+    end
+    refresh_row_maps()
+  end
+  vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, { group = augroup, callback = on_height_change })
+  vim.api.nvim_create_autocmd("OptionSet", {
+    group = augroup,
+    pattern = rowmap.HEIGHT_OPTIONS,
+    callback = on_height_change,
+  })
+
   vim.api.nvim_create_autocmd("WinScrolled", {
     group = augroup,
     callback = function(event)
@@ -704,22 +734,26 @@ local function sync_source_to_gutter(self, source_win, number_win)
   local cursor = vim.api.nvim_win_get_cursor(source_win)
   local source_line = cursor[1]
 
+  local left_row, right_row = self:gutter_toplines()
+  local left_map, right_map = self:row_maps({ stale_ok = true })
+  local map = source_win == self.left_win and left_map or right_map
   self.syncing_scroll = true
   if number_win and vim.api.nvim_win_is_valid(number_win) then
-    pcall(vim.api.nvim_win_set_cursor, number_win, { source_line, 0 })
-    set_win_view_topline(number_win, get_win_view_topline(source_win))
+    pcall(vim.api.nvim_win_set_cursor, number_win, { map:first_row(source_line), 0 })
+    set_win_view_topline(number_win, source_win == self.left_win and left_row or right_row)
   end
   if self.connector_win and vim.api.nvim_win_is_valid(self.connector_win) then
-    set_win_view_topline(self.connector_win, get_win_view_topline(self.left_win))
+    set_win_view_topline(self.connector_win, left_row)
   end
   self.syncing_scroll = false
 end
 
 function Session:sync_gutter_viewports()
+  local left_row, right_row = self:gutter_toplines()
   self.syncing_scroll = true
-  set_win_view_topline(self.left_num_win, get_win_view_topline(self.left_win))
-  set_win_view_topline(self.right_num_win, get_win_view_topline(self.right_win))
-  set_win_view_topline(self.connector_win, get_win_view_topline(self.left_win))
+  set_win_view_topline(self.left_num_win, left_row)
+  set_win_view_topline(self.right_num_win, right_row)
+  set_win_view_topline(self.connector_win, left_row)
   self.syncing_scroll = false
 end
 
@@ -794,10 +828,11 @@ end
 
 local function apply_viewport_toplines(self, left_topline, right_topline, opts)
   set_win_view_topline(self.left_win, left_topline, opts)
-  set_win_view_topline(self.left_num_win, left_topline, opts)
   set_win_view_topline(self.right_win, right_topline, opts)
-  set_win_view_topline(self.right_num_win, right_topline, opts)
-  set_win_view_topline(self.connector_win, left_topline or 1, opts)
+  local left_row, right_row = self:gutter_toplines()
+  set_win_view_topline(self.left_num_win, left_row, opts)
+  set_win_view_topline(self.right_num_win, right_row, opts)
+  set_win_view_topline(self.connector_win, left_row, opts)
 end
 
 function Session:set_viewport_toplines(left_topline, right_topline)
@@ -1345,9 +1380,9 @@ function Session:clear_active_chunk(clip)
   local conn_min = clip and clip.connector_min
   local conn_max = clip and clip.connector_max
   clear_active_ns_range(self.left_buf, self.active_ns, left_min, left_max, full)
-  clear_active_ns_range(self.left_num_buf, self.active_ns, left_min, left_max, full)
+  clear_active_ns_range(self.left_num_buf, self.active_ns, clip and clip.left_nmin, clip and clip.left_nmax, full)
   clear_active_ns_range(self.right_buf, self.active_ns, right_min, right_max, full)
-  clear_active_ns_range(self.right_num_buf, self.active_ns, right_min, right_max, full)
+  clear_active_ns_range(self.right_num_buf, self.active_ns, clip and clip.right_nmin, clip and clip.right_nmax, full)
   clear_active_ns_range(self.connector_buf, self.active_ns, conn_min, conn_max, full)
 end
 
@@ -1370,11 +1405,21 @@ function Session:highlight_active_chunk(chunk, opts)
         meta_hi = math.max(meta_hi or prev_clip.meta_max, prev_clip.meta_max)
       end
     end
+    local function lo(field)
+      return prev_clip and math.min(prev_clip[field] or clip[field], clip[field]) or clip[field]
+    end
+    local function hi(field)
+      return prev_clip and math.max(prev_clip[field] or clip[field], clip[field]) or clip[field]
+    end
     clear_clip = {
-      left_min = prev_clip and math.min(prev_clip.left_min or clip.left_min, clip.left_min) or clip.left_min,
-      left_max = prev_clip and math.max(prev_clip.left_max or clip.left_max, clip.left_max) or clip.left_max,
-      right_min = prev_clip and math.min(prev_clip.right_min or clip.right_min, clip.right_min) or clip.right_min,
-      right_max = prev_clip and math.max(prev_clip.right_max or clip.right_max, clip.right_max) or clip.right_max,
+      left_min = lo("left_min"),
+      left_max = hi("left_max"),
+      right_min = lo("right_min"),
+      right_max = hi("right_max"),
+      left_nmin = lo("left_nmin"),
+      left_nmax = hi("left_nmax"),
+      right_nmin = lo("right_nmin"),
+      right_nmax = hi("right_nmax"),
       connector_min = meta_lo,
       connector_max = meta_hi,
     }
@@ -1383,6 +1428,7 @@ function Session:highlight_active_chunk(chunk, opts)
 
   local active_hl = "DiffBanditActiveChunk"
   local add_hl = vim.api.nvim_buf_add_highlight
+  local left_map, right_map = self:row_maps()
   local left_min = clip and clip.left_min
   local left_max = clip and clip.left_max
   local right_min = clip and clip.right_min
@@ -1413,13 +1459,19 @@ function Session:highlight_active_chunk(chunk, opts)
     if meta.left_index and not left_strong and left_ok(meta.left_index) then
       local row = meta.left_index - 1
       add_hl(self.left_buf, self.active_ns, active_hl, row, 0, -1)
-      add_hl(self.left_num_buf, self.active_ns, active_hl, row, 0, -1)
+      local first = left_map:first_row(meta.left_index)
+      for r = first, first + left_map:height(meta.left_index) - 1 do
+        add_hl(self.left_num_buf, self.active_ns, active_hl, r - 1, 0, -1)
+      end
     end
 
     if meta.right_index and not right_strong and right_ok(meta.right_index) then
       local row = meta.right_index - 1
       add_hl(self.right_buf, self.active_ns, active_hl, row, 0, -1)
-      add_hl(self.right_num_buf, self.active_ns, active_hl, row, 0, -1)
+      local first = right_map:first_row(meta.right_index)
+      for r = first, first + right_map:height(meta.right_index) - 1 do
+        add_hl(self.right_num_buf, self.active_ns, active_hl, r - 1, 0, -1)
+      end
     end
 
     -- Connector active overlay uses meta-index rows (display model), matching
