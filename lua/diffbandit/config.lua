@@ -152,6 +152,11 @@ local defaults = {
     -- or "all" (@-- -> @, with stage indicators for hunks already in @-).
     default_mode = "unstaged",
   },
+  fugitive = {
+    -- Open DiffBandit from vim-fugitive's own commands. true enables every flow;
+    -- a table picks: { mergetool = true, difftool = true, dd = true }.
+    auto_open = false,
+  },
   git = {
     default_mode = "all",
     default_scope = "repo",
