@@ -1,4 +1,4 @@
-local git = require("diffbandit.git")
+local git = require("diffbandit.vcs")
 local nvim = require("diffbandit.util.nvim")
 local pending = require("diffbandit.util.pending")
 local ui = require("diffbandit.util.ui")
@@ -373,7 +373,7 @@ function M.refresh_git_queue(session, opts)
   })
   local next_queue, err = git.queue(queue_opts, git_config)
   if not next_queue then
-    if err ~= "no git changes" then
+    if not git.is_no_changes(err) then
       nvim.notify_info(tostring(err))
       return false, err
     end
