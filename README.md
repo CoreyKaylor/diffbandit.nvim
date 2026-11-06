@@ -80,10 +80,22 @@ With `lazy.nvim`:
 
 ```lua
 {
-  "CoreyKaylor/diffbandit.nvim",
-  config = function()
-    require("diffbandit").setup()
-  end,
+    "CoreyKaylor/diffbandit.nvim",
+    cmd = {
+        "DiffBandit",
+        "DiffBanditBuffers",
+        "DiffBanditFolderDiff",
+        "DiffBanditGit",
+        "DiffBanditGitCurrent",
+        "DiffBanditCommitPanel",
+        "DiffBanditGitMenu",
+        "DiffBanditGitLog",
+        "DiffBanditGitCommit",
+        "DiffBanditGitCompare",
+        "DiffBanditGitCheckout",
+        "DiffBanditMerge",
+    },
+    opts = {},
 }
 ```
 
