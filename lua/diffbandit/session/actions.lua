@@ -6,28 +6,38 @@ local text = require("diffbandit.util.text")
 
 local M = {}
 
+--- Index of the chunk under the focused pane's cursor, or nil on a context line.
+function M.chunk_index_at_cursor(session)
+  local win = vim.api.nvim_get_current_win()
+  local ok, cursor = pcall(vim.api.nvim_win_get_cursor, win)
+  if not ok then
+    return nil
+  end
+  local row = cursor[1]
+  for idx, meta in ipairs(session.view.line_meta or {}) do
+    local matches = false
+    if win == session.left_win or win == session.left_num_win then
+      matches = meta.left_index == row
+    elseif win == session.right_win or win == session.right_num_win then
+      matches = meta.right_index == row
+    elseif win == session.connector_win then
+      matches = idx == row
+    end
+    if matches and meta.chunk then
+      return meta.chunk
+    end
+  end
+  return nil
+end
+
 local function current_chunk(session)
   if not session or not session.view then
     return nil
   end
 
-  local win = vim.api.nvim_get_current_win()
-  local ok, cursor = pcall(vim.api.nvim_win_get_cursor, win)
-  if ok then
-    local row = cursor[1]
-    for idx, meta in ipairs(session.view.line_meta or {}) do
-      local matches = false
-      if win == session.left_win or win == session.left_num_win then
-        matches = meta.left_index == row
-      elseif win == session.right_win or win == session.right_num_win then
-        matches = meta.right_index == row
-      elseif win == session.connector_win then
-        matches = idx == row
-      end
-      if matches and meta.chunk then
-        return session.view.chunks[meta.chunk], meta.chunk
-      end
-    end
+  local at_cursor = M.chunk_index_at_cursor(session)
+  if at_cursor then
+    return session.view.chunks[at_cursor], at_cursor
   end
 
   local index = session.current_chunk
@@ -552,7 +562,8 @@ local function no_change_sources(ctx)
   }
 end
 
-function M.refresh(session, preferred_chunk)
+function M.refresh(session, preferred_chunk, opts)
+  opts = opts or {}
   local ctx, ctx_err = queue_context(session)
   if not ctx then
     return false, ctx_err
@@ -597,6 +608,7 @@ function M.refresh(session, preferred_chunk)
     chunk_position = preferred_chunk and "preserve" or "first",
     preferred_chunk = preferred_chunk,
     preserve_view = preferred_chunk ~= nil,
+    chunk_from_cursor = opts.chunk_from_cursor,
   })
   if not ok then
     return false, err
@@ -631,7 +643,8 @@ function M.undo(session)
   if stack[#stack] then
     stack[#stack].right_undo_seq = buffer_undo_seq(session.right_buf)
   end
-  M.refresh(session)
+  -- Restoring a hunk renumbers the chunks, so the old index may name another one.
+  M.refresh(session, session.current_chunk, { chunk_from_cursor = true })
   return true, nil
 end
 

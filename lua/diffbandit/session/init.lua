@@ -1378,8 +1378,14 @@ function Session:replace_sources(sources, opts)
     self:clear_active_chunk()
     self:render_status_headers()
   elseif opts.chunk_position == "preserve" then
-    if #self.view.chunks > 0 then
-      self.current_chunk = math.max(1, math.min(opts.preferred_chunk or self.current_chunk or 1, #self.view.chunks))
+    local preferred = opts.chunk_from_cursor and actions.chunk_index_at_cursor(self) or nil
+    preferred = preferred or opts.preferred_chunk or self.current_chunk or 1
+    if preferred < 1 then
+      -- Above the first chunk (the top of the file): ]c should still reach it.
+      self.current_chunk = 0
+      self:clear_active_chunk()
+    elseif #self.view.chunks > 0 then
+      self.current_chunk = math.min(preferred, #self.view.chunks)
       self:highlight_active_chunk(self.view.chunks[self.current_chunk], {
         position_cursor = false,
         clip = self.last_render_clip or self.last_paint_clip,
@@ -1610,7 +1616,13 @@ function Session:goto_queue_file(index, chunk_position, opts)
 
   queue_host.set_index(self, resolved_index)
   local focused_win = opts.preserve_focus and vim.api.nvim_get_current_win() or nil
-  local ok, replace_err = self:replace_sources(sources, { chunk_position = chunk_position })
+  -- The load can skip an unreadable file; a view only applies to the file it came from.
+  local same_file = resolved_index == index
+  local ok, replace_err = self:replace_sources(sources, {
+    chunk_position = (same_file or chunk_position ~= "preserve") and chunk_position or "top",
+    preserve_view = same_file and opts.preserve_view or nil,
+    preferred_chunk = same_file and opts.preferred_chunk or nil,
+  })
   if not ok then
     nvim.notify_error(replace_err)
     return false
@@ -1713,10 +1725,19 @@ function Session:refresh_git_queue(preferred_path, refresh_opts)
         panel_mod.render(session, nil, { refresh_stage_states = true, no_initial_selection = true })
       end
     end,
-    on_queue = function(session, _, target_index)
-      session:goto_queue_file(target_index, "top", {
+    on_queue = function(session, queue, target_index)
+      local target = queue.entries and queue.entries[target_index]
+      -- A hunk action refreshes the file the reviewer is on; only a file that
+      -- left the queue opens something new at its top.
+      local keep_view = refresh_opts.preserve_view
+        and preferred_path
+        and target
+        and (target.path == preferred_path or target.old_path == preferred_path)
+      session:goto_queue_file(target_index, keep_view and "preserve" or "top", {
         preserve_focus = session.panel and session.panel.visible,
         skip_panel_render = true,
+        preserve_view = keep_view or nil,
+        preferred_chunk = keep_view and session.current_chunk or nil,
       })
       if session.panel then
         panel_mod.render(session, refresh_opts.preserve_panel_selection or target_index, { refresh_stage_states = true })
@@ -1954,7 +1975,7 @@ end
 function Session:after_git_action(ok)
   if ok and self.panel and self.file_queue then
     local entry = queue_host.current_entry(self)
-    self:refresh_git_queue(entry and entry.path)
+    self:refresh_git_queue(entry and entry.path, { preserve_view = true })
   end
 end
 
