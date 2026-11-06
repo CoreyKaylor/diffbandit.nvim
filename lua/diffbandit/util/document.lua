@@ -3,6 +3,8 @@ local text = require("diffbandit.util.text")
 
 local M = {}
 
+local unloaded_own_buffers = {}
+
 local function realpath(path)
   if not path or path == "" then
     return nil
@@ -112,6 +114,9 @@ function M.acquire_buffer(editable)
     return existing, false
   end
 
+  -- A buffer that exists but is unloaded belongs to someone else (a quickfix
+  -- entry, the argument list), unless it is one this module unloaded earlier.
+  local existed = vim.fn.bufexists(path) == 1
   local bufnr = vim.fn.bufadd(path)
   if not bufnr or bufnr == 0 then
     return nil, "unable to create buffer for " .. tostring(path)
@@ -126,6 +131,10 @@ function M.acquire_buffer(editable)
   end
   pcall(vim.api.nvim_set_option_value, "buflisted", true, { buf = bufnr })
   editable.bufnr = bufnr
+  if existed and not unloaded_own_buffers[bufnr] then
+    return bufnr, false
+  end
+  unloaded_own_buffers[bufnr] = nil
   editable.created_by_diffbandit = true
   return bufnr, true
 end
@@ -273,7 +282,12 @@ function M.cleanup_created_buffer(editable, opts)
     pcall(vim.api.nvim_set_option_value, "bufhidden", "hide", { buf = bufnr })
     return
   end
-  pcall(vim.api.nvim_buf_delete, bufnr, { force = false })
+  -- Unload rather than wipe: quickfix entries made since (in any list) point at
+  -- this buffer number, and :cnext fails with E92 once it is gone.
+  if pcall(vim.api.nvim_buf_delete, bufnr, { unload = true }) then
+    unloaded_own_buffers[bufnr] = true
+    pcall(vim.api.nvim_set_option_value, "buflisted", false, { buf = bufnr })
+  end
 end
 
 return M

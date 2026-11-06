@@ -182,6 +182,7 @@ Resolve a Git conflict:
 
 ```vim
 :DiffBanditMerge path/to/conflicted-file
+:DiffBanditMerge                          " the current buffer's file
 ```
 
 Close the DiffBandit view in the current tab (same as `q`):
@@ -765,6 +766,20 @@ shows the reason:
 `DIFFBANDIT_PERF=1` adds `kitty curves/raster/transmit` stage timings to the
 render log. `tools/bench_kitty.lua` compares repaint cost against the cell
 renderer.
+
+### vim-fugitive
+
+DiffBandit's views follow `:Git mergetool`, `:Git difftool`, and `:Gclog` quickfix
+lists, and its Git commands work from fugitive's buffers. See
+`:help diffbandit-fugitive`. To open DiffBandit from fugitive's own commands:
+
+```lua
+require("diffbandit").setup({
+  fugitive = {
+    auto_open = true, -- or { mergetool = true, difftool = true, dd = true }
+  },
+})
+```
 
 ### Diff matching
 
