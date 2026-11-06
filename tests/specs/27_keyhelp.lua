@@ -166,6 +166,74 @@ do
   session:close()
 end
 
+-- Remapping or disabling keys frees <Space>: the amend toggle doesn't move
+-- into the panel file list, and false disables a folder key.
+do
+  local function map_desc(buf, lhs)
+    local desc
+    vim.api.nvim_buf_call(buf, function()
+      local map = vim.fn.maparg(lhs, "n", false, true)
+      desc = map.buffer == 1 and map.desc or nil
+    end)
+    return desc
+  end
+  local function start_panel(keys)
+    local cfg = config_mod.apply({ git = { panel = { keys = keys } } })
+    local repo = make_git_repo()
+    write_repo_file(repo, "a.txt", { "one", "two" })
+    commit_baseline(repo)
+    write_repo_file(repo, "a.txt", { "one", "TWO" })
+    local queue = assert((git_mod.queue({ root = repo, mode = "all" }, cfg.git)))
+    local loaded = assert((queue.load(1)))
+    queue.index = 1
+    return assert((Session.start({ left = loaded.left, right = loaded.right }, cfg, {
+      queue = queue,
+      panel = true,
+      panel_initial_selection = 1,
+    })))
+  end
+  local STAGE = "DiffBandit: Stage or unstage the selected file"
+  local AMEND = "DiffBandit: Toggle amend mode"
+
+  local session = start_panel({})
+  assert_eq(map_desc(session.panel.nav_buf, "<Space>"), STAGE, "By default <Space> stages in the file list")
+  assert_eq(map_desc(session.panel.commit_buf, "<Space>"), AMEND, "By default <Space> toggles amend in the commit window")
+  session:close()
+
+  session = start_panel({ toggle_stage = "s" })
+  assert_eq(map_desc(session.panel.nav_buf, "s"), STAGE, "The remapped stage key is on the file list")
+  assert_eq(map_desc(session.panel.nav_buf, "<Space>"), nil,
+    "Remapping only toggle_stage leaves <Space> free in the file list")
+  assert_eq(map_desc(session.panel.commit_buf, "<Space>"), AMEND, "The default amend key stays on the commit window")
+  session:close()
+
+  session = start_panel({ toggle_amend = "<space>" })
+  assert_eq(map_desc(session.panel.nav_buf, "<Space>"), STAGE, "Another spelling of the default amend key stays off the file list")
+  session:close()
+
+  session = start_panel({ toggle_stage = "s", toggle_amend = "s" })
+  assert_eq(map_desc(session.panel.nav_buf, "s"), STAGE, "Stage wins when both file list keys are the same")
+  assert_eq(map_desc(session.panel.commit_buf, "s"), AMEND, "A shared key still toggles amend in the commit window")
+  session:close()
+
+  session = start_panel({ toggle_stage = "s", toggle_amend = "gA" })
+  assert_eq(map_desc(session.panel.nav_buf, "gA"), AMEND, "A custom amend key works in the file list")
+  assert_eq(map_desc(session.panel.commit_buf, "gA"), AMEND, "A custom amend key works in the commit window")
+  assert_eq(map_desc(session.panel.commit_buf, "<Space>"), nil, "A custom amend key frees <Space>")
+  session:close()
+
+  local left_dir = vim.fn.tempname()
+  local right_dir = vim.fn.tempname()
+  vim.fn.mkdir(left_dir, "p")
+  vim.fn.mkdir(right_dir, "p")
+  local folder_cfg = config_mod.apply({ folder = { keys = { toggle_expand = false, alternate_toggle_expand = "gt" } } })
+  local folder = assert((require("diffbandit.folder").start(left_dir, right_dir, folder_cfg, {})))
+  assert_eq(map_desc(folder.left_buf, "<Space>"), nil, "toggle_expand = false leaves <Space> unmapped")
+  assert_eq(map_desc(folder.left_buf, "gt"), "DiffBandit: Expand or collapse the directory", "Folder keys can be remapped")
+  assert_eq(map_desc(folder.left_buf, "za"), nil, "A remapped folder key replaces its default")
+  folder:close()
+end
+
 -- Merge resolver mappings are described too.
 do
   local repo = make_git_repo()

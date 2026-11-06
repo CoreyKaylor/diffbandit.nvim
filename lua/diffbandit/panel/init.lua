@@ -1160,6 +1160,16 @@ function M.setup_keymaps(session)
   local show_help = function()
     M.show_key_help(session)
   end
+  -- The default amend key belongs to the commit window. In the file list it
+  -- would take over a key the user just freed by remapping toggle_stage, so
+  -- the list only gets amend when it has a key of its own.
+  -- Compared as key codes, since <space>, <Space> and " " are the same key.
+  local function key_code(lhs)
+    return lhs and vim.api.nvim_replace_termcodes(lhs, true, true, true)
+  end
+  local amend_code = key_code(keys.toggle_amend)
+  local amend_in_list = amend_code ~= key_code(keys.toggle_stage)
+    and amend_code ~= key_code(config_mod.defaults().git.panel.keys.toggle_amend)
 
   -- section/desc label each mapping for the help window (util/keyhelp).
   local specs = {
@@ -1179,7 +1189,7 @@ function M.setup_keymaps(session)
     { buf = "nav", lhs = keys.focus_commit, fn = function() M.focus_commit(session) end,
       section = "Commit", desc = review and "Focus the review details" or "Write the commit message" },
     { buf = "nav", lhs = keys.commit, fn = commit, when = not review, section = "Commit", desc = "Commit staged changes" },
-    { buf = "nav", lhs = keys.toggle_amend, fn = toggle_amend, when = keys.toggle_amend ~= keys.toggle_stage and not review,
+    { buf = "nav", lhs = keys.toggle_amend, fn = toggle_amend, when = amend_in_list and not review,
       section = "Commit", desc = "Toggle amend mode" },
     { buf = "nav", lhs = keys.refresh, fn = function() session:refresh_git_queue() end, section = "Panel", desc = "Refresh the file list" },
 

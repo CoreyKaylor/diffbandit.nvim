@@ -410,6 +410,9 @@ Commit message window mappings:
   <Space>       Toggle amend mode.
   :w            Commit staged changes using the buffer contents as the message.
 
+Set `git.panel.keys.toggle_amend` to a key other than <Space> and the file
+stage key, and it works in the file list too.
+
 The panel validates empty commit messages and missing staged changes before
 committing, and rejects commits while merge conflicts remain unresolved. In
 amend mode, the panel compares against the previous commit so the file state
@@ -460,6 +463,8 @@ Git hunk actions operate on the active hunk in Git diff sessions:
   >>            Apply the left side of the hunk to the right target.
   <<            Apply the right side of the hunk to the left target.
   u             Undo DiffBandit apply/stage actions in reverse order.
+
+Remap these with `actions.keys`, or set a key to false to leave it unmapped.
 
 Staged hunks show an indicator next to the right-side line numbers. Defaults
 use plain Unicode squares so patched fonts are optional.
@@ -607,6 +612,12 @@ Common configuration:
       },
     },
     actions = {
+      keys = {
+        toggle_stage = "<Space>",
+        apply_left = ">>",
+        apply_right = "<<",
+        undo = "u",
+      },
       staged_indicator = {
         unstaged = "□",
         staged = "▣",

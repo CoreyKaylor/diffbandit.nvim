@@ -351,7 +351,7 @@ Inside a diff view:
 | `]s` | Snap the other pane to the cursor line |
 | `C` | Open or focus the commit panel for the current Git file |
 | `gzp` | Show or hide the commit panel |
-| `<Space>` | Toggle stage for the active Git hunk |
+| `<Space>` | Toggle stage for the active Git hunk (`actions.keys.toggle_stage`) |
 | `>>` | Apply the left side to the right target |
 | `<<` | Apply the right side to the left target |
 | `u` | Undo the last DiffBandit hunk action |
@@ -404,7 +404,7 @@ opened by `:DiffBanditGit`.
 | `<Space>` | Toggle staged state for the selected file |
 | `a` | Open file actions for the selected file |
 | `cc` | Focus the commit message window |
-| `<Space>` in the commit message window | Toggle amend mode |
+| `<Space>` in the commit message window | Toggle amend mode (`git.panel.keys.toggle_amend`; a key other than `<Space>` and the file stage key also works in the file list) |
 | `:w` in the commit message window | Commit staged changes |
 | `R` | Refresh the panel |
 | `gzp` | Hide the panel, keeping the diff open |
@@ -649,6 +649,12 @@ require("diffbandit").setup({
     },
   },
   actions = {
+    keys = {
+      toggle_stage = "<Space>",
+      apply_left = ">>",
+      apply_right = "<<",
+      undo = "u",
+    },
     staged_indicator = {
       unstaged = "□",
       staged = "▣",
