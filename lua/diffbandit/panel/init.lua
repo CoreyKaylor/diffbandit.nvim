@@ -599,6 +599,32 @@ function M.run_file_action(session, action_id, opts)
   return execute_file_action(session, row, action, opts)
 end
 
+function M.review_details(queue)
+  local review = ((queue or {}).opts or {}).review or {}
+  if review.kind == "commit" then
+    local commit = review.commit or {}
+    local walk = (queue or {}).log_walk
+    return {
+      title = (commit.short_hash or review.target or "Commit") .. " " .. (commit.subject or ""),
+      subtitle = walk and string.format("Commit %d of %d in the log", walk.index, #walk.commits) or "Commit changes",
+      base = review.base,
+      target = review.target,
+      author = commit.author,
+      date = commit.date,
+    }
+  elseif review.kind == "compare" then
+    return {
+      title = "Compare " .. tostring(review.requested_base or review.base) .. " with " .. tostring(review.target),
+      subtitle = review.direct and "Direct branch comparison" or "Merge-base branch comparison",
+      base = review.base,
+      target = review.target,
+    }
+  end
+  return {
+    title = "Git review",
+  }
+end
+
 function M.open_file_actions(session)
   local row = selected_row(session)
   if not row or row.type ~= "file" then

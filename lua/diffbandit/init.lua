@@ -4,6 +4,7 @@ local diff_mod = require("diffbandit.diff")
 local Session = require("diffbandit.session")
 local highlights = require("diffbandit.highlights")
 local git_mod = require("diffbandit.git")
+local fugitive = require("diffbandit.git.fugitive")
 local source_mod = require("diffbandit.util.source")
 local text = require("diffbandit.util.text")
 local document = require("diffbandit.util.document")
@@ -59,6 +60,7 @@ function M.setup(opts)
   highlights.apply(config)
   configure_theme_refresh(config)
   state.highlights_ready = true
+  require("diffbandit.git.fugitive_auto").setup(config)
   return config
 end
 
@@ -242,12 +244,27 @@ function M.buffers(bufnr_a, bufnr_b, opts)
 end
 
 function M.git(opts)
+  opts = opts or {}
   local config = state.get_config()
   ensure_highlights(config)
   local git_config = vim.tbl_extend("force", {}, config.git or {}, {
     hex = (config.ui or {}).hex or {},
   })
-  local queue, err = git_mod.queue(opts or {}, git_config)
+  -- Opened from a quickfix entry with no comparison asked for: show the entry's.
+  local entry, items, idx, context
+  if not opts.mode and not opts.base then
+    entry, items, idx, context = fugitive.current_entry()
+    local target = entry
+      and fugitive.entry_target(vim.api.nvim_buf_get_name(entry.bufnr), fugitive.context_item(context, idx))
+    local root = target and target.comparison and git_mod.root(opts)
+    local entry_opts = root and git_mod.with_comparison(root, opts, target.comparison)
+    if entry_opts then
+      opts = entry_opts
+    else
+      entry = nil
+    end
+  end
+  local queue, err = git_mod.queue(opts, git_config)
   if not queue then
     return nil, err
   end
@@ -257,39 +274,17 @@ function M.git(opts)
     return nil, load_err
   end
 
-  return start_session(loaded.left, loaded.right, { queue = queue, chunk_position = "top" })
+  local session, start_err = start_session(loaded.left, loaded.right, { queue = queue, chunk_position = "top" })
+  if session and entry then
+    session:follow_quickfix_entry(entry, items, idx, context)
+  end
+  return session, start_err
 end
 
 local function git_config_for(config)
   return vim.tbl_extend("force", {}, config.git or {}, {
     hex = (config.ui or {}).hex or {},
   })
-end
-
-local function review_panel_details(queue)
-  local review = ((queue or {}).opts or {}).review or {}
-  if review.kind == "commit" then
-    local commit = review.commit or {}
-    local walk = (queue or {}).log_walk
-    return {
-      title = (commit.short_hash or review.target or "Commit") .. " " .. (commit.subject or ""),
-      subtitle = walk and string.format("Commit %d of %d in the log", walk.index, #walk.commits) or "Commit changes",
-      base = review.base,
-      target = review.target,
-      author = commit.author,
-      date = commit.date,
-    }
-  elseif review.kind == "compare" then
-    return {
-      title = "Compare " .. tostring(review.requested_base or review.base) .. " with " .. tostring(review.target),
-      subtitle = review.direct and "Direct branch comparison" or "Merge-base branch comparison",
-      base = review.base,
-      target = review.target,
-    }
-  end
-  return {
-    title = "Git review",
-  }
 end
 
 local function start_review_queue(queue)
@@ -303,7 +298,7 @@ local function start_review_queue(queue)
     panel = true,
     panel_mode = "review",
     panel_initial_selection = queue.index or 1,
-    panel_details = review_panel_details(queue),
+    panel_details = require("diffbandit.panel").review_details(queue),
   })
 end
 
@@ -328,6 +323,10 @@ end
 -- opts.preferred_path = { path, old_path }: open on that file when present.
 function M.git_commit(rev, opts)
   opts = opts or {}
+  rev = rev or fugitive.current_commit()
+  if not rev then
+    return nil, "provide a revision"
+  end
   local log_walk = opts.log_walk
   local preferred_path = opts.preferred_path
   if log_walk or preferred_path then
@@ -720,6 +719,11 @@ function M.git_file(path, opts)
     scope = "current",
     path = path,
   })
+  -- From fugitive's status buffer, the section says which side of the file.
+  if not path and not opts.mode then
+    local target = fugitive.status_target()
+    opts.mode = target and target.mode or nil
+  end
   return M.git(opts)
 end
 

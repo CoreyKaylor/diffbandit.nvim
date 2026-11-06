@@ -129,8 +129,10 @@ COMMANDS                                            *diffbandit-commands*
         reviews the commit starting at that file. Options: `git.log`.
 
                                               *:DiffBanditGitCommit*
-:DiffBanditGitCommit {rev}
-        Open a read-only review of the files changed by {rev}.
+:DiffBanditGitCommit [rev]
+        Open a read-only review of the files changed by [rev]. Without one,
+        uses the commit in the current fugitive buffer; see
+        |diffbandit-fugitive|.
 
                                              *:DiffBanditGitCompare*
 :DiffBanditGitCompare [base] [target] [--direct]
@@ -146,6 +148,68 @@ COMMANDS                                            *diffbandit-commands*
 :DiffBanditMerge [path]
         Open a three-pane resolver for an unmerged Git conflict. If [path] is
         omitted, the current buffer path is used.
+
+        The view follows the quickfix list: |:cnext|, |:cprev|, |:cfirst|,
+        |:cc|, and the like switch the panes to the entry's file and conflict
+        in place, from any pane or the quickfix window. This covers
+        vim-fugitive's `:Git mergetool`, whose list has one entry per hunk (the
+        Nth entry of a file selects its Nth conflict; |:cnfile| skips to the
+        next file). An entry for a file with no unresolved conflict, such as
+        one you just resolved with `:w`, leaves the view where it is.
+
+        While a file is open here its buffer holds the merge result, not the
+        conflict markers. Closing the view or moving to another file puts back
+        what the buffer held before, unless you edited or resolved it. Unsaved
+        edits are kept when you move between files, and resume when you return.
+        If you close the view with edits unsaved, they stay in the file's
+        buffer: `:w` then writes them without staging, like any other edit.
+
+                                                  *diffbandit-fugitive*
+Working with vim-fugitive~
+
+Git commands work from fugitive's buffers. The status buffer stands for its
+repository, and `fugitive://` object buffers stand for their file, so
+`:DiffBanditGitCurrent` on `:Gedit HEAD~1:a.txt` shows a.txt's current changes,
+not that revision.
+
+In the status buffer, the line under the cursor counts: `:DiffBanditGitCurrent`
+shows that file (its staged changes in the Staged section, unstaged otherwise),
+`:DiffBanditMerge` resolves that conflict, and `:DiffBanditGitCommit` reviews an
+unpushed commit.
+
+Fugitive's commands open their own views by default. To have them open DiffBandit
+instead, set `fugitive.auto_open` in |diffbandit.setup()|: >lua
+    require("diffbandit").setup({ fugitive = { auto_open = true } })
+    -- or choose flows:
+    require("diffbandit").setup({
+      fugitive = { auto_open = { mergetool = true, difftool = true, dd = true } },
+    })
+<
+  mergetool   `:Git mergetool` opens the merge view on the first conflict.
+  difftool    `:Git difftool [range]` opens a diff view on the first change.
+  dd          `dd` in the status buffer opens the file under the cursor, or the
+              merge view for a conflict. On any other line it stays fugitive's.
+
+A view already open in the tab follows the new list rather than opening another.
+`:Git! difftool` does not jump to an entry, so it opens nothing. `:Git difftool -y`,
+|:Gdiffsplit|, and |:Gclog| keep their own behavior.
+
+Repository diff views (`:DiffBanditGit`, `:DiffBanditGitCurrent`, and the commit
+and compare reviews) follow the quickfix list as the merge view does, so
+`:Git difftool` followed by `:DiffBanditGitCurrent` walks with |:cnext|. The
+entry's line number picks the nearest change, and an entry for a file with no
+changes leaves the view where it is. Plain `:DiffBandit` diffs do not follow the
+list.
+
+The list's comparison wins. Opening a view from a `:Git difftool [range]` entry
+shows that range unless you pass a mode such as `--staged`, and walking the list
+moves the view to each entry's comparison. The exception is `:Git difftool
+--cached <commit>` with a commit other than HEAD, which DiffBandit cannot show;
+the view keeps its comparison.
+
+|:Gclog| walks commits: with a view open, each entry moves it to that commit's
+review, and a commit with no changes leaves it where it is. Without an argument,
+`:DiffBanditGitCommit` reviews the commit in the current fugitive buffer.
 
                                                    *:DiffBanditClose*
 :DiffBanditClose
