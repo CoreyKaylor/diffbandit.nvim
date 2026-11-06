@@ -16,6 +16,7 @@ local render_host = require("diffbandit.session.render_host")
 local config_mod = require("diffbandit.config")
 local keyhelp = require("diffbandit.util.keyhelp")
 local view_builder = require("diffbandit.diff.view")
+local keep_view = require("diffbandit.session.keep_view")
 local diff_document = require("diffbandit.diff.document")
 local kitty = require("diffbandit.kitty")
 local winbar = require("diffbandit.util.winbar")
@@ -845,6 +846,7 @@ function Session:refresh_editable_right()
     preserve_view = true,
     chunk_position = "preserve",
     preferred_chunk = self.current_chunk,
+    chunk_from_cursor = true,
   })
 end
 
@@ -1070,6 +1072,7 @@ end
 
 function Session:goto_document_edge(edge)
   self:reset_pending_file_boundary()
+  self.chunk_not_reached = false
   local focused_win = vim.api.nvim_get_current_win()
   local left_line_count = math.max(1, #self.view.left)
   local right_line_count = math.max(1, #self.view.right)
@@ -1240,6 +1243,14 @@ function Session:render_status_headers()
   )
 end
 
+-- The render above ran with a provisional active chunk.
+local function clear_active_position(self)
+  self:clear_active_chunk()
+  self:render_status_headers()
+  self:render_overviews()
+  self:rerender_for_viewport()
+end
+
 function Session:replace_sources(sources, opts)
   opts = opts or {}
   self:clear_keymaps()
@@ -1283,6 +1294,12 @@ function Session:replace_sources(sources, opts)
     end
   end
   local view = model.view
+  if opts.view_before then
+    local planned = keep_view.plan(opts.view_before, view, sources.left.lines, sources.right.lines)
+    preserved_left_topline, preserved_right_topline = planned.left.topline, planned.right.topline
+    preserved_left_cursor, preserved_right_cursor = planned.left.cursor, planned.right.cursor
+  end
+  self.chunk_not_reached = false
 
   local old_right_editable = self.right and self.right.editable
   local old_right_buf = self.right_buf
@@ -1378,18 +1395,28 @@ function Session:replace_sources(sources, opts)
     self:clear_active_chunk()
     self:render_status_headers()
   elseif opts.chunk_position == "preserve" then
-    local preferred = opts.chunk_from_cursor and actions.chunk_index_at_cursor(self) or nil
-    preferred = preferred or opts.preferred_chunk or self.current_chunk or 1
-    if preferred < 1 then
+    local at_cursor = opts.chunk_from_cursor and actions.chunk_index_at_cursor(self) or nil
+    local preferred = at_cursor or opts.preferred_chunk or self.current_chunk or 1
+    local count = #self.view.chunks
+    if preferred < 1 or count == 0 then
       -- Above the first chunk (the top of the file): ]c should still reach it.
       self.current_chunk = 0
-      self:clear_active_chunk()
-    elseif #self.view.chunks > 0 then
-      self.current_chunk = math.min(preferred, #self.view.chunks)
-      self:highlight_active_chunk(self.view.chunks[self.current_chunk], {
+      clear_active_position(self)
+    elseif opts.chunk_from_cursor and preferred > count then
+      -- Past the last chunk: [c should still reach it.
+      self.current_chunk = count + 1
+      clear_active_position(self)
+    elseif count > 0 then
+      self.current_chunk = math.min(preferred, count)
+      local chunk = self.view.chunks[self.current_chunk]
+      self:highlight_active_chunk(chunk, {
         position_cursor = false,
         clip = self.last_render_clip or self.last_paint_clip,
       })
+      -- The next chunk slid into this index while the cursor stayed put.
+      self.chunk_not_reached = opts.chunk_from_cursor == true
+        and not at_cursor
+        and not actions.chunk_on_screen(self, chunk)
     else
       self:clear_active_chunk()
     end
@@ -1576,6 +1603,7 @@ function Session:goto_chunk(index)
     return
   end
   self:reset_pending_file_boundary()
+  self.chunk_not_reached = false
   if index < 1 then
     index = 1
   elseif index > #self.view.chunks then
@@ -1616,17 +1644,12 @@ function Session:goto_queue_file(index, chunk_position, opts)
 
   queue_host.set_index(self, resolved_index)
   local focused_win = opts.preserve_focus and vim.api.nvim_get_current_win() or nil
-  -- The load can skip an unreadable file; a view only applies to the file it came from.
-  local same_file = resolved_index == index
-  local ok, replace_err = self:replace_sources(sources, {
-    chunk_position = (same_file or chunk_position ~= "preserve") and chunk_position or "top",
-    preserve_view = same_file and opts.preserve_view or nil,
-    preferred_chunk = same_file and opts.preferred_chunk or nil,
-  })
+  local ok, replace_err = self:replace_sources(sources, { chunk_position = chunk_position })
   if not ok then
     nvim.notify_error(replace_err)
     return false
   end
+  actions.note_file_shown(self)
   if self.panel and not opts.skip_panel_render then
     panel_mod.render(self, resolved_index)
   end
@@ -1727,20 +1750,34 @@ function Session:refresh_git_queue(preferred_path, refresh_opts)
     end,
     on_queue = function(session, queue, target_index)
       local target = queue.entries and queue.entries[target_index]
-      -- A hunk action refreshes the file the reviewer is on; only a file that
-      -- left the queue opens something new at its top.
-      local keep_view = refresh_opts.preserve_view
-        and preferred_path
+      local on_preferred = preferred_path
         and target
         and (target.path == preferred_path or target.old_path == preferred_path)
-      session:goto_queue_file(target_index, keep_view and "preserve" or "top", {
-        preserve_focus = session.panel and session.panel.visible,
-        skip_panel_render = true,
-        preserve_view = keep_view or nil,
-        preferred_chunk = keep_view and session.current_chunk or nil,
-      })
+      local already_loaded = refresh_opts.keep_loaded_file and on_preferred
+      if refresh_opts.stay_on and not on_preferred then
+        -- An undo elsewhere changed nothing about the file on screen.
+        for index, entry in ipairs(queue.entries or {}) do
+          if entry.path == refresh_opts.stay_on then
+            target_index = index
+            queue_host.set_index(session, index)
+            already_loaded = true
+            break
+          end
+        end
+      end
+      if already_loaded then
+        -- The hunk action reloaded this file; only the queue around it is new.
+        session:prefetch_queue_neighbors(target_index)
+      else
+        session:goto_queue_file(target_index, "top", {
+          preserve_focus = session.panel and session.panel.visible,
+          skip_panel_render = true,
+        })
+      end
       if session.panel then
-        panel_mod.render(session, refresh_opts.preserve_panel_selection or target_index, { refresh_stage_states = true })
+        -- The load may have skipped an unreadable file: select the one shown.
+        local selected = refresh_opts.preserve_panel_selection or session.file_queue_index or target_index
+        panel_mod.render(session, selected, { refresh_stage_states = true })
       end
     end,
   })
@@ -1941,6 +1978,10 @@ function Session:goto_next_chunk()
   if #self.view.chunks == 0 then
     return
   end
+  if self.chunk_not_reached and actions.chunk_index_at_cursor(self) ~= self.current_chunk then
+    self:goto_chunk(self.current_chunk)
+    return
+  end
   if self.current_chunk >= #self.view.chunks then
     if self:confirm_file_boundary("next") then
       return
@@ -1973,9 +2014,28 @@ local function notify_action_result(ok, err)
 end
 
 function Session:after_git_action(ok)
-  if ok and self.panel and self.file_queue then
-    local entry = queue_host.current_entry(self)
-    self:refresh_git_queue(entry and entry.path, { preserve_view = true })
+  -- Set by undoing an action on a file that had left the queue.
+  local undo_return = self.undo_return
+  self.undo_return = nil
+  if not (ok and self.file_queue and (self.panel or undo_return)) then
+    return
+  end
+  local entry = queue_host.current_entry(self)
+  local path = undo_return and undo_return.path or (entry and entry.path)
+  self:refresh_git_queue(path, {
+    keep_loaded_file = not undo_return,
+    stay_on = undo_return and entry and entry.path or nil,
+    fallback_index = self.file_queue_index,
+  })
+
+  local shown = queue_host.current_entry(self)
+  local on_path = shown and path and (shown.path == path or shown.old_path == path)
+  if undo_return and on_path and undo_return.chunk then
+    self:goto_chunk(undo_return.chunk)
+  end
+  if path and (undo_return or not on_path) then
+    -- The pane shows another buffer now, so edits made from here count from it.
+    actions.mark_undo_position(self, path)
   end
 end
 
@@ -2013,21 +2073,14 @@ local function buffer_undo_seq(bufnr)
   return tonumber(tree.seq_cur or 0) or 0
 end
 
-local function current_action_undo_entry(session)
-  local queue = session and session.file_queue
-  if not (queue and queue.kind == "git") then
-    return nil
-  end
-  local entry = queue.entries and queue.entries[session.file_queue_index or queue.index or 1]
-  local stack = entry and session.action_undo and session.action_undo[entry.path]
-  return stack and stack[#stack] or nil
-end
-
 function Session:undo_edit_or_action()
   if self.right and self.right.editable and vim.api.nvim_get_current_buf() == self.right_buf then
     local undo_seq = buffer_undo_seq(self.right_buf)
-    local action_entry = current_action_undo_entry(self)
-    if action_entry and undo_seq ~= nil and action_entry.right_undo_seq == undo_seq then
+    local action_entry = actions.latest_undo(self)
+    if action_entry
+        and undo_seq ~= nil
+        and action_entry.right_undo_seq == undo_seq
+        and action_entry.right_undo_buf == self.right_buf then
       self:undo_action()
       return
     end

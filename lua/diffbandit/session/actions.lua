@@ -3,6 +3,7 @@ local git_mod = require("diffbandit.git")
 local diff_mod = require("diffbandit.diff")
 local source_mod = require("diffbandit.util.source")
 local text = require("diffbandit.util.text")
+local keep_view = require("diffbandit.session.keep_view")
 
 local M = {}
 
@@ -30,6 +31,34 @@ function M.chunk_index_at_cursor(session)
   return nil
 end
 
+--- Whether any of the chunk's lines are showing in either source pane. Without
+--- panes (actions driven through the API) nothing counts as off-screen.
+function M.chunk_on_screen(session, chunk)
+  local function valid(win)
+    return win and vim.api.nvim_win_is_valid(win)
+  end
+  if not (valid(session.left_win) or valid(session.right_win)) then
+    return true
+  end
+  local function range(win)
+    if valid(win) then
+      return vim.fn.line("w0", win), vim.fn.line("w$", win)
+    end
+    return 1, 0
+  end
+  local left_first, left_last = range(session.left_win)
+  local right_first, right_last = range(session.right_win)
+  local meta_list = session.view.line_meta or {}
+  for idx = chunk.display_start, chunk.display_end do
+    local meta = meta_list[idx] or {}
+    local left, right = meta.left_index, meta.right_index
+    if (left and left >= left_first and left <= left_last) or (right and right >= right_first and right <= right_last) then
+      return true
+    end
+  end
+  return false
+end
+
 local function current_chunk(session)
   if not session or not session.view then
     return nil
@@ -40,17 +69,22 @@ local function current_chunk(session)
     return session.view.chunks[at_cursor], at_cursor
   end
 
+  -- Off a hunk, an action falls to the active one only while it can be seen.
   local index = session.current_chunk
-  if index and index > 0 then
-    return session.view.chunks[index], index
+  local chunk = index and index > 0 and session.view.chunks[index] or nil
+  if not chunk then
+    return nil
   end
-  return nil
+  if not M.chunk_on_screen(session, chunk) then
+    return nil, nil, "the active hunk is off-screen; jump to it first"
+  end
+  return chunk, index
 end
 
 local function active_hunk(session)
-  local chunk, chunk_index = current_chunk(session)
+  local chunk, chunk_index, chunk_err = current_chunk(session)
   if not chunk then
-    return nil, nil, "no current hunk"
+    return nil, nil, chunk_err or "no current hunk"
   end
   local hunk = session.hunks and session.hunks[chunk.index or chunk_index]
   if not hunk then
@@ -59,12 +93,17 @@ local function active_hunk(session)
   return hunk, chunk_index, nil
 end
 
+local function shown_entry(session)
+  local queue = session.file_queue
+  return queue and queue.entries and queue.entries[session.file_queue_index or queue.index or 1]
+end
+
 local function queue_context(session)
   local queue = session and session.file_queue
   if not queue or queue.kind ~= "git" then
     return nil, "Git hunk actions are only available in Git diff sessions"
   end
-  local entry = queue.entries and queue.entries[session.file_queue_index or queue.index or 1]
+  local entry = shown_entry(session)
   if not entry then
     return nil, "no Git file entry for this diff"
   end
@@ -137,6 +176,11 @@ local function buffer_undo_seq(bufnr)
     return nil
   end
   return tonumber(tree.seq_cur or 0) or 0
+end
+
+local function next_undo_seq(session)
+  session.action_undo_seq = (session.action_undo_seq or 0) + 1
+  return session.action_undo_seq
 end
 
 local function range_end(start, count)
@@ -328,6 +372,7 @@ local function apply_sides(session, source_side, target_side, opts)
   if not hunk then
     return false, hunk_err
   end
+  local view_before = keep_view.capture(session)
 
   local target
   local target_range_side = target_side
@@ -408,6 +453,9 @@ local function apply_sides(session, source_side, target_side, opts)
     end
   end
 
+  -- Committing this path turns "undo the stage" into reversing the commit.
+  local head = target == "index" and git_mod.read_head(ctx.root, ctx.path, "HEAD") or nil
+
   local ok, write_err = write_target(ctx, target, next_text)
   if not ok then
     return false, write_err
@@ -423,9 +471,13 @@ local function apply_sides(session, source_side, target_side, opts)
     after = next_text,
     action = opts.action or (source_side .. "_to_" .. target_side),
     right_undo_seq = buffer_undo_seq(session.right_buf),
+    right_undo_buf = session.right_buf,
+    seq = next_undo_seq(session),
+    chunk_index = chunk_index,
+    head = head,
   }
 
-  M.refresh(session, chunk_index)
+  M.refresh(session, chunk_index, view_before)
   return true, nil
 end
 
@@ -470,8 +522,11 @@ function M.unstage(session)
     return apply_sides(session, "left", "left", { action = "unstage" })
   end
   if mode == "all" then
-    local visible_hunk = active_hunk(session)
-    local staged_hunk = visible_hunk and staged_hunk_for_active_hunk(session, ctx, visible_hunk)
+    local visible_hunk, _, hunk_err = active_hunk(session)
+    if not visible_hunk then
+      return false, hunk_err
+    end
+    local staged_hunk = staged_hunk_for_active_hunk(session, ctx, visible_hunk)
     if not staged_hunk then
       return false, "current hunk is not staged"
     end
@@ -562,8 +617,7 @@ local function no_change_sources(ctx)
   }
 end
 
-function M.refresh(session, preferred_chunk, opts)
-  opts = opts or {}
+function M.refresh(session, preferred_chunk, view_before)
   local ctx, ctx_err = queue_context(session)
   if not ctx then
     return false, ctx_err
@@ -608,7 +662,8 @@ function M.refresh(session, preferred_chunk, opts)
     chunk_position = preferred_chunk and "preserve" or "first",
     preferred_chunk = preferred_chunk,
     preserve_view = preferred_chunk ~= nil,
-    chunk_from_cursor = opts.chunk_from_cursor,
+    chunk_from_cursor = preferred_chunk ~= nil,
+    view_before = view_before,
   })
   if not ok then
     return false, err
@@ -616,23 +671,84 @@ function M.refresh(session, preferred_chunk, opts)
   return true, nil
 end
 
-function M.undo(session)
-  local ctx, err = queue_context(session)
-  if not ctx then
-    return false, err
+--- The action `u` would undo: the newest one on the current file or on a file
+--- that has since left the queue (which the session can no longer open to undo).
+function M.latest_undo(session)
+  local queue = session and session.file_queue
+  if not (queue and queue.kind == "git") then
+    return nil
   end
-  local stack = session.action_undo and session.action_undo[ctx.path]
-  if not stack or #stack == 0 then
+  local current = shown_entry(session)
+  local listed = {}
+  for _, entry in ipairs(queue.entries or {}) do
+    listed[entry.path] = true
+    if entry.old_path then
+      listed[entry.old_path] = true
+    end
+  end
+  local latest, latest_stack
+  for path, stack in pairs(session.action_undo or {}) do
+    local top = stack[#stack]
+    if top and ((current and current.path == path) or not listed[path]) and (not latest or top.seq > latest.seq) then
+      latest, latest_stack = top, stack
+    end
+  end
+  return latest, latest_stack
+end
+
+local function mark_entry(session, entry)
+  entry.right_undo_seq = buffer_undo_seq(session.right_buf)
+  entry.right_undo_buf = session.right_buf
+end
+
+--- Ties the newest action on `path` to the right pane's current undo position.
+function M.mark_undo_position(session, path)
+  local stack = session.action_undo and session.action_undo[path]
+  if stack and stack[#stack] then
+    mark_entry(session, stack[#stack])
+  end
+end
+
+--- After the pane switches files: edits from here on undo before an action on a
+--- file that left the queue, and edits from before do not.
+function M.note_file_shown(session)
+  local latest = M.latest_undo(session)
+  local shown = shown_entry(session)
+  if latest and not (shown and shown.path == latest.path) then
+    mark_entry(session, latest)
+  end
+end
+
+local function undo_entry_current(ctx, entry)
+  if (read_target(ctx, entry.target)) ~= entry.after then
+    return false
+  end
+  return entry.target ~= "index" or git_mod.read_head(ctx.root, ctx.path, "HEAD") == entry.head
+end
+
+function M.undo(session)
+  local queue = session and session.file_queue
+  if not queue or queue.kind ~= "git" then
+    return false, "Git hunk actions are only available in Git diff sessions"
+  end
+  local entry, stack = M.latest_undo(session)
+  if not entry then
     return false, "no DiffBandit action to undo for this file"
   end
+  local ctx = { root = queue.root, opts = queue.opts or {}, path = entry.path }
+  local shown = shown_entry(session)
+  local same_file = shown ~= nil and shown.path == entry.path
+  local view_before = same_file and keep_view.capture(session) or nil
 
-  local entry = stack[#stack]
-  local current, read_err = read_target(ctx, entry.target)
-  if current == nil and read_err then
-    current = nil
-  end
-  if current ~= entry.after then
-    return false, "cannot undo: " .. ctx.path .. " changed after the DiffBandit action"
+  if not undo_entry_current(ctx, entry) then
+    local message = "cannot undo: " .. ctx.path .. " changed after the DiffBandit action"
+    if same_file then
+      return false, message
+    end
+    -- Off-screen and out of the queue, it would block every other undo for good.
+    nvim.notify_info(message)
+    session.action_undo[entry.path] = nil
+    return M.undo(session)
   end
 
   local ok, write_err = write_target(ctx, entry.target, entry.before)
@@ -640,11 +756,13 @@ function M.undo(session)
     return false, write_err
   end
   stack[#stack] = nil
-  if stack[#stack] then
-    stack[#stack].right_undo_seq = buffer_undo_seq(session.right_buf)
+  if not same_file then
+    -- The queue refresh that follows brings the file back.
+    session.undo_return = { path = entry.path, chunk = entry.chunk_index }
+    return true, nil
   end
-  -- Restoring a hunk renumbers the chunks, so the old index may name another one.
-  M.refresh(session, session.current_chunk, { chunk_from_cursor = true })
+  M.mark_undo_position(session, entry.path)
+  M.refresh(session, session.current_chunk, view_before)
   return true, nil
 end
 
