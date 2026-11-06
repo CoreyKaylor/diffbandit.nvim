@@ -755,6 +755,7 @@ shows the reason:
 
 | Reason | Fix |
 | --- | --- |
+| `probe timed out` | the terminal has not answered the graphics query; a late answer still switches to ribbons |
 | `tmux allow-passthrough is off` | `set -g allow-passthrough on`, then press a key in Neovim |
 | `tmux client lacks the RGB feature` | add the `terminal-features` line above and reattach |
 | `… is not a known Kitty graphics terminal` | add it to `ui.kitty.tmux_terminals` |

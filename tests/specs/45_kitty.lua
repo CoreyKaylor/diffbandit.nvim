@@ -410,6 +410,59 @@ do
     end), true, "probe settles")
     assert_eq(detect.status(), "kitty", "graphics OK within the DA1 grace window still wins")
 
+    -- Opening a diff can block the event loop past the probe deadline, so the
+    -- timer fires before the terminal's queued answer is read: the late answer
+    -- must still flip hosts to kitty.
+    local fast_probe = { ui = { kitty = { probe_timeout_ms = 1 } } }
+    local function timed_out_probe()
+      probe_env()
+      detect.resolve(fast_probe)
+      assert_eq(wait_for(function()
+        return detect.status() == "cells"
+      end), true, "probe deadline passes")
+      local _, reason = detect.status()
+      assert_eq(reason, "probe timed out", "timeout reason recorded")
+    end
+
+    timed_out_probe()
+    local late_flips = {}
+    detect.on_change(function(status)
+      late_flips[#late_flips + 1] = status
+    end)
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. detect.QUERY_ID .. ";OK\27\\" } })
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. (detect.QUERY_ID + 1) .. ";OK\27\\" } })
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27[?62;22c" } })
+    assert_eq(wait_for(function()
+      return detect.status() == "kitty"
+    end), true, "graphics OK after the deadline resolves to kitty")
+    assert_eq(late_flips[1], "kitty", "subscribers notified of the late flip")
+    assert_eq(select(2, detect.status()), nil, "timeout reason cleared")
+    assert_eq(detect.transmission({ ui = {} }), "file", "late temp-file OK selects file transmission")
+
+    -- A late DA1 with no graphics reply is a real "no", and ends the listening.
+    timed_out_probe()
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27[?62;22c" } })
+    assert_eq(wait_for(function()
+      return select(2, detect.status()) == "no graphics reply before DA1"
+    end), true, "late DA1 without graphics settles on cells")
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. detect.QUERY_ID .. ";OK\27\\" } })
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27[?62;22c" } })
+    vim.wait(100)
+    assert_eq(detect.status(), "cells", "nothing is listening once the probe settled")
+
+    -- A runtime failure outranks a late answer.
+    timed_out_probe()
+    detect.fail("terminal rejected image: test")
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. detect.QUERY_ID .. ";OK\27\\" } })
+    vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27[?62;22c" } })
+    vim.wait(100)
+    assert_eq(detect.status(), "cells", "late OK does not undo a runtime failure")
+
+    -- A timeout with no answer at all stays on cells.
+    timed_out_probe()
+    vim.wait(100)
+    assert_eq(detect.status(), "cells", "silent terminal stays on cells")
+
     -- DA1 first: terminal (or multiplexer) ignored the graphics query.
     probe_env()
     detect.resolve({ ui = {} })

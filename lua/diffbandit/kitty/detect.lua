@@ -6,11 +6,13 @@
 -- "auto" never trusts terminal names: it sends a graphics query (a=q) plus a
 -- temp-file query (t=t) followed by a DA1 sentinel through nvim_ui_send and
 -- listens on TermResponse. A graphics OK that arrives before the DA1 reply
--- means supported; DA1 first (or a timeout) means not — e.g. a multiplexer
--- that does not pass APC through. Until the probe resolves, sessions render
--- with cells and flip once on success. The result is cached per Neovim
--- process (reset on UIEnter) and any later error reply for one of our image
--- ids downgrades every session back to cells.
+-- means supported; DA1 first means not — e.g. a multiplexer that does not
+-- pass APC through. Until the probe resolves, sessions render
+-- with cells and flip once on success. A timeout only means the answer has not
+-- been read yet (opening a diff can block the event loop past the deadline),
+-- so the probe keeps listening and a late graphics OK still flips to kitty.
+-- The result is cached per Neovim process (reset on UIEnter) and any later
+-- error reply for one of our image ids downgrades every session back to cells.
 --
 -- Inside tmux (see kitty/tmux.lua) every command is wrapped for DCS
 -- passthrough and, because tmux swallows the outer terminal's replies, "auto"
@@ -185,8 +187,15 @@ function M.temp_path(tag)
     temp_dir(), vim.fn.getpid(), tag or "x", temp_seq)
 end
 
+local PROBE_TIMED_OUT = "probe timed out"
+
+-- result.keep_listening leaves the TermResponse listener in place after a
+-- timeout. Its later answer settles the probe a second time; any other verdict
+-- reached in the meantime (runtime failure, re-probe) takes precedence.
 local function finish(result)
-  if state.status ~= "probing" then
+  local awaiting_late_reply = state.status == "cells" and state.reason == PROBE_TIMED_OUT
+    and not state.failed
+  if state.status ~= "probing" and not awaiting_late_reply then
     return
   end
   if state.probe_timer then
@@ -196,7 +205,7 @@ local function finish(result)
     end)
     state.probe_timer = nil
   end
-  if state.probe_group then
+  if state.probe_group and not result.keep_listening then
     pcall(vim.api.nvim_del_augroup_by_id, state.probe_group)
     state.probe_group = nil
   end
@@ -335,7 +344,12 @@ function start_probe(config)
   local timer = uv.new_timer()
   state.probe_timer = timer
   timer:start(timeout, 0, vim.schedule_wrap(function()
-    finish({ ok = got.direct, file = got.file, reason = got.direct and nil or "probe timed out" })
+    finish({
+      ok = got.direct,
+      file = got.file,
+      reason = (not got.direct) and PROBE_TIMED_OUT or nil,
+      keep_listening = not got.direct,
+    })
   end))
 
   local payload = { protocol.query(QUERY_ID, "d") }
