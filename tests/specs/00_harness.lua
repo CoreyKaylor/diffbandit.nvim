@@ -743,6 +743,12 @@ local function git_status_command(args, cwd)
   return code, output or "", ""
 end
 
+local function win_screen_topline(win)
+  return vim.api.nvim_win_call(win, function()
+    return vim.fn.line("w0")
+  end)
+end
+
 local function make_git_repo()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")

@@ -94,7 +94,9 @@ function M.hidden_separator_fillchars()
   return table.concat(parts, ",")
 end
 
--- Source/content pane: cursorline on, no gutter columns.
+-- Source/content pane: cursorline on, no gutter columns. 'scrolloff' -1 defers
+-- to the user's global value, which diff and merge navigation allow for
+-- (nvim.jump_context, nvim.scrolloff_rows).
 function M.win_opts.source(winhl, overrides)
   local opts = {
     number = false,
@@ -102,7 +104,7 @@ function M.win_opts.source(winhl, overrides)
     cursorline = true,
     wrap = false,
     signcolumn = "no",
-    scrolloff = 0,
+    scrolloff = -1,
     sidescrolloff = 0,
     foldenable = false,
     winhl = winhl or M.winhl.source,

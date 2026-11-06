@@ -64,6 +64,27 @@ function M.get_window_height(win)
   return 0
 end
 
+-- Rows 'scrolloff' keeps around the cursor in win ('scrolloff=999' asks for a
+-- centered cursor, so the value is capped at half the window).
+function M.scrolloff_rows(win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return 0
+  end
+  local half = math.floor((M.get_window_height(win) - 1) / 2)
+  return math.max(0, math.min(vim.wo[win].scrolloff, half))
+end
+
+-- Rows above a jump target. A topline inside a pane's 'scrolloff' does not hold
+-- (see set_win_view_topline) and each pane would move by its own amount, so the
+-- context covers the margin of every pane.
+function M.jump_context(navigation, wins)
+  local context = math.max(0, tonumber(navigation and navigation.jump_context) or 0)
+  for _, win in ipairs(wins) do
+    context = math.max(context, M.scrolloff_rows(win))
+  end
+  return context
+end
+
 function M.set_win_view_topline(win, topline, opts)
   if not (win and vim.api.nvim_win_is_valid(win)) then
     return
@@ -80,6 +101,10 @@ function M.set_win_view_topline(win, topline, opts)
     local view = vim.fn.winsaveview()
     view.topline = topline
     pcall(vim.fn.winrestview, view)
+    -- Neovim applies 'scrolloff' to the restored view only when the view is next
+    -- validated. Settle it now, or the redraw moves the pane after its gutters
+    -- were synced and without a WinScrolled to bring them along.
+    vim.fn.line("w0")
   end)
 end
 

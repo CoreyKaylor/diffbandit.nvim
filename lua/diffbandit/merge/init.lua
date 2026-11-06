@@ -1835,7 +1835,7 @@ function Merge:align_hunk_item_viewports(item)
   local remote_anchor = item.remote_hunk and hunk_range_for_side(item.remote_hunk, "left")
     or self:source_row_for_result_row("remote", result_row)
   local navigation = self.config.navigation or {}
-  local context = math.max(0, tonumber(navigation.jump_context) or 0)
+  local context = nvim.jump_context(navigation, { self.local_win, self.result_win, self.remote_win })
 
   local local_cursor = math.min(math.max(1, local_anchor or 1), math.max(1, vim.api.nvim_buf_line_count(self.local_buf)))
   local result_cursor = math.min(result_row, math.max(1, vim.api.nvim_buf_line_count(self.result_buf)))
@@ -1848,7 +1848,8 @@ function Merge:align_hunk_item_viewports(item)
   pcall(vim.api.nvim_win_set_cursor, self.local_win, { local_cursor, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.result_win, { result_cursor, 0 })
   pcall(vim.api.nvim_win_set_cursor, self.remote_win, { remote_cursor, 0 })
-  -- Cursor placement honors 'scrolloff'; pin the aligned toplines afterwards.
+  -- Cursor placement honors 'scrolloff'; re-apply the aligned toplines afterwards
+  -- (the context keeps them outside the margin, so they hold).
   self:set_viewports(local_topline, result_topline, remote_topline, { preserve_cursor = true })
   self:rerender_pair_viewports()
 end
@@ -1960,9 +1961,10 @@ function Merge:goto_document_edge(edge)
   local local_line = edge == "bottom" and local_count or 1
   local result_line = edge == "bottom" and result_count or 1
   local remote_line = edge == "bottom" and remote_count or 1
-  local local_topline = edge == "bottom" and math.max(1, local_count - local_height + 1) or 1
-  local result_topline = edge == "bottom" and math.max(1, result_count - result_height + 1) or 1
-  local remote_topline = edge == "bottom" and math.max(1, remote_count - remote_height + 1) or 1
+  -- As in Session:goto_document_edge: keep the panes level under 'scrolloff'.
+  local local_topline = edge == "bottom" and math.max(1, local_count - local_height + 1 + nvim.scrolloff_rows(self.local_win)) or 1
+  local result_topline = edge == "bottom" and math.max(1, result_count - result_height + 1 + nvim.scrolloff_rows(self.result_win)) or 1
+  local remote_topline = edge == "bottom" and math.max(1, remote_count - remote_height + 1 + nvim.scrolloff_rows(self.remote_win)) or 1
 
   self.selected_pair_hunk = {
     boundary = edge == "bottom" and "bottom" or "top",

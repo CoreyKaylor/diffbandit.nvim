@@ -421,7 +421,9 @@ function Folder:open_layout()
   self.last_tree_win = left_win
 
   for _, win in ipairs({ left_win, right_win }) do
-    set_window_options(win, layout.win_opts.source(nil, { foldcolumn = "0" }))
+    -- The tree panes have no scroll sync: rows line up only while no pane scrolls
+    -- ahead of the others, so the user's 'scrolloff' stays out.
+    set_window_options(win, layout.win_opts.source(nil, { foldcolumn = "0", scrolloff = 0 }))
   end
   set_window_options(gutter_win, layout.win_opts.gutter())
   set_window_width(gutter_win, self.gutter_width)

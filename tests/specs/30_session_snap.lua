@@ -440,10 +440,10 @@ do
   pcall(vim.api.nvim_buf_delete, user_buf, { force = true })
 end
 
--- Suite 16f: ]c alignment is scrolloff-proof, including after replace_sources
--- (the ]f file-queue path). Add hunks put the right cursor one row below the
--- navigation origin; without pinning toplines after set_cursor, scrolloff
--- shifts the panes independently (GitHub issue #9).
+-- Suite 16f: ]c alignment holds under the user's scrolloff, including after
+-- replace_sources (the ]f file-queue path). Add hunks put the right cursor one
+-- row below the navigation origin; a topline inside the margin would shift the
+-- panes independently (GitHub issue #9), so jumps sit 'scrolloff' rows down.
 do
   local function win_topline(win)
     return vim.api.nvim_win_call(win, function()
@@ -468,11 +468,14 @@ do
     local chunk = session.view.chunks[session.current_chunk]
     assert(chunk, label .. ": expected an active chunk")
     local left_anchor, right_anchor = session:chunk_navigation_anchors(chunk)
-    local context = math.max(0, tonumber((config.navigation or {}).jump_context) or 0)
+    assert_eq(vim.wo[session.left_win].scrolloff, 8, label .. ": left pane should use the user's scrolloff")
+    assert_eq(vim.wo[session.right_win].scrolloff, 8, label .. ": right pane should use the user's scrolloff")
+    assert_eq(vim.wo[session.left_num_win].scrolloff, 0, label .. ": gutters stay slaved to the panes")
+    local context = 8
     assert_eq(win_topline(session.left_win), math.max(1, left_anchor - context),
-      label .. ": left topline should match the navigation anchor")
+      label .. ": left topline should keep the scrolloff margin above the anchor")
     assert_eq(win_topline(session.right_win), math.max(1, right_anchor - context),
-      label .. ": right topline should match the navigation anchor")
+      label .. ": right topline should keep the scrolloff margin above the anchor")
   end
 
   local previous_scrolloff = vim.o.scrolloff
@@ -505,6 +508,44 @@ do
   assert_jump_aligned(session, "]c after replace_sources (]f path) with scrolloff=8")
 
   session:close()
+  vim.o.scrolloff = previous_scrolloff
+end
+
+-- Suite 16f2: merge jumps keep every pane aligned under the user's scrolloff,
+-- and a larger jump_context still wins over the margin.
+do
+  local previous_scrolloff = vim.o.scrolloff
+  vim.o.scrolloff = 8
+  local repo = make_git_repo()
+  local base = {}
+  for i = 1, 120 do
+    base[i] = "line " .. i
+  end
+  local merge_session = assert((merge_mod.start({
+    root = repo,
+    path = "merge-scrolloff.txt",
+    base_lines = base,
+    local_lines = base,
+    remote_lines = base,
+    result_lines = base,
+    conflicts = {},
+    non_conflicting = {},
+    local_hunks = {},
+    remote_hunks = {},
+  }, config, {})))
+  local function assert_toplines(expected, label)
+    assert_eq(win_screen_topline(merge_session.local_win), expected, label .. ": local")
+    assert_eq(win_screen_topline(merge_session.result_win), expected, label .. ": result")
+    assert_eq(win_screen_topline(merge_session.remote_win), expected, label .. ": remote")
+  end
+  merge_session:align_hunk_item_viewports({ result_start = 60 })
+  assert_toplines(52, "Merge jump under scrolloff=8")
+  local previous_context = merge_session.config.navigation.jump_context
+  merge_session.config.navigation.jump_context = 10
+  merge_session:align_hunk_item_viewports({ result_start = 60 })
+  assert_toplines(50, "jump_context above scrolloff")
+  merge_session.config.navigation.jump_context = previous_context
+  merge_session:close()
   vim.o.scrolloff = previous_scrolloff
 end
 

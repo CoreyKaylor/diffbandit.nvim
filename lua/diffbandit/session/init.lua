@@ -902,10 +902,10 @@ function Session:set_viewport_toplines_preserve_cursors(left_topline, right_topl
     pcall(vim.api.nvim_win_set_cursor, self.right_win, right_pair)
     pcall(vim.api.nvim_win_set_cursor, self.right_num_win, { right_pair[1], 0 })
   end
-  -- nvim_win_set_cursor honors window-local 'scrolloff', which independently
-  -- shifts each pane (add/delete cursors are not the same offset from the
-  -- navigation anchors). Pin the intended toplines after cursor placement
-  -- without resetting the cursor column.
+  -- nvim_win_set_cursor honors 'scrolloff', which independently shifts each
+  -- pane (add/delete cursors are not the same offset from the navigation
+  -- anchors). Re-apply the intended toplines after cursor placement without
+  -- resetting the cursor column; a topline inside the margin still moves.
   apply_viewport_toplines(self, left_topline, right_topline, { preserve_cursor = true })
   if opts.defer_render then
     -- The viewport (text, backgrounds, cursors) moves immediately; only the
@@ -993,7 +993,7 @@ function Session:align_chunk_viewports(chunk)
     return
   end
 
-  local context = math.max(0, tonumber(navigation.jump_context) or 0)
+  local context = nvim.jump_context(navigation, { self.left_win, self.right_win })
   local left_topline = math.max(1, left_anchor - context)
   local right_topline = math.max(1, right_anchor - context)
   local left_cursor, right_cursor = self:chunk_cursor_rows(chunk)
@@ -1077,8 +1077,10 @@ function Session:goto_document_edge(edge)
   local right_line = edge == "bottom" and right_line_count or 1
   local left_height = vim.api.nvim_win_is_valid(self.left_win) and nvim.get_window_height(self.left_win) or 1
   local right_height = vim.api.nvim_win_is_valid(self.right_win) and nvim.get_window_height(self.right_win) or 1
-  local left_topline = edge == "bottom" and math.max(1, left_line_count - left_height + 1) or 1
-  local right_topline = edge == "bottom" and math.max(1, right_line_count - right_height + 1) or 1
+  -- The margin holds only in a pane with padding below its last line, so ask
+  -- for it in every pane to keep them level.
+  local left_topline = edge == "bottom" and math.max(1, left_line_count - left_height + 1 + nvim.scrolloff_rows(self.left_win)) or 1
+  local right_topline = edge == "bottom" and math.max(1, right_line_count - right_height + 1 + nvim.scrolloff_rows(self.right_win)) or 1
 
   self.syncing_scroll = true
   pcall(vim.api.nvim_win_set_cursor, self.left_win, { left_line, 0 })

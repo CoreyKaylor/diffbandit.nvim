@@ -322,7 +322,7 @@ end
 -- buffer in the window (editable worktree files swapped in by the file
 -- queue) silently reverts them to that buffer's defaults — 'wrap' coming
 -- back on desyncs the pane's screen rows from its unwrappable gutters,
--- and 'scrolloff'/folds undo ]c alignment. Re-apply after every right-buffer swap.
+-- and folds undo ]c alignment. Re-apply after every right-buffer swap.
 -- The windows whose rows line up under a winbar (see util/winbar).
 local function winbar_spec(session)
   return {

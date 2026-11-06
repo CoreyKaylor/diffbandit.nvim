@@ -2402,8 +2402,8 @@ do
   pcall(vim.api.nvim_buf_delete, right_buf, { force = true })
 end
 
--- Git file-queue ]f then ]c keeps both panes on the chunk navigation anchors
--- even when global scrolloff would otherwise shift add-hunk cursors independently.
+-- Git file-queue ]f then ]c keeps both panes aligned on the chunk navigation
+-- anchors, with the user's global scrolloff kept above them.
 do
   local function win_topline(win)
     return vim.api.nvim_win_call(win, function()
@@ -2447,7 +2447,7 @@ do
   session:goto_next_chunk()
   local chunk = session.view.chunks[session.current_chunk]
   local left_anchor, right_anchor = session:chunk_navigation_anchors(chunk)
-  local context = math.max(0, tonumber((config.navigation or {}).jump_context) or 0)
+  local context = 8
   assert_eq(win_topline(session.left_win), math.max(1, left_anchor - context),
     "First-file ]c should align the left pane")
   assert_eq(win_topline(session.right_win), math.max(1, right_anchor - context),
