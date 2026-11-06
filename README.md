@@ -290,6 +290,46 @@ list that command among its load triggers. Set `DIFFBANDIT_NVIM_APPNAME` to use
 a dedicated config (`NVIM_APPNAME`) or `DIFFBANDIT_NVIM` to pick the nvim
 executable.
 
+### External merge and diff tool
+
+The same script can be called with file or folder paths, outside any
+repository. This is how git and jj use it as an external tool:
+
+```sh
+diffbandit diff LEFT RIGHT     # read-only folder or file diff
+diffbandit edit LEFT RIGHT     # editable folder/file diff: edit the right side in place
+diffbandit merge BASE LEFT RIGHT OUTPUT [--path P]  # 3-way merge; :w resolves
+```
+
+A branch or path named `merge`, `edit`, or `diff` needs a leading `--`
+(`diffbandit -- diff`). `merge` writes `OUTPUT` when you `:w` the result.
+Quitting without resolving exits non-zero, so the conflict is kept. In `edit`,
+you edit the right side through hunk apply actions or by hand, and `:w` saves
+each file. `:cq` aborts the operation.
+
+Git:
+
+```sh
+git config --global mergetool.diffbandit.cmd 'diffbandit merge "$BASE" "$LOCAL" "$REMOTE" "$MERGED" --path "$MERGED"'
+git config --global mergetool.diffbandit.trustExitCode true
+git config --global difftool.diffbandit.cmd 'diffbandit diff "$LOCAL" "$REMOTE"'
+```
+
+jj (`~/.config/jj/config.toml`), for `jj resolve`, `jj split`, `jj squash -i`:
+
+```toml
+[merge-tools.diffbandit]
+program = "diffbandit"   # bin/diffbandit on PATH
+merge-args = ["merge", "$base", "$left", "$right", "$output", "--path", "$path"]
+edit-args = ["edit", "$left", "$right"]
+diff-args = ["diff", "$left", "$right"]
+merge-tool-edits-conflict-markers = false
+
+[ui]
+merge-editor = "diffbandit"
+diff-editor = "diffbandit"
+```
+
 ## Default Keys
 
 Press `g?` in any DiffBandit window to see its keys. The list comes from
@@ -755,6 +795,7 @@ diffbandit.git_compare("main", "feature")
 diffbandit.git_compare_branches({})
 diffbandit.git_checkout("feature")
 diffbandit.merge("path/to/conflicted-file")
+diffbandit.merge_files({ base = "B", left = "L", right = "R", output = "O" }) -- external 3-way merge
 diffbandit.commit_panel({})
 diffbandit.git_panel({})             -- working-tree changes, panel open on the first file
 diffbandit.launch({ "main...HEAD" }) -- what bin/diffbandit runs (git diff-style args)

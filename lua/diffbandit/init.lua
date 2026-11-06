@@ -452,6 +452,14 @@ function M.merge(path, opts)
   return Merge.start_for_path(path, opts or {}, config)
 end
 
+-- File-based three-way merge for external tools (jj ui.merge-editor, git
+-- mergetool). opts: { base, left, right, output, path?, labels? }.
+function M.merge_files(opts)
+  local config = state.get_config()
+  ensure_highlights(config)
+  return Merge.start_files(opts or {}, config)
+end
+
 local function start_folder_file_diff(folder_session, row, context)
   if not row then
     return nil, "no folder row selected"
@@ -469,7 +477,26 @@ local function start_folder_file_diff(folder_session, row, context)
   if not left_source then
     return nil, "unable to read left file"
   end
-  if row.right then
+  if folder_session.editable_right then
+    -- Diff-editor mode (jj split / squash -i): the right folder is the edit
+    -- target. A file missing on the right is created on :w.
+    local right_path = row.right and row.right.path or (folder_session.right_root .. "/" .. row.rel)
+    if row.right then
+      right_source = document.source_from_file_or_buffer(right_path, row.rel, {
+        editable = { target = "file" },
+      }, function()
+        return source_mod.from_file(right_path, row.rel, config)
+      end)
+    else
+      vim.fn.mkdir(vim.fn.fnamemodify(right_path, ":h"), "p")
+      right_source = source_mod.from_text("", row.rel, row.rel .. " (missing right)", {
+        empty_reason = "missing from right folder",
+      })
+      if right_source then
+        right_source.editable = { target = "file", path = document.normalize_path(right_path) or right_path }
+      end
+    end
+  elseif row.right then
     right_source = source_mod.from_file(row.right.path, row.rel, config)
   else
     right_source = source_mod.from_text("", row.rel, row.rel .. " (missing right)", {

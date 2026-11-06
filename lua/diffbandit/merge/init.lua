@@ -50,14 +50,76 @@ local function can_use_real_result_buffer(path)
   return document.find_loaded_buffer(path) ~= nil or vim.fn.filereadable(path) == 1
 end
 
-function Merge.load(root, path, config)
-  local stages, err = git.conflict_stages(root, path)
-  if not stages then
-    return nil, err
-  end
-  local base_text = stages.base or ""
-  local local_text = stages.local_text or ""
-  local remote_text = stages.remote or ""
+-- A merge host decides where the three sides came from and what resolving
+-- means. The git host reads index stages, writes the worktree, and runs
+-- `git add`; the file host (jj/git mergetool) writes an output file only.
+function Merge.git_host()
+  return {
+    kind = "git",
+    context = function(root)
+      return git.merge_context(root)
+    end,
+    result_path = function(root, path)
+      return git.abs_path(root, path)
+    end,
+    resolve = function(session, value)
+      local ok, write_err = git.write_worktree(session.root, session.path, value, false)
+      if not ok then
+        return false, write_err
+      end
+      local args = value == nil and { "add", "-A", "--", session.path } or { "add", "--", session.path }
+      local _, add_err = git.git_output(session.root, args)
+      if add_err then
+        return false, add_err
+      end
+      return true
+    end,
+    after_resolve = function(session)
+      session:refresh_git_queue(session.path)
+    end,
+  }
+end
+
+-- opts: { output, labels = { left, right, base, operation }, on_resolve(value) }
+function Merge.file_host(opts)
+  opts = opts or {}
+  local labels = opts.labels or {}
+  return {
+    kind = "file",
+    context = function()
+      return {
+        current = labels.left or "left",
+        incoming = labels.right or "right",
+        operation = labels.operation or "merge",
+      }
+    end,
+    -- The output is a tool-owned temp file: always edit a scratch result.
+    result_path = function()
+      return nil
+    end,
+    resolve = function(session, value)
+      if value == nil then
+        return false, "this merge tool cannot delete the result; resolve to content instead"
+      end
+      local fd = io.open(opts.output, "wb")
+      if not fd then
+        return false, "unable to write " .. tostring(opts.output)
+      end
+      fd:write(value)
+      fd:close()
+      session.resolved = true
+      if type(opts.on_resolve) == "function" then
+        opts.on_resolve(value)
+      end
+      return true
+    end,
+  }
+end
+
+function Merge.data_from_texts(root, path, texts, config)
+  local base_text = texts.base or ""
+  local local_text = texts.local_text or ""
+  local remote_text = texts.remote or ""
   local base_lines = text.split_lines(base_text)
   local local_lines = text.split_lines(local_text)
   local remote_lines = text.split_lines(remote_text)
@@ -69,8 +131,8 @@ function Merge.load(root, path, config)
     base_text = base_text,
     local_text = local_text,
     remote_text = remote_text,
-    has_local = stages.has_local ~= false,
-    has_remote = stages.has_remote ~= false,
+    has_local = texts.has_local ~= false,
+    has_remote = texts.has_remote ~= false,
     base_lines = base_lines,
     local_lines = local_lines,
     remote_lines = remote_lines,
@@ -85,6 +147,63 @@ function Merge.load(root, path, config)
       remote = remote_text,
     }),
   }, nil
+end
+
+function Merge.load(root, path, config)
+  local stages, err = git.conflict_stages(root, path)
+  if not stages then
+    return nil, err
+  end
+  return Merge.data_from_texts(root, path, stages, config)
+end
+
+local function read_file_text(path, what)
+  if not path or path == "" then
+    return nil, "missing " .. what .. " path"
+  end
+  if vim.fn.filereadable(path) ~= 1 then
+    -- jj and git pass an empty/missing file for an absent side.
+    return "", nil, false
+  end
+  local fd = io.open(path, "rb")
+  if not fd then
+    return nil, "unable to read " .. what .. ": " .. path
+  end
+  local value = fd:read("*a") or ""
+  fd:close()
+  return value, nil, true
+end
+
+-- File-based three-way merge (jj ui.merge-editor, git mergetool).
+-- opts: { base, left, right, output, path?, labels?, on_resolve? }
+function Merge.start_files(opts, config, start_opts)
+  opts = opts or {}
+  config = config or state.get_config()
+  if not opts.output or opts.output == "" then
+    return nil, "missing output path"
+  end
+  local texts = {}
+  local err, present
+  texts.base, err = read_file_text(opts.base, "base")
+  if not texts.base then
+    return nil, err
+  end
+  texts.local_text, err, present = read_file_text(opts.left, "left")
+  if not texts.local_text then
+    return nil, err
+  end
+  texts.has_local = present
+  texts.remote, err, present = read_file_text(opts.right, "right")
+  if not texts.remote then
+    return nil, err
+  end
+  texts.has_remote = present
+  local display_path = opts.path or vim.fn.fnamemodify(opts.output, ":t")
+  local uv = vim.uv or vim.loop
+  local data = Merge.data_from_texts(uv.cwd(), display_path, texts, config)
+  return Merge.start(data, config, vim.tbl_extend("force", start_opts or {}, {
+    host = Merge.file_host(opts),
+  }))
 end
 
 function Merge.start(data, config, opts)
@@ -113,6 +232,7 @@ function Merge.start(data, config, opts)
   self.current_conflict = #self.conflicts > 0 and 1 or 0
   self.selected_pair_hunk = nil
   self.line_ending_warning = data.line_ending_warning
+  self.host = opts.host or Merge.git_host()
   self.file_queue = opts.queue
   self.file_queue_index = opts.queue_index or (opts.queue and opts.queue.index)
   self.right_win = nil
@@ -147,12 +267,12 @@ function Merge.start(data, config, opts)
   -- mirrored in self.panel.visible by panel_mod.
   self.hidden = { panel = false, local_pane = false, remote_pane = false }
   self.status_enabled = config_mod.section(self.config, "ui", "status").enabled ~= false
-  self.merge_context = git.merge_context(self.root)
+  self.merge_context = self.host.context(self.root, data)
   self.connector_width = kitty.min_core_width(self)
 
   local ft = source_mod.detect_filetype(self.path)
-  local result_path = git.abs_path(self.root, self.path)
-  if can_use_real_result_buffer(result_path) then
+  local result_path = self.host.result_path(self.root, self.path)
+  if result_path and can_use_real_result_buffer(result_path) then
     self.result_editable = {
       target = "merge-result",
       path = document.normalize_path(result_path) or result_path,
@@ -1961,14 +2081,14 @@ function Merge:open_merge_file(index, opts)
   self.remote_hunks = data.remote_hunks or {}
   self.current_conflict = #self.conflicts > 0 and 1 or 0
   self.line_ending_warning = data.line_ending_warning
-  self.merge_context = git.merge_context(self.root)
+  self.merge_context = self.host.context(self.root, data)
 
   local ft = source_mod.detect_filetype(self.path)
   local old_result_editable = self.result_editable
   local old_result_buf = self.result_buf
   self.result_editable = nil
-  local result_path = git.abs_path(self.root, self.path)
-  if can_use_real_result_buffer(result_path) then
+  local result_path = self.host.result_path(self.root, self.path)
+  if result_path and can_use_real_result_buffer(result_path) then
     self.result_editable = {
       target = "merge-result",
       path = document.normalize_path(result_path) or result_path,
@@ -2239,35 +2359,19 @@ function Merge:apply_non_conflicting()
 end
 
 function Merge:resolve()
-  if self.delete_result then
-    local ok, write_err = git.write_worktree(self.root, self.path, nil, false)
-    if not ok then
-      nvim.notify_error(tostring(write_err))
-      return false
-    end
-    local _, add_err = git.git_output(self.root, { "add", "-A", "--", self.path })
-    if add_err then
-      nvim.notify_error(tostring(add_err))
-      return false
-    end
-    pcall(vim.api.nvim_set_option_value, "modified", false, { buf = self.result_buf })
-    self:refresh_git_queue(self.path)
-    nvim.notify_info("resolved " .. tostring(self.path))
-    return true
+  local value
+  if not self.delete_result then
+    value = text.to_text(logical_buffer_lines(self.result_buf))
   end
-  local value = text.to_text(logical_buffer_lines(self.result_buf))
-  local ok, write_err = git.write_worktree(self.root, self.path, value, false)
+  local ok, err = self.host.resolve(self, value)
   if not ok then
-    nvim.notify_error(tostring(write_err))
-    return false
-  end
-  local _, add_err = git.git_output(self.root, { "add", "--", self.path })
-  if add_err then
-    nvim.notify_error(tostring(add_err))
+    nvim.notify_error(tostring(err))
     return false
   end
   pcall(vim.api.nvim_set_option_value, "modified", false, { buf = self.result_buf })
-  self:refresh_git_queue(self.path)
+  if self.host.after_resolve then
+    self.host.after_resolve(self)
+  end
   nvim.notify_info("resolved " .. tostring(self.path))
   return true
 end

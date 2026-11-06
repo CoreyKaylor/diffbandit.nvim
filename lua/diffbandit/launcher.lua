@@ -7,6 +7,12 @@
 --   diffbandit compare [--direct | --unpushed] [<base> [<target>]] [--] [<path>...]
 --   diffbandit log [--all] [-n <count>] [<rev>] [--] [<path>...]
 --   diffbandit stash [<n> | stash@{<n>}] [--] [<path>...]
+--
+-- External-tool subcommands (no repository needed; used by jj's
+-- merge-tools.* config and git mergetool/difftool):
+--   diffbandit merge <base> <left> <right> <output> [--path P] [--label-left L] [--label-right R]
+--   diffbandit edit <left> <right>     (editable right side: jj diff-editor)
+--   diffbandit diff <left> <right>     (read-only)
 
 local git = require("diffbandit.git")
 local panel_mod = require("diffbandit.panel")
@@ -242,6 +248,101 @@ function M.parse(args, is_rev)
   return { kind = "status", opts = opts }
 end
 
+local tool_commands = { merge = true, edit = true, diff = true }
+
+-- Pure: parses the external-tool subcommands. Returns nil when args[1] is not
+-- one of them.
+function M.parse_tool(args)
+  args = args or {}
+  local command = args[1]
+  if not tool_commands[command] then
+    return nil
+  end
+  local positionals = {}
+  local plan = { kind = command, labels = {} }
+  local value_flags = {
+    ["--path"] = function(v) plan.path = v end,
+    ["--label-left"] = function(v) plan.labels.left = v end,
+    ["--label-right"] = function(v) plan.labels.right = v end,
+    ["--label-base"] = function(v) plan.labels.base = v end,
+  }
+  local i = 2
+  while i <= #args do
+    local arg = args[i]
+    if value_flags[arg] then
+      if args[i + 1] == nil then
+        return nil, arg .. " needs a value"
+      end
+      value_flags[arg](args[i + 1])
+      i = i + 1
+    elseif arg == "--" then
+      for j = i + 1, #args do
+        positionals[#positionals + 1] = args[j]
+      end
+      break
+    elseif arg:sub(1, 2) == "--" then
+      return nil, "unknown option: " .. arg
+    else
+      positionals[#positionals + 1] = arg
+    end
+    i = i + 1
+  end
+  if command == "merge" then
+    if #positionals ~= 4 then
+      return nil, "usage: diffbandit merge <base> <left> <right> <output> [--path P]"
+    end
+    plan.base, plan.left, plan.right, plan.output = positionals[1], positionals[2], positionals[3], positionals[4]
+  else
+    if #positionals ~= 2 then
+      return nil, string.format("usage: diffbandit %s <left> <right>", command)
+    end
+    plan.left, plan.right = positionals[1], positionals[2]
+  end
+  return plan
+end
+
+local function mark_resolved()
+  local statusfile = vim.env.DIFFBANDIT_STATUSFILE
+  if statusfile and statusfile ~= "" then
+    pcall(vim.fn.writefile, { "resolved" }, statusfile)
+  end
+end
+
+local function launch_tool(plan, cwd)
+  local diffbandit = require("diffbandit")
+  local function abs(path)
+    if path:sub(1, 1) == "/" then
+      return path
+    end
+    return cwd .. "/" .. path
+  end
+  if plan.kind == "merge" then
+    return diffbandit.merge_files({
+      base = abs(plan.base),
+      left = abs(plan.left),
+      right = abs(plan.right),
+      output = abs(plan.output),
+      path = plan.path,
+      labels = plan.labels,
+      on_resolve = mark_resolved,
+    })
+  end
+  local left, right = abs(plan.left), abs(plan.right)
+  local left_dir = vim.fn.isdirectory(left) == 1
+  local right_dir = vim.fn.isdirectory(right) == 1
+  if left_dir ~= right_dir then
+    return nil, "compare two folders or two files, not one of each"
+  end
+  if left_dir then
+    return diffbandit.folder_diff(left, right, {
+      editable_right = plan.kind == "edit",
+      -- jj adds a synthetic instructions file to diff-editor folders.
+      hide = { "^JJ%-INSTRUCTIONS$" },
+    })
+  end
+  return diffbandit.files(left, right, { left_label = plan.labels.left, right_label = plan.labels.right })
+end
+
 -- True while any DiffBandit view is on screen: a live session (diff, merge,
 -- folder), a commit panel whose windows are still open, or a registered view
 -- such as the log browser. except_tabpage leaves out the views on that tab.
@@ -324,6 +425,18 @@ function M.launch(args, opts)
   local diffbandit = require("diffbandit")
   local uv = vim.uv or vim.loop
   local cwd = opts.cwd or uv.cwd()
+  local tool_plan, tool_err = M.parse_tool(args)
+  if tool_err then
+    return nil, tool_err
+  end
+  if tool_plan then
+    local host, err = launch_tool(tool_plan, cwd)
+    if host and opts.quit_on_close then
+      state.quit_on_close = true
+      watch_for_quit()
+    end
+    return host, err
+  end
   local root, root_err = git.find_root(cwd)
   if not root then
     return nil, root_err or "not a git repository"

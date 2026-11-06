@@ -353,6 +353,34 @@ lazy-loaded plugin should list that command among its load triggers.
 `DIFFBANDIT_NVIM_APPNAME` selects a dedicated config (`NVIM_APPNAME`) and
 `DIFFBANDIT_NVIM` the nvim executable.
 
+External tool mode works outside any repository:
+>sh
+  diffbandit diff LEFT RIGHT     # read-only folder or file diff
+  diffbandit edit LEFT RIGHT     # edit the right folder/file in place
+  diffbandit merge BASE LEFT RIGHT OUTPUT [--path P]  # :w resolves
+<
+`merge` exits non-zero unless the result was saved with `:w`, so jj and
+`git mergetool` (with trustExitCode) keep the conflict. Git setup:
+>sh
+  git config --global mergetool.diffbandit.cmd \
+    'diffbandit merge "$BASE" "$LOCAL" "$REMOTE" "$MERGED" --path "$MERGED"'
+  git config --global mergetool.diffbandit.trustExitCode true
+  git config --global difftool.diffbandit.cmd 'diffbandit diff "$LOCAL" "$REMOTE"'
+<
+jj setup (`~/.config/jj/config.toml`):
+>toml
+  [merge-tools.diffbandit]
+  program = "diffbandit"
+  merge-args = ["merge", "$base", "$left", "$right", "$output", "--path", "$path"]
+  edit-args = ["edit", "$left", "$right"]
+  diff-args = ["diff", "$left", "$right"]
+  merge-tool-edits-conflict-markers = false
+
+  [ui]
+  merge-editor = "diffbandit"
+  diff-editor = "diffbandit"
+<
+
 ==============================================================================
 COMMIT PANEL                                  *diffbandit-commit-panel*
 
@@ -612,6 +640,7 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.git_compare_branches({})
   diffbandit.git_checkout("feature")
   diffbandit.merge("path/to/conflicted-file")
+  diffbandit.merge_files({ base = "B", left = "L", right = "R", output = "O" })
   diffbandit.commit_panel({})
 
   diffbandit.toggle_stage_hunk()

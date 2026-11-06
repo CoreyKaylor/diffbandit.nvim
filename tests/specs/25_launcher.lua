@@ -312,3 +312,98 @@ do
   _, err = launcher.launch({ "stash", "3" }, { cwd = repo })
   assert_eq(err, "no stash entry stash@{3}", "a missing stash entry is reported")
 end
+
+-- External-tool subcommands: jj merge-tools / git mergetool contract.
+do
+  local launcher = require("diffbandit.launcher")
+  local plan = assert(launcher.parse_tool({ "merge", "b", "l", "r", "o", "--path", "src/x.lua" }))
+  assert_eq(plan.kind, "merge", "merge subcommand parses")
+  assert_eq(table.concat({ plan.base, plan.left, plan.right, plan.output }, ","), "b,l,r,o",
+    "merge takes base left right output in order")
+  assert_eq(plan.path, "src/x.lua", "merge --path is the display path")
+  assert_eq(launcher.parse_tool({ "status" }), nil, "Non-tool args fall through to the git parser")
+  local _, err = launcher.parse_tool({ "merge", "b", "l", "r" })
+  assert_eq(err ~= nil, true, "merge needs four paths")
+  plan = assert(launcher.parse_tool({ "edit", "L", "R" }))
+  assert_eq(plan.kind .. plan.left .. plan.right, "editLR", "edit takes two paths")
+  _, err = launcher.parse_tool({ "diff", "L", "R", "--bogus" })
+  assert_eq(err, "unknown option: --bogus", "Tool subcommands reject unknown options")
+
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  vim.fn.writefile({ "one", "base", "three" }, dir .. "/base")
+  vim.fn.writefile({ "one", "left", "three" }, dir .. "/left")
+  vim.fn.writefile({ "one", "right", "three" }, dir .. "/right")
+  local resolved_value
+  local merge_mod = require("diffbandit.merge")
+  local session = assert((merge_mod.start_files({
+    base = dir .. "/base",
+    left = dir .. "/left",
+    right = dir .. "/right",
+    output = dir .. "/output",
+    path = "src/x.txt",
+    labels = { left = "rwoumtly", right = "nqswmmuv" },
+    on_resolve = function(value)
+      resolved_value = value
+    end,
+  }, config)))
+  assert_eq(#session.conflicts, 1, "File merge finds the overlapping conflict")
+  assert_eq(session.path, "src/x.txt", "File merge shows the --path display path")
+  assert_eq(session.result_editable, nil, "File merge edits a scratch result, not the output file")
+  assert_eq(session:build_status_lines().left:find("rwoumtly", 1, true) ~= nil, true,
+    "File merge header uses the provided left label")
+  vim.api.nvim_buf_set_lines(session.result_buf, 0, -1, false, { "one", "merged", "three" })
+  assert_eq(session:resolve(), true, "File merge resolves")
+  assert_eq(table.concat(read_file(dir .. "/output"), "|"), "one|merged|three", "Resolve writes the output file")
+  assert_eq(resolved_value, "one\nmerged\nthree\n", "on_resolve receives the written text")
+  assert_eq(session.resolved, true, "Session records the resolution")
+  session.delete_result = true
+  assert_eq(session:resolve(), false, "File merge refuses to delete the result")
+  session:close()
+
+  -- Missing side (add/add or delete): an absent file is an absent side.
+  session = assert((merge_mod.start_files({
+    base = dir .. "/nope",
+    left = dir .. "/left",
+    right = dir .. "/right",
+    output = dir .. "/output2",
+  }, config)))
+  assert_eq(session.has_local, true, "Present left side is kept")
+  assert_eq(#session.base_lines, 0, "Missing base is empty")
+  session:close()
+
+  -- Diff-editor mode: the right folder is edited in place.
+  local left_dir, right_dir = dir .. "/L", dir .. "/R"
+  vim.fn.mkdir(left_dir .. "/sub", "p")
+  vim.fn.mkdir(right_dir, "p")
+  vim.fn.writefile({ "a", "b" }, left_dir .. "/same.txt")
+  vim.fn.writefile({ "a", "B" }, right_dir .. "/same.txt")
+  vim.fn.writefile({ "gone" }, left_dir .. "/sub/deleted.txt")
+  vim.fn.writefile({ "ignore me" }, right_dir .. "/JJ-INSTRUCTIONS")
+  local diffbandit = require("diffbandit")
+  local folder = assert(diffbandit.folder_diff(left_dir, right_dir, {
+    editable_right = true,
+    hide = { "^JJ%-INSTRUCTIONS$" },
+  }))
+  assert_eq(folder.rows_by_rel["JJ-INSTRUCTIONS"], nil, "Hidden patterns are not listed")
+  local child = assert((folder.open_file_diff(folder, folder.rows_by_rel["same.txt"], { tabpage = folder.tabpage })))
+  assert_eq(child.right.editable ~= nil, true, "Editable folder diff makes the right file editable")
+  vim.api.nvim_set_current_win(child.right_win)
+  vim.api.nvim_buf_set_lines(child.right_buf, 0, -1, false, { "a", "b" })
+  vim.cmd("write")
+  assert_eq(table.concat(read_file(right_dir .. "/same.txt"), "|"), "a|b", "Writing the child edits the right folder")
+  child:close()
+  child = assert((folder.open_file_diff(folder, folder.rows_by_rel["sub/deleted.txt"], { tabpage = folder.tabpage })))
+  vim.api.nvim_set_current_win(child.right_win)
+  vim.api.nvim_buf_set_lines(child.right_buf, 0, -1, false, { "gone" })
+  vim.cmd("write")
+  assert_eq(read_file(right_dir .. "/sub/deleted.txt")[1], "gone", "A file missing on the right is created on write")
+  child:close()
+  folder:close()
+
+  local readonly = assert(diffbandit.folder_diff(left_dir, right_dir, {}))
+  child = assert((readonly.open_file_diff(readonly, readonly.rows_by_rel["same.txt"], { tabpage = readonly.tabpage })))
+  assert_eq(child.right.editable, nil, "Plain folder diff stays read-only")
+  child:close()
+  readonly:close()
+end
