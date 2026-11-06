@@ -385,12 +385,19 @@ local function apply_window_options(session)
   end
 end
 
+-- A quickfix jump replaces the focused pane's buffer before the session can
+-- react, and wiping a source pane ends the session. Sessions that follow the
+-- list keep their scratch panes alive and delete them in dispose.
+function M.source_scratch_bufhidden(session)
+  return session:follows_quickfix() and "hide" or "wipe"
+end
+
 -- Now that all buffers are displayed in windows, set bufhidden for cleanup:
 -- wipe for session-owned scratch buffers, hide for panel and editable buffers
 -- that outlive the layout.
 local function finalize_bufhidden(session)
+  set_buffer_options(session.left_buf, { bufhidden = M.source_scratch_bufhidden(session) })
   for _, field in ipairs({
-    "left_buf",
     "left_overview_buf",
     "right_overview_buf",
     "left_num_buf",
@@ -405,7 +412,9 @@ local function finalize_bufhidden(session)
       set_buffer_options(buf, { bufhidden = "wipe" })
     end
   end
-  set_buffer_options(session.right_buf, { bufhidden = session.right.editable and "hide" or "wipe" })
+  set_buffer_options(session.right_buf, {
+    bufhidden = session.right.editable and "hide" or M.source_scratch_bufhidden(session),
+  })
   if session.panel then
     for _, buf in ipairs({ session.panel.nav_buf, session.panel.commit_buf }) do
       if buf then
@@ -436,6 +445,11 @@ local function set_initial_focus(session)
   local right_name = session.right.label or session.right.path or ""
   session.title = string.format("DiffBandit: %s ↔ %s", left_name, right_name)
   vim.api.nvim_tabpage_set_var(session.tabpage, "diffbandit_title", session.title)
+end
+
+-- A quickfix jump replaced a pane's buffer, which reverts its window options.
+function M.apply_source_window_options(session)
+  apply_window_options(session)
 end
 
 function M.apply_right_source_window_options(session)

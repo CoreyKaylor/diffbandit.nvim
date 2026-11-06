@@ -7,6 +7,9 @@ local document = require("diffbandit.util.document")
 local overview = require("diffbandit.util.overview")
 local amend_mode = require("diffbandit.util.amend_mode")
 local queue_host = require("diffbandit.host.queue")
+local quickfix = require("diffbandit.host.quickfix")
+local git = require("diffbandit.git")
+local fugitive = require("diffbandit.git.fugitive")
 local ui = require("diffbandit.util.ui")
 local rowmap = require("diffbandit.util.rowmap")
 local connector_width = require("diffbandit.connector.width")
@@ -333,6 +336,17 @@ function Session:setup_autocmds()
       end
     end,
   })
+
+  if self:follows_quickfix() then
+    quickfix.watch(self, augroup, {
+      panes = function()
+        return self:pane_buffers()
+      end,
+      follow = function(entry, items, idx, context)
+        self:follow_quickfix_entry(entry, items, idx, context)
+      end,
+    })
+  end
 
   -- Diagnostics arriving (or clearing) after the initial render toggle the
   -- editable pane's sign column: the band-colored sign fills must be
@@ -1141,6 +1155,170 @@ function Session:dispose()
     pcall(vim.api.nvim_del_augroup_by_id, self.autocmd_group)
     self.autocmd_group = nil
   end
+  -- Scratch panes kept alive for quickfix jumps (see source_scratch_bufhidden).
+  if self:follows_quickfix() then
+    local scratch = { self.left_buf }
+    if not (self.right and self.right.editable) then
+      scratch[#scratch + 1] = self.right_buf
+    end
+    for _, buf in ipairs(scratch) do
+      if buf and vim.api.nvim_buf_is_valid(buf) then
+        if #vim.fn.win_findbuf(buf) == 0 then
+          pcall(vim.api.nvim_buf_delete, buf, { force = true })
+        else
+          pcall(vim.api.nvim_set_option_value, "bufhidden", "wipe", { buf = buf })
+        end
+      end
+    end
+  end
+end
+
+-- Repository views follow the quickfix list; a plain two-file diff has no other
+-- files to move to.
+function Session:follows_quickfix()
+  return self.file_queue ~= nil and self.file_queue.kind == "git"
+end
+
+function Session:pane_buffers()
+  local panes = {
+    { self.left_win, self.left_buf },
+    { self.right_win, self.right_buf },
+  }
+  if self.panel then
+    panes[#panes + 1] = { self.panel.nav_win, self.panel.nav_buf }
+    panes[#panes + 1] = { self.panel.commit_win, self.panel.commit_buf }
+  end
+  return panes
+end
+
+-- The chunk nearest a line of the right side. Unlike merge results, the right
+-- side holds the entry's real text, so quickfix line numbers are meaningful.
+function Session:chunk_for_right_line(line)
+  local best, best_distance
+  for index, chunk in ipairs(self.view.chunks) do
+    local first = chunk.right.start
+    local last = math.max(first, chunk.right.finish)
+    local distance = line < first and (first - line) or (line > last and (line - last) or 0)
+    if not best or distance < best_distance then
+      best, best_distance = index, distance
+    end
+  end
+  return best
+end
+
+local function queue_index(queue, rel)
+  for index, entry in ipairs(queue.entries or {}) do
+    if entry.path == rel then
+      return index
+    end
+  end
+  return nil
+end
+
+function Session:git_config()
+  return vim.tbl_extend("force", {}, self.config.git or {}, {
+    hex = (self.config.ui or {}).hex or {},
+  })
+end
+
+-- A queue with these options, narrowed to rel when the view shows one file.
+function Session:rebuild_queue(opts, rel)
+  local next_opts = vim.tbl_extend("force", {}, opts, { root = self.file_queue.root })
+  if opts.scope == "current" then
+    if not rel then
+      return nil
+    end
+    next_opts.path = git.abs_path(self.file_queue.root, rel)
+    next_opts.pathspecs = { rel }
+  end
+  return (git.queue(next_opts, self:git_config()))
+end
+
+local function shows_comparison(opts, comparison)
+  if (opts.mode or "unstaged") ~= comparison.mode then
+    return false
+  end
+  if comparison.mode == "all" then
+    return (opts.base or "HEAD") == comparison.base
+  end
+  if comparison.mode == "rev" then
+    return opts.base == comparison.base and opts.target == comparison.target
+  end
+  return true
+end
+
+-- The queue an entry calls for when this view's queue is the wrong one. Returns
+-- nil when the current queue is right; false when the entry needs a queue that
+-- has nothing to show.
+function Session:queue_for_entry(target, rel)
+  local queue = self.file_queue
+  local opts = queue.opts or {}
+  if target.commit then
+    local commit = opts.review and opts.review.commit
+    if commit and commit.hash == target.commit then
+      return nil
+    end
+    return git.commit_queue(queue.root, target.commit, {}, self:git_config()) or false
+  end
+  if target.comparison then
+    local next_opts = git.with_comparison(queue.root, opts, target.comparison)
+    if next_opts and not shows_comparison(opts, target.comparison) then
+      return self:rebuild_queue(next_opts, rel) or false
+    end
+  end
+  -- A current-file view lists one path, so another file needs its own queue.
+  if opts.scope == "current" and rel and not queue_index(queue, rel) then
+    return self:rebuild_queue(opts, rel) or false
+  end
+  return nil
+end
+
+function Session:follow_quickfix_entry(entry, _, idx, context)
+  local focus = vim.api.nvim_get_current_win()
+  local name = vim.api.nvim_buf_get_name(entry.bufnr)
+  local target = fugitive.entry_target(name, fugitive.context_item(context, idx))
+  local rel = name ~= "" and git.relpath(self.file_queue.root, name) or nil
+  if quickfix.restore_panes(self:pane_buffers()) then
+    session_layout.apply_source_window_options(self)
+  end
+
+  local function nothing_to_show()
+    self:sync_gutter_viewports()
+    nvim.notify_info(string.format("%s has no changes in this view", rel or target.commit or name))
+  end
+
+  local replacement = self:queue_for_entry(target, rel)
+  if replacement == false then
+    return nothing_to_show()
+  end
+  local queue = replacement or self.file_queue
+  local index = rel and queue_index(queue, rel)
+  if rel and not index then
+    return nothing_to_show()
+  end
+  local current = queue_host.current_entry(self)
+  if replacement or (rel and (not current or rel ~= current.path)) then
+    self.file_queue = queue
+    local queued = queue.entries[index or 1]
+    if queued.status == "U" or queued.kind == "unmerged" then
+      self:open_merge_file(index or 1, {})
+      return
+    end
+    if self.panel and self.panel.mode == "review" then
+      self.panel.details = panel_mod.review_details(queue)
+    end
+    if not self:goto_queue_file(index or 1, "top", {}) then
+      return
+    end
+  end
+  local chunk = self:chunk_for_right_line(math.max(entry.lnum, 1))
+  if chunk then
+    self:goto_chunk(chunk)
+  end
+  self:sync_gutter_viewports()
+  if vim.api.nvim_win_is_valid(focus) then
+    pcall(vim.api.nvim_set_current_win, focus)
+  end
 end
 
 function Session:close()
@@ -1313,13 +1491,17 @@ function Session:replace_sources(sources, opts)
       vim.api.nvim_win_set_buf(self.right_win, self.right_buf)
       session_layout.apply_right_source_window_options(self)
     end
-    set_buffer_options(self.right_buf, { bufhidden = "wipe" })
+    set_buffer_options(self.right_buf, { bufhidden = session_layout.source_scratch_bufhidden(self) })
   end
   if old_right_buf ~= self.right_buf then
     -- Detached right buffers (esp. editable worktree files) must not keep
     -- DiffBandit band/sign marks after the session moves on.
     self:clear_buffer_paint_namespaces(old_right_buf)
     document.cleanup_created_buffer(old_right_editable)
+    -- A scratch pane kept alive for quickfix jumps no longer wipes itself.
+    if not old_right_editable and vim.api.nvim_buf_is_valid(old_right_buf) then
+      pcall(vim.api.nvim_buf_delete, old_right_buf, { force = true })
+    end
   end
   session_layout.name_source_buffers(self)
   self.replacing_sources = previous_replacing_sources
