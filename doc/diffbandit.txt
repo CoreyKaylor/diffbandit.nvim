@@ -50,9 +50,21 @@ With lazy.nvim:
 >
   {
     "CoreyKaylor/diffbandit.nvim",
-    config = function()
-      require("diffbandit").setup()
-    end,
+    cmd = {
+        "DiffBandit",
+        "DiffBanditBuffers",
+        "DiffBanditFolderDiff",
+        "DiffBanditGit",
+        "DiffBanditGitCurrent",
+        "DiffBanditCommitPanel",
+        "DiffBanditGitMenu",
+        "DiffBanditGitLog",
+        "DiffBanditGitCommit",
+        "DiffBanditGitCompare",
+        "DiffBanditGitCheckout",
+        "DiffBanditMerge",
+    },
+    opts = {},
   }
 <
 
