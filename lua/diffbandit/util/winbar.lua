@@ -116,9 +116,39 @@ function M.aligned(spec)
   return #plan(spec) == 0
 end
 
--- Hosts being watched: host -> { get_spec, on_change, pending }.
+-- Hosts being watched: host -> { get_spec, on_change, pending, shown }.
+-- `shown` is the bar signature the host last rendered against.
 local watched = {}
 local provider_ns
+
+-- Which of the spec's windows show a bar row, as a comparable string.
+local function signature(spec)
+  local parts = {}
+  for _, field in ipairs({ "content", "gutters", "headers" }) do
+    for _, win in ipairs(spec[field] or {}) do
+      if valid(win) then
+        local value = local_value(win)
+        if value == "" then
+          value = vim.go.winbar
+        end
+        parts[#parts + 1] = win .. (value ~= "" and "+" or "-")
+      end
+    end
+  end
+  return table.concat(parts, ",")
+end
+
+-- Align and report whether the bar rows differ from what the host last
+-- rendered against (a write that align just undid leaves them unchanged).
+local function realign(entry, spec)
+  M.align(spec)
+  local now = signature(spec)
+  if now ~= entry.shown then
+    entry.shown = now
+    return true
+  end
+  return false
+end
 
 local function sync(host, entry)
   if entry.pending then
@@ -131,7 +161,7 @@ local function sync(host, entry)
       return
     end
     local spec = entry.get_spec()
-    if spec and M.align(spec) and entry.on_change then
+    if spec and realign(entry, spec) and entry.on_change then
       entry.on_change()
     end
   end)
@@ -154,11 +184,38 @@ end
 -- WinResized nor WinScrolled. Showing it always redraws the window, so the
 -- check rides on the redraw: on_win compares (read-only) and a mismatch
 -- schedules the realign, since options cannot change mid-redraw.
+--
+-- Statusline plugins also write winbars onto every window in the tab on a
+-- timer (lualine's refresh sets its own, often empty, bar on the gutters).
+-- Undoing that after the redraw shows the gutters a row off for a frame,
+-- every refresh. Those writes fire OptionSet (timers are not autocmds), so
+-- the handler undoes them on the spot, before anything is drawn, and only
+-- re-renders when the bar rows really changed.
 local function ensure_provider()
   if provider_ns then
     return
   end
   provider_ns = vim.api.nvim_create_namespace("DiffBanditWinbar")
+  vim.api.nvim_create_autocmd("OptionSet", {
+    group = vim.api.nvim_create_augroup("DiffBanditWinbar", { clear = true }),
+    pattern = "winbar",
+    callback = function()
+      for host, entry in pairs(watched) do
+        if host.disposed then
+          watched[host] = nil
+        else
+          local ok, spec = pcall(entry.get_spec)
+          if ok and spec and realign(entry, spec) and entry.on_change then
+            vim.schedule(function()
+              if not host.disposed and watched[host] == entry then
+                entry.on_change()
+              end
+            end)
+          end
+        end
+      end
+    end,
+  })
   local checked = {}
   vim.api.nvim_set_decoration_provider(provider_ns, {
     on_start = function()
@@ -194,7 +251,10 @@ end
 --- realign and call `on_change()`. `get_spec()` returns the align spec.
 --- The host stops being watched once `host.disposed` is set.
 function M.watch(host, get_spec, on_change)
-  watched[host] = { get_spec = get_spec, on_change = on_change }
+  local entry = { get_spec = get_spec, on_change = on_change }
+  local ok, spec = pcall(get_spec)
+  entry.shown = ok and spec and signature(spec) or nil
+  watched[host] = entry
   ensure_provider()
 end
 
