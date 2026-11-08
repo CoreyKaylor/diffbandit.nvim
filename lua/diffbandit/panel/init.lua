@@ -1087,6 +1087,10 @@ function M.review_help(session)
   if session.file_queue and file_keys.next and file_keys.prev then
     add(file_keys.next .. "/" .. file_keys.prev, "files")
   end
+  local log_keys = config_mod.section((session or {}).config, "git", "log_keys")
+  if session.file_queue and session.file_queue.log_walk and log_keys.next and log_keys.prev then
+    add(log_keys.next .. "/" .. log_keys.prev, "commits")
+  end
   add("]c/[c", "hunks")
   add(keys.close, "close")
   add(help_key, "help")
@@ -1119,6 +1123,13 @@ function M.setup_keymaps(session)
   local file_keys = config_mod.section((session or {}).config, "git", "file_keys")
   local review = is_review_panel(session)
   local has_queue = session.file_queue ~= nil
+  local log_keys = config_mod.section((session or {}).config, "git", "log_keys")
+  local has_log = review and session.file_queue ~= nil and session.file_queue.log_walk ~= nil
+  local function step_log(delta)
+    return function()
+      require("diffbandit").git_log_step(session, delta)
+    end
+  end
 
   local function navigate_change(direction)
     return function()
@@ -1180,6 +1191,8 @@ function M.setup_keymaps(session)
     { buf = "nav", lhs = keys.focus_diff, fn = focus_diff, section = "Files", desc = "Focus the diff of the selected file" },
     { buf = "nav", lhs = file_keys.next, fn = navigate_file("next"), when = has_queue, section = "Files", desc = "Open the next file" },
     { buf = "nav", lhs = file_keys.prev, fn = navigate_file("prev"), when = has_queue, section = "Files", desc = "Open the previous file" },
+    { buf = "nav", lhs = log_keys.next, fn = step_log(1), when = has_log, section = "Commits", desc = "Next commit in the log (older)" },
+    { buf = "nav", lhs = log_keys.prev, fn = step_log(-1), when = has_log, section = "Commits", desc = "Previous commit in the log (newer)" },
     { buf = "nav", lhs = "]c", fn = navigate_change("next"), section = "Hunks", desc = "Next hunk in the selected file" },
     { buf = "nav", lhs = "[c", fn = navigate_change("prev"), section = "Hunks", desc = "Previous hunk in the selected file" },
     { buf = "nav", lhs = keys.toggle_stage, fn = function() M.toggle_stage(session) end,
@@ -1198,6 +1211,8 @@ function M.setup_keymaps(session)
     { buf = "commit", lhs = keys.focus_diff, fn = focus_diff, when = review, section = "Files", desc = "Focus the diff" },
     { buf = "commit", lhs = file_keys.next, fn = navigate_file("next"), when = review and has_queue, section = "Files", desc = "Open the next file" },
     { buf = "commit", lhs = file_keys.prev, fn = navigate_file("prev"), when = review and has_queue, section = "Files", desc = "Open the previous file" },
+    { buf = "commit", lhs = log_keys.next, fn = step_log(1), when = has_log, section = "Commits", desc = "Next commit in the log (older)" },
+    { buf = "commit", lhs = log_keys.prev, fn = step_log(-1), when = has_log, section = "Commits", desc = "Previous commit in the log (newer)" },
     { buf = "commit", lhs = "]c", fn = navigate_change("next"), when = review, section = "Hunks", desc = "Next hunk" },
     { buf = "commit", lhs = "[c", fn = navigate_change("prev"), when = review, section = "Hunks", desc = "Previous hunk" },
 

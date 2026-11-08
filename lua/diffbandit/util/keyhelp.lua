@@ -15,6 +15,7 @@ M.SECTIONS = {
   "Navigation",
   "Hunks",
   "Files",
+  "Commits",
   "Staging and actions",
   "Merge",
   "Layout",

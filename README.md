@@ -29,6 +29,7 @@ documents without distorting either one.
 - Read-only source panes keep filetype-driven syntax highlighting without
   showing source-side diagnostics.
 - Git queue navigation for changed files with `]f` and `[f`.
+- Walk a Git log (or one file's history) commit by commit with `]r` and `[r`.
 - Read-only Git workflow review for branch comparisons, commit logs, commit
   changes, and guarded branch checkout.
 - Hunk staging, unstaging, discard/apply actions, and undo.
@@ -254,6 +255,11 @@ and hunk navigation (`]f`/`[f`, `]c`/`[c`) but disable staging, discard, apply,
 and commit actions. Branch comparison defaults to a merge-base comparison; use
 `--direct` for an exact ref-to-ref comparison.
 
+A commit review opened from the log (`:DiffBanditGitLog`, or "Show Current File
+History" in the menu) can walk the log without going back to it: `]r` opens the
+next (older) commit and `[r` the previous (newer) one, in place, staying on the
+same file when the commit touches it. The log's cursor follows along.
+
 ## Standalone Launcher
 
 `bin/diffbandit` opens DiffBandit for the repository in the current directory,
@@ -358,6 +364,8 @@ Inside a diff view:
 | `[c` | Previous hunk |
 | `]f` | Next changed file in a Git queue |
 | `[f` | Previous changed file in a Git queue |
+| `]r` | Next (older) commit in a review opened from the log |
+| `[r` | Previous (newer) commit in a review opened from the log |
 | `[d` | Align both panes to the top of the documents |
 | `]d` | Align both panes to the bottom of the documents |
 | `]s` | Snap the other pane to the cursor line |
@@ -541,6 +549,10 @@ require("diffbandit").setup({
     file_keys = {
       next = "]f",
       prev = "[f",
+    },
+    log_keys = {
+      next = "]r", -- older commit in the log
+      prev = "[r", -- newer commit in the log
     },
     panel = {
       width = 42,

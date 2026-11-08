@@ -116,7 +116,10 @@ COMMANDS                                            *diffbandit-commands*
                                                  *:DiffBanditGitLog*
 :DiffBanditGitLog [--all] [--max-count N] [--] [pathspec...]
         Open a read-only Git log browser. Press <CR> on a commit to review its
-        changed files in a DiffBandit queue.
+        changed files in a DiffBandit queue. In that review, `]r` steps to the
+        next (older) commit in the log and `[r` to the previous (newer) one,
+        staying on the same file when the commit touches it; with a pathspec
+        this walks one file's history. Keys: `git.log_keys` in |diffbandit-configuration|.
 
                                               *:DiffBanditGitCommit*
 :DiffBanditGitCommit {rev}
@@ -207,6 +210,14 @@ Diff view mappings:
 
                                                         *diffbandit-[f*
   [f            Jump to the previous changed file in a Git queue.
+
+                                                        *diffbandit-]r*
+  ]r            In a commit review opened from the log, open the next
+                (older) commit in place, staying on the same file.
+
+                                                        *diffbandit-[r*
+  [r            In a commit review opened from the log, open the previous
+                (newer) commit in place.
 
                                                         *diffbandit-[d*
   [d            Align both panes to the top of their documents.
@@ -515,6 +526,10 @@ Common configuration:
       file_keys = {
         next = "]f",
         prev = "[f",
+      },
+      log_keys = {
+        next = "]r", -- older commit in the log
+        prev = "[r", -- newer commit in the log
       },
       panel = {
         width = 42,

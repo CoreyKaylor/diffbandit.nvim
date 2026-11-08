@@ -137,6 +137,11 @@ local defaults = {
       next = "]f",
       prev = "[f",
     },
+    -- Step a commit review opened from the log to its neighbors.
+    log_keys = {
+      next = "]r", -- older (down the log)
+      prev = "[r", -- newer (up the log)
+    },
     panel = {
       width = 42,
       commit_height = 10,

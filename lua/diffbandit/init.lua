@@ -270,9 +270,10 @@ local function review_panel_details(queue)
   local review = ((queue or {}).opts or {}).review or {}
   if review.kind == "commit" then
     local commit = review.commit or {}
+    local walk = (queue or {}).log_walk
     return {
       title = (commit.short_hash or review.target or "Commit") .. " " .. (commit.subject or ""),
-      subtitle = "Commit changes",
+      subtitle = walk and string.format("Commit %d of %d in the log", walk.index, #walk.commits) or "Commit changes",
       base = review.base,
       target = review.target,
       author = commit.author,
@@ -306,8 +307,34 @@ local function start_review_queue(queue)
   })
 end
 
+-- The entry for preferred_path, following a rename in either direction so
+-- walking a file's history stays on that file.
+local function queue_index_for_path(queue, preferred)
+  if not preferred then
+    return nil
+  end
+  for index, entry in ipairs(queue.entries or {}) do
+    if entry.path == preferred.path
+        or (preferred.old_path and entry.path == preferred.old_path)
+        or (entry.old_path and entry.old_path == preferred.path) then
+      return index
+    end
+  end
+  return nil
+end
+
+-- opts.log_walk = { commits, index, browser, opts }: the review was opened
+-- from a log browser, so the log keys can step to its neighbors.
+-- opts.preferred_path = { path, old_path }: open on that file when present.
 function M.git_commit(rev, opts)
   opts = opts or {}
+  local log_walk = opts.log_walk
+  local preferred_path = opts.preferred_path
+  if log_walk or preferred_path then
+    opts = vim.tbl_extend("force", {}, opts)
+    opts.log_walk = nil
+    opts.preferred_path = nil
+  end
   local config = state.get_config()
   ensure_highlights(config)
   local root, root_err = git_mod.root(opts)
@@ -318,7 +345,87 @@ function M.git_commit(rev, opts)
   if not queue then
     return nil, err
   end
+  queue.log_walk = log_walk
+  queue.index = queue_index_for_path(queue, preferred_path) or queue.index
   return start_review_queue(queue)
+end
+
+local function focused_role(session)
+  local win = vim.api.nvim_get_current_win()
+  local panel = session.panel or {}
+  if win == panel.nav_win then
+    return "nav"
+  elseif win == panel.commit_win then
+    return "commit"
+  elseif win == session.left_win then
+    return "left"
+  elseif win == session.right_win then
+    return "right"
+  end
+  return nil
+end
+
+local function focus_role(session, role)
+  local panel = session.panel or {}
+  local win = ({
+    nav = panel.nav_win,
+    commit = panel.commit_win,
+    left = session.left_win,
+    right = session.right_win,
+  })[role or ""]
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_set_current_win, win)
+  end
+end
+
+-- Replace a commit review opened from the log with the review of the commit
+-- delta rows away (1 = older, -1 = newer), keeping the file and focused pane.
+function M.git_log_step(session, delta)
+  session = session or current_session()
+  local walk = session and session.file_queue and session.file_queue.log_walk
+  if not walk then
+    nvim.notify_info("this review was not opened from a Git log")
+    return false
+  end
+  local entry = queue_host.current_entry(session)
+  local preferred_path = entry and { path = entry.path, old_path = entry.old_path } or nil
+  local role = focused_role(session)
+  local target = walk.index + delta
+  local next_session, commit, skipped
+  -- A commit with nothing to show (an empty commit) cannot open; step over it.
+  while walk.commits[target] do
+    commit = walk.commits[target]
+    next_session = M.git_commit(commit.hash, vim.tbl_extend("force", {}, walk.opts or {}, {
+      log_walk = vim.tbl_extend("force", {}, walk, { index = target }),
+      preferred_path = preferred_path,
+    }))
+    if next_session then
+      break
+    end
+    skipped = (skipped or 0) + 1
+    target = target + delta
+  end
+  if not next_session then
+    nvim.notify_info(delta > 0 and "no older commit in this log" or "no newer commit in this log")
+    return false
+  end
+  if skipped then
+    nvim.notify_info(string.format("skipped %d commit%s with no changes to show", skipped, skipped == 1 and "" or "s"))
+  end
+  session:close_for_replacement(next_session)
+  focus_role(next_session, role)
+  local browser = walk.browser
+  if browser and browser.is_open and browser:is_open() then
+    -- Keep the log's cursor on the commit under review; find it by hash, as
+    -- R may have refreshed the log since the walk began.
+    for row, listed in ipairs(browser.commits or {}) do
+      if listed.hash == commit.hash then
+        pcall(vim.api.nvim_win_set_cursor, browser.win, { row + 1, 0 })
+        break
+      end
+    end
+  end
+  return true
 end
 
 function M.git_compare(base, target, opts)
@@ -359,7 +466,20 @@ function M.git_log(opts)
   ensure_highlights(config)
   return git_workflows.open_log(config, opts, {
     open_commit = function(rev, open_opts)
-      local session, err = M.git_commit(rev, vim.tbl_extend("force", {}, opts, open_opts or {}))
+      open_opts = open_opts or {}
+      local commit_opts = vim.tbl_extend("force", {}, opts, open_opts)
+      local browser = open_opts.browser
+      commit_opts.browser = nil
+      commit_opts.log_index = nil
+      if browser and open_opts.log_index then
+        commit_opts.log_walk = {
+          commits = browser.commits,
+          index = open_opts.log_index,
+          browser = browser,
+          opts = vim.tbl_extend("force", {}, opts, { root = open_opts.root }),
+        }
+      end
+      local session, err = M.git_commit(rev, commit_opts)
       if not session and err then
         nvim.notify_error(tostring(err))
       end

@@ -626,6 +626,8 @@ function Session:setup_keymaps()
   local navigation = self.config.navigation or {}
   local document_keys = navigation.document_keys or {}
   local git_keys = config_mod.section(self.config, "git", "file_keys")
+  local log_keys = config_mod.section(self.config, "git", "log_keys")
+  local log_walk = self.file_queue and self.file_queue.log_walk
   local panel_keys = config_mod.section(self.config, "git", "panel", "keys")
   local action_keys = ((self.config.actions or {}).keys or {})
   local is_git = self.file_queue and self.file_queue.kind == "git"
@@ -671,6 +673,16 @@ function Session:setup_keymaps()
       map(buf, git_keys.prev, function()
         self:goto_prev_file()
       end, "Files", "Previous file")
+    end
+    if log_walk and log_keys.next then
+      map(buf, log_keys.next, function()
+        require("diffbandit").git_log_step(self, 1)
+      end, "Commits", "Next commit in the log (older)")
+    end
+    if log_walk and log_keys.prev then
+      map(buf, log_keys.prev, function()
+        require("diffbandit").git_log_step(self, -1)
+      end, "Commits", "Previous commit in the log (newer)")
     end
     if action_keys.toggle_stage then
       action_map(buf, action_keys.toggle_stage, "DiffBanditToggleStageHunk", function()

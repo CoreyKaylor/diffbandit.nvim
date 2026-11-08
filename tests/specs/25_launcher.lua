@@ -407,3 +407,57 @@ do
   child:close()
   readonly:close()
 end
+
+-- Log walk: a review opened from the log steps to the older/newer commit in
+-- place, staying on the same file and keeping the log cursor in sync.
+do
+  local diffbandit = require("diffbandit")
+  local state = require("diffbandit.state")
+  local repo = make_git_repo()
+  write_repo_file(repo, "a.txt", { "a1" })
+  write_repo_file(repo, "b.txt", { "b1" })
+  commit_baseline(repo)
+  write_repo_file(repo, "a.txt", { "a1", "a2" })
+  write_repo_file(repo, "b.txt", { "b1", "b2" })
+  git_test_command({ "commit", "-q", "-am", "second" }, repo)
+  git_test_command({ "commit", "-q", "--allow-empty", "-m", "empty" }, repo)
+  write_repo_file(repo, "b.txt", { "b1", "b2", "b3" })
+  git_test_command({ "commit", "-q", "-am", "third" }, repo)
+
+  vim.cmd("tabnew")
+  local browser = assert((diffbandit.git_log({ root = repo })))
+  assert_eq(#browser.commits, 4, "the log lists every commit")
+  vim.api.nvim_win_set_cursor(browser.win, { 2, 0 })
+  buffer_keymap_callback(browser.buf, "n", "<CR>")()
+  local review = state.sessions[vim.api.nvim_get_current_tabpage()]
+  assert_eq(review.file_queue.log_walk.index, 1, "the review knows its log position")
+  assert_eq(review.file_queue.entries[1].path, "b.txt", "the newest commit changes only b.txt")
+  assert_eq(review.panel_details.subtitle, "Commit 1 of 4 in the log", "the panel shows the log position")
+  assert_eq(type(buffer_keymap_callback(review.right_buf, "n", "]r")), "function", "the diff maps the log keys")
+  assert_eq(type(buffer_keymap_callback(review.panel.nav_buf, "n", "[r")), "function", "the panel maps the log keys")
+
+  assert_eq(diffbandit.git_log_step(review, -1), false, "there is nothing newer than the first commit")
+  assert_eq(diffbandit.git_log_step(review, 1), true, "]r steps to the older commit")
+  assert_eq(review.disposed, true, "the old review is replaced, not stacked")
+  local older = state.sessions[vim.api.nvim_get_current_tabpage()]
+  assert_eq(older.file_queue.log_walk.index, 3, "the walk steps over the empty commit")
+  assert_eq(#older.file_queue.entries, 2, "the second commit changes both files")
+  assert_eq(older.file_queue_index, 2, "the walk stays on b.txt")
+  assert_eq(vim.api.nvim_win_get_cursor(browser.win)[1], 4, "the log cursor follows the review")
+
+  assert_eq(diffbandit.git_log_step(older, 1), true, "]r reaches the root commit")
+  local root_review = state.sessions[vim.api.nvim_get_current_tabpage()]
+  assert_eq(root_review.file_queue.entries[root_review.file_queue_index].path, "b.txt", "the root commit opens on b.txt too")
+  assert_eq(diffbandit.git_log_step(root_review, 1), false, "there is nothing older than the root commit")
+  assert_eq(diffbandit.git_log_step(root_review, -1), true, "[r steps back to the newer commit")
+  local back = state.sessions[vim.api.nvim_get_current_tabpage()]
+  assert_eq(back.file_queue.log_walk.index, 3, "[r walks back up the log")
+  back:close()
+
+  -- A plain commit review has no log to walk.
+  local plain = assert((diffbandit.git_commit("HEAD", { root = repo })))
+  assert_eq(buffer_keymap_callback(plain.right_buf, "n", "]r"), nil, "no log keys without a log")
+  plain:close()
+  state.unregister_view(browser)
+  vim.cmd("tabclose")
+end

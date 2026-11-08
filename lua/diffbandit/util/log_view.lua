@@ -130,7 +130,7 @@ function M.open(config, opts, callbacks)
     local line = vim.api.nvim_win_get_cursor(browser.win)[1]
     local commit = browser.commits[line - 1]
     if commit and callbacks.open_commit then
-      callbacks.open_commit(commit.hash, { root = root })
+      callbacks.open_commit(commit.hash, { root = root, browser = browser, log_index = line - 1 })
     end
   end, map_opts("Log", "Review the commit under the cursor"))
   vim.keymap.set("n", "R", function()
