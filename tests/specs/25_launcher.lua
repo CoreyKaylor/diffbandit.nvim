@@ -399,6 +399,33 @@ do
   vim.cmd("write")
   assert_eq(read_file(right_dir .. "/sub/deleted.txt")[1], "gone", "A file missing on the right is created on write")
   child:close()
+
+  -- jj split picks hunks with apply actions: outside a repository they edit
+  -- the right buffer, one undo step each, and :w saves the result.
+  vim.fn.writefile({ "a", "b", "c", "d", "e", "f", "g" }, left_dir .. "/pick.txt")
+  vim.fn.writefile({ "a", "B", "c", "e", "f", "X", "g" }, right_dir .. "/pick.txt")
+  folder:refresh()
+  child = assert((folder.open_file_diff(folder, folder.rows_by_rel["pick.txt"], { tabpage = folder.tabpage })))
+  vim.api.nvim_set_current_win(child.right_win)
+  local function right_text()
+    return table.concat(vim.api.nvim_buf_get_lines(child.right_buf, 0, -1, false), "|")
+  end
+  assert_eq(#child.view.chunks, 3, "A change, a deletion, and an insertion")
+  for _ = 1, 3 do
+    child:goto_chunk(1)
+    assert_eq((require("diffbandit.session.actions").apply_left(child)), true, "Apply left works without a repository")
+  end
+  assert_eq(right_text(), "a|b|c|d|e|f|g", "Applying every hunk makes the right side match the left")
+  assert_eq(#child.view.chunks, 0, "The diff follows the applied hunks")
+  child:undo_edit_or_action()
+  assert_eq(right_text(), "a|b|c|d|e|f|X|g", "u undoes only the last apply")
+  assert_eq(#child.view.chunks, 1, "The diff follows the undo")
+  local refused, refused_err = require("diffbandit.session.actions").apply_right(child)
+  assert_eq(refused, false, "The read-only left side cannot be changed")
+  assert_eq(refused_err, "the left side is read-only in this diff", "and the reason says so")
+  vim.cmd("write")
+  assert_eq(table.concat(read_file(right_dir .. "/pick.txt"), "|"), "a|b|c|d|e|f|X|g", ":w saves the picked hunks")
+  child:close()
   folder:close()
 
   local readonly = assert(diffbandit.folder_diff(left_dir, right_dir, {}))

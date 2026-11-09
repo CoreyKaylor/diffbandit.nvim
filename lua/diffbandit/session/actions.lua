@@ -523,11 +523,56 @@ local function apply_sides(session, source_side, target_side, opts)
   return true, nil
 end
 
+local function is_git_session(session)
+  local queue = session and session.file_queue
+  return queue ~= nil and queue.kind == "git"
+end
+
+-- Outside a repository (the diff editor behind `diffbandit edit`, used by
+-- jj split / squash -i) the editable right pane is a plain file buffer: the
+-- hunk is written into it as an ordinary edit, so `u` undoes it and :w saves.
+local function apply_to_editable_right(session)
+  local bufnr = session.right_buf
+  if not (session.right and session.right.editable and bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    return false, "the right side is read-only in this diff"
+  end
+  -- A pending debounced re-diff would leave the hunk ranges behind the text.
+  local current = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  if not vim.deep_equal(current, session.right.lines or {}) then
+    session:refresh_editable_right()
+  end
+  local hunk, _, hunk_err = active_hunk(session)
+  if not hunk then
+    return false, hunk_err
+  end
+  local source_start, source_count = side_range(hunk, "left")
+  local target_start, target_count = side_range(hunk, "right")
+  local replacement = text.copy_range(side_lines(session, "left"), source_start, source_count)
+  -- Same placement as text.replace_range, as a 0-based [first, last) span.
+  local first = target_count == 0 and target_start or (target_start - 1)
+  first = math.max(first, 0)
+  local last = target_count == 0 and first or (first + target_count)
+  -- Each apply is its own undo step, even from a macro or a chain of calls.
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.cmd("let &undolevels = &undolevels")
+  end)
+  vim.api.nvim_buf_set_lines(bufnr, first, last, false, replacement)
+  session.suppress_editable_textchanged_tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  session:refresh_editable_right()
+  return true, nil
+end
+
 function M.apply_left(session)
+  if not is_git_session(session) then
+    return apply_to_editable_right(session)
+  end
   return apply_sides(session, "left", "right", { action = "apply_left" })
 end
 
 function M.apply_right(session)
+  if not is_git_session(session) then
+    return false, "the left side is read-only in this diff"
+  end
   return apply_sides(session, "right", "left", { action = "apply_right" })
 end
 
