@@ -63,7 +63,8 @@ function M.source_from_buffer(bufnr, label, metadata)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local filetype = vim.api.nvim_get_option_value("filetype", { buf = bufnr })
   local source = source_mod.from_lines(lines, path ~= "" and path or nil,
-    label or (path ~= "" and path or string.format("buffer:%d", bufnr)), metadata)
+    label or (path ~= "" and path or string.format("buffer:%d", bufnr)), metadata,
+    text.buffer_format(bufnr, lines))
   source.filetype = filetype ~= "" and filetype or source.filetype
   return source
 end
@@ -137,7 +138,11 @@ function M.refresh_source_from_editable(source)
     return source
   end
   source.lines = M.buffer_lines(bufnr)
-  source.text = text.to_text(source.lines)
+  local format = text.buffer_format(bufnr, source.lines)
+  source.text = text.encode(source.lines, format)
+  source.eol = format.eol
+  source.line_ending = format.line_ending
+  source.bom = format.bom
   local filetype = vim.api.nvim_get_option_value("filetype", { buf = bufnr })
   if filetype and filetype ~= "" then
     source.filetype = filetype

@@ -306,17 +306,52 @@ local function staged_parts(session, reference_text, index_text, worktree_text, 
   return parts
 end
 
--- Replace each part's `target` side lines in `lines` with its `source` side
--- lines from `source_lines`, bottom-up so earlier ranges stay valid.
-local function splice_parts(lines, parts, target, source, source_lines)
+-- The format to store spliced lines in: the target's own, except that a
+-- replacement running to the end of both sides brings the source's final
+-- newline with it. An empty target takes the source's format whole.
+local function spliced_format(target_total, target_format, source_format, reaches_end)
+  if target_total == 0 then
+    return vim.deepcopy(source_format)
+  end
+  local format = vim.deepcopy(target_format)
+  if reaches_end then
+    format.eol = source_format.eol
+  end
+  return format
+end
+
+-- Lines copied into a CRLF target come from decoded text, so only a source
+-- with mixed endings can still carry CRs; drop them so they do not double.
+local function replacement_lines(lines, start, count, target_format)
+  local copied = text.copy_range(lines, start, count)
+  if target_format.line_ending == "crlf" then
+    for index, line in ipairs(copied) do
+      copied[index] = (line:gsub("\r$", ""))
+    end
+  end
+  return copied
+end
+
+-- Replace each part's `target` side lines in the decoded `target_text` with
+-- its `source` side lines from the decoded `source_text`, bottom-up so
+-- earlier ranges stay valid; returns the result encoded for the target.
+local function splice_parts(target_text, parts, target, source, source_text)
+  local lines, target_format = text.decode(target_text or "")
+  local source_lines, source_format = text.decode(source_text or "")
+  local target_total = #lines
+  local reaches_end = false
   table.sort(parts, function(a, b)
     return a[target].start > b[target].start
   end)
   for _, part in ipairs(parts) do
+    if text.reaches_end(part[target].start, part[target].count, target_total)
+        and text.reaches_end(part[source].start, part[source].count, #source_lines) then
+      reaches_end = true
+    end
     lines = text.replace_range(lines, part[target].start, part[target].count,
-      text.copy_range(source_lines, part[source].start, part[source].count))
+      replacement_lines(source_lines, part[source].start, part[source].count, target_format))
   end
-  return lines
+  return lines, spliced_format(target_total, target_format, source_format, reaches_end)
 end
 
 local function staged_hunks_for_session(session, ctx, blobs)
@@ -399,7 +434,7 @@ local function apply_sides(session, source_side, target_side, opts)
   end
 
   local reference = staging_reference(ctx.opts)
-  local mapped_next
+  local mapped_next, mapped_format
   if mode == "all" and target == "index" and (source_side == "right" or (ctx.opts.base or "HEAD") ~= reference) then
     local reference_text, index_text, worktree_text = all_mode_texts(session, ctx, reference)
     local parts
@@ -410,7 +445,7 @@ local function apply_sides(session, source_side, target_side, opts)
       if #parts == 0 then
         return false, "nothing to stage in this hunk: it is already staged or committed"
       end
-      mapped_next = splice_parts(text.split_lines(index_text or ""), parts, "left", "right", text.split_lines(worktree_text or ""))
+      mapped_next, mapped_format = splice_parts(index_text, parts, "left", "right", worktree_text)
     else
       -- Unstage against a base other than the staging reference: restore
       -- the reference lines where this hunk has staged changes.
@@ -418,7 +453,7 @@ local function apply_sides(session, source_side, target_side, opts)
       if #parts == 0 then
         return false, "current hunk is not staged"
       end
-      mapped_next = splice_parts(text.split_lines(index_text or ""), parts, "right", "left", text.split_lines(reference_text or ""))
+      mapped_next, mapped_format = splice_parts(index_text, parts, "right", "left", reference_text)
     end
     -- An empty result for a path the target side lacks removes the index
     -- entry rather than staging an empty file.
@@ -440,16 +475,23 @@ local function apply_sides(session, source_side, target_side, opts)
 
   local next_text
   if mode == "all" and target == "index" and (source_side == "right" or (ctx.opts.base or "HEAD") ~= reference) then
-    next_text = mapped_next and text.to_text(mapped_next) or nil
+    next_text = mapped_next and text.encode(mapped_next, mapped_format) or nil
   else
     local range_hunk = opts.hunk or hunk
     local target_start, target_count = side_range(range_hunk, target_range_side)
     local source_start, source_count = side_range(range_hunk, source_side)
-    local replacement = text.copy_range(side_lines(session, source_side), source_start, source_count)
     if remove_target_for_absent_source(session, source_side, target_side, range_hunk) then
       next_text = nil
     else
-      next_text = text.to_text(text.replace_range(text.split_lines(current or ""), target_start, target_count, replacement))
+      local source = source_side == "left" and session.left or session.right
+      local source_lines = side_lines(session, source_side)
+      local source_format = { eol = source.eol ~= false, line_ending = source.line_ending }
+      local current_lines, current_format = text.decode(current or "")
+      local replacement = replacement_lines(source_lines, source_start, source_count, current_format)
+      local lines = text.replace_range(current_lines, target_start, target_count, replacement)
+      local reaches_end = text.reaches_end(target_start, target_count, #current_lines)
+        and text.reaches_end(source_start, source_count, #source_lines)
+      next_text = text.encode(lines, spliced_format(#current_lines, current_format, source_format, reaches_end))
     end
   end
 

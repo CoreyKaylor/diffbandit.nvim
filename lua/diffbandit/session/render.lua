@@ -198,6 +198,27 @@ local function render_empty_source_notice(buf, namespace, source)
   })
 end
 
+-- When the two sides disagree on a final newline, say so after the last
+-- line of the side without one (git's "\ No newline at end of file").
+local function eol_notice_line(source, other)
+  if not source or not other or source.eol ~= false or other.eol == false then
+    return nil
+  end
+  local total = #(source.lines or {})
+  return total > 0 and total or nil
+end
+
+local function render_eol_notice(buf, namespace, line)
+  if not line or not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  pcall(vim.api.nvim_buf_set_extmark, buf, namespace, line - 1, 0, {
+    virt_text = { { "  ⏎ No newline at end of file", "DiffBanditEofNotice" } },
+    virt_text_pos = "eol",
+    priority = 20,
+  })
+end
+
 -- Highlight lookup tables for left/right/connector panes
 local HIGHLIGHT_LEFT = {
   context = "DiffBanditContext",
@@ -974,6 +995,21 @@ local function clear_render_namespaces(self, ctx)
   end
   if full or (right_min and right_min <= 1) then
     render_empty_source_notice(self.right_buf, self.extmark_ns, self.right)
+  end
+
+  -- The final-newline notice sits on the last line: repaint it whenever
+  -- the clear window reached that line.
+  local function cleared(line, row_min, row_max)
+    return full or not row_min or not row_max or row_max < row_min
+      or (row_min <= line and line <= row_max)
+  end
+  local left_eof = eol_notice_line(self.left, self.right)
+  if left_eof and cleared(left_eof, left_min, left_max) then
+    render_eol_notice(self.left_buf, self.extmark_ns, left_eof)
+  end
+  local right_eof = eol_notice_line(self.right, self.left)
+  if right_eof and cleared(right_eof, right_min, right_max) then
+    render_eol_notice(self.right_buf, self.extmark_ns, right_eof)
   end
 end
 

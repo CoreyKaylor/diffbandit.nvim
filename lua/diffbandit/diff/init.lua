@@ -4,17 +4,6 @@ local word_diff = require("diffbandit.diff.word_diff")
 
 local M = {}
 
-local function split_lines(body)
-  if body == "" then
-    return {}
-  end
-  local lines = vim.split(body, "\n", { plain = true })
-  if lines[#lines] == "" then
-    table.remove(lines)
-  end
-  return lines
-end
-
 local function classify(count_a, count_b)
   if count_a == 0 and count_b > 0 then
     return "add"
@@ -22,14 +11,6 @@ local function classify(count_a, count_b)
     return "delete"
   end
   return "change"
-end
-
-function M.read_file(path)
-  local ok, contents = pcall(vim.fn.readfile, path)
-  if not ok then
-    return nil, nil, string.format("Unable to read file: %s", contents)
-  end
-  return contents, text.to_text(contents)
 end
 
 -- Split one fragment side into per-line pieces. `range_s`/`range_e` are
@@ -126,7 +107,40 @@ local function block_sub_hunks(left_lines, right_lines, range)
   return subs, spans
 end
 
-function M.compute_hunks_from_lines(left_lines, right_lines, opts)
+-- A side whose last line has no newline differs from one whose last line
+-- does, even when every line matches (issue #36). The hunk that already
+-- reaches the end of both sides carries that difference; when the files
+-- end in matching lines, the last line pair becomes a change hunk of its
+-- own. Either way the hunk is marked `eol_change`.
+local function mark_eol_change(hunks, left_lines, right_lines, eol)
+  local left_eol = not eol or eol.left ~= false
+  local right_eol = not eol or eol.right ~= false
+  if left_eol == right_eol then
+    return
+  end
+  local last = hunks[#hunks]
+  if last
+      and text.reaches_end(last.left.start, last.left.count, #left_lines)
+      and text.reaches_end(last.right.start, last.right.count, #right_lines) then
+    last.eol_change = true
+    return
+  end
+  if #left_lines == 0 or #right_lines == 0 then
+    return
+  end
+  hunks[#hunks + 1] = {
+    index = #hunks + 1,
+    type = "change",
+    left = { start = #left_lines, count = 1 },
+    right = { start = #right_lines, count = 1 },
+    inner_spans = { left = {}, right = {}, add_start = {} },
+    eol_change = true,
+  }
+end
+
+-- `eol` ({ left = bool, right = bool }, optional) says whether each side's
+-- last line ends in a newline; omitted, both are taken to.
+function M.compute_hunks_from_lines(left_lines, right_lines, opts, eol)
   left_lines = left_lines or {}
   right_lines = right_lines or {}
   opts = opts or {}
@@ -153,14 +167,17 @@ function M.compute_hunks_from_lines(left_lines, right_lines, opts)
     h.inner_spans = inner_spans
     hunks[#hunks + 1] = h
   end
+  mark_eol_change(hunks, left_lines, right_lines, eol)
   return hunks, nil
 end
 
+-- Hunks between two stored texts, diffed as decoded lines (util/text) so
+-- they line up with the sources DiffBandit shows.
 function M.compute_hunks(left_text, right_text, opts)
-  return M.compute_hunks_from_lines(
-    split_lines(left_text or ""),
-    split_lines(right_text or ""),
-    opts or {})
+  local left_lines, left_format = text.decode(left_text or "")
+  local right_lines, right_format = text.decode(right_text or "")
+  return M.compute_hunks_from_lines(left_lines, right_lines, opts or {},
+    { left = left_format.eol, right = right_format.eol })
 end
 
 -- Compute intra-line emphasis spans for a pair of lines; returns lists of

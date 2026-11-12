@@ -79,7 +79,12 @@ function M.new(readers)
   end
 
   local function metadata_source(root, path, label, side, entry, message)
+    -- A placeholder line, not file content: end it like a line so it is
+    -- not taken for a file missing its final newline.
     local text = side == "right" and message or ""
+    if text ~= "" and text:sub(-1) ~= "\n" then
+      text = text .. "\n"
+    end
     local source = source_from_text(text, abs_path(root, path), label, {
       git_state = "metadata",
       git_side = side,

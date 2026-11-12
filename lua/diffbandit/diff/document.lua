@@ -170,7 +170,8 @@ function M.get_or_build(sources, config, opts)
 
   local left_lines = sources.left.lines or {}
   local right_lines = sources.right.lines or {}
-  local hunks, err = diff.compute_hunks_from_lines(left_lines, right_lines, config.diff or {})
+  local hunks, err = diff.compute_hunks_from_lines(left_lines, right_lines, config.diff or {},
+    { left = sources.left.eol, right = sources.right.eol })
   if err then
     return nil, err
   end

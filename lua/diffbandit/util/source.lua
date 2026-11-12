@@ -1,6 +1,5 @@
 local text = require("diffbandit.util.text")
 local hex = require("diffbandit.util.hex")
-local diff_mod = require("diffbandit.diff")
 local config_mod = require("diffbandit.config")
 
 local M = {}
@@ -12,12 +11,18 @@ function M.detect_filetype(path)
   return vim.filetype.match({ filename = path })
 end
 
-function M.from_lines(lines, path, label, metadata)
+-- `format` ({ eol, line_ending }, see util/text) says how the lines are
+-- stored; `text` is then the exact stored bytes.
+function M.from_lines(lines, path, label, metadata, format)
+  format = format or {}
   local source = {
     path = path,
     label = label or path,
     lines = lines or {},
-    text = text.to_text(lines or {}),
+    text = text.encode(lines or {}, format),
+    eol = format.eol ~= false,
+    line_ending = format.line_ending,
+    bom = format.bom == true,
     filetype = M.detect_filetype(path),
   }
   for key, value in pairs(metadata or {}) do
@@ -27,7 +32,10 @@ function M.from_lines(lines, path, label, metadata)
 end
 
 function M.from_text(value, path, label, metadata)
-  return M.from_lines(text.split_lines(value or ""), path, label, metadata)
+  local lines, format = text.decode(value or "")
+  local source = M.from_lines(lines, path, label, metadata, format)
+  source.text = value or ""
+  return source
 end
 
 local function read_file_raw(path)
@@ -85,33 +93,17 @@ function M.from_file(path, label, config)
     }
   end
 
-  local lines, text, err = diff_mod.read_file(path)
-  if not lines then
-    return nil, err
-  end
-
-  return {
-    path = path,
-    label = label or path,
-    lines = lines,
-    text = text,
-    filetype = M.detect_filetype(path),
-  }
+  return M.from_text(raw, path, label), nil
 end
 
 function M.from_buffer(bufnr, label)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local value = text.to_text(lines)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local filetype = vim.api.nvim_get_option_value("filetype", { buf = bufnr })
-
-  return {
-    path = path ~= "" and path or nil,
-    label = label or path or string.format("buffer:%d", bufnr),
-    lines = lines,
-    text = value,
-    filetype = filetype ~= "" and filetype or M.detect_filetype(path),
-  }
+  local source = M.from_lines(lines, path ~= "" and path or nil,
+    label or path or string.format("buffer:%d", bufnr), nil, text.buffer_format(bufnr, lines))
+  source.filetype = filetype ~= "" and filetype or M.detect_filetype(path)
+  return source
 end
 
 return M

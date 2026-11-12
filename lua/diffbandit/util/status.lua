@@ -145,19 +145,43 @@ function M.enabled(config)
   return status_config(config).enabled ~= false
 end
 
+local LINE_ENDING_LABELS = { lf = "LF", crlf = "CRLF", mixed = "mixed line endings" }
+
+-- Line endings and a byte order mark are not diffed (lines are compared
+-- without them), so a change of either is named in both headers instead.
+local function format_tags(left, right)
+  local left_parts, right_parts = {}, {}
+  local l, r = left.line_ending, right.line_ending
+  if l and r and l ~= r then
+    left_parts[#left_parts + 1] = LINE_ENDING_LABELS[l]
+    right_parts[#right_parts + 1] = LINE_ENDING_LABELS[r]
+  end
+  if (left.bom == true) ~= (right.bom == true) then
+    left_parts[#left_parts + 1] = left.bom and "BOM" or "no BOM"
+    right_parts[#right_parts + 1] = right.bom and "BOM" or "no BOM"
+  end
+  if #left_parts == 0 then
+    return nil, nil
+  end
+  return "[" .. table.concat(left_parts, ", ") .. "]", "[" .. table.concat(right_parts, ", ") .. "]"
+end
+
 function M.build(session)
   local icons = icons_for(session and session.config or {})
   local left = session and session.left or {}
   local right = session and session.right or {}
   local is_git = session and session.file_queue and session.file_queue.kind == "git"
+  local left_tag, right_tag = format_tags(left, right)
 
   local left_text = table.concat({
     source_ref(left),
     source_path(left),
+    left_tag,
   }, "  ")
   local right_text = table.concat({
     source_ref(right),
     source_path(right),
+    right_tag,
   }, "  ")
 
   local center_parts = { icons.app }

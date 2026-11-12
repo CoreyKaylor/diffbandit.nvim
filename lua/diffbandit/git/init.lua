@@ -520,23 +520,6 @@ local function entry_uses_modified_buffer(root, entry)
     or false
 end
 
-local function read_worktree(root, path, use_buffer)
-  local full_path = abs_path(root, path)
-  if use_buffer ~= false then
-    local bufnr = find_loaded_buffer(full_path)
-    if bufnr and vim.api.nvim_get_option_value("modified", { buf = bufnr }) then
-      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-      return text.to_text(lines), nil, "buffer"
-    end
-  end
-
-  local ok, lines = pcall(vim.fn.readfile, full_path)
-  if not ok then
-    return nil, string.format("unable to read worktree file: %s", full_path)
-  end
-  return text.to_text(lines), nil, "working tree"
-end
-
 local function read_worktree_raw(root, path)
   local full_path = abs_path(root, path)
   local uv = vim.uv or vim.loop
@@ -554,6 +537,28 @@ local function read_worktree_raw(root, path)
     return nil, tostring(read_err or ("unable to read worktree file: " .. full_path))
   end
   return data, nil
+end
+
+-- The worktree file as stored, or the text a modified loaded buffer would
+-- write (its lines in the buffer's 'fileformat' and 'endofline').
+local function read_worktree(root, path, use_buffer)
+  local full_path = abs_path(root, path)
+  if use_buffer ~= false then
+    local bufnr = find_loaded_buffer(full_path)
+    if bufnr and vim.api.nvim_get_option_value("modified", { buf = bufnr }) then
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      if #lines == 1 and lines[1] == "" then
+        lines = {}
+      end
+      return text.encode(lines, text.buffer_format(bufnr, lines)), nil, "buffer"
+    end
+  end
+
+  local data, err = read_worktree_raw(root, path)
+  if not data then
+    return nil, err
+  end
+  return data, nil, "working tree"
 end
 
 -- Blobs already read for the file being loaded (see sources_for_entry).
@@ -1714,6 +1719,21 @@ local function write_temp_lines(lines)
   return tmp, nil
 end
 
+-- Write `value` byte for byte: writefile() of split lines would add a final
+-- newline the text may not have.
+local function write_raw(path, value)
+  local file, open_err = io.open(path, "wb")
+  if not file then
+    return false, tostring(open_err)
+  end
+  local ok, write_err = file:write(value)
+  file:close()
+  if not ok then
+    return false, tostring(write_err)
+  end
+  return true, nil
+end
+
 function M.commit(root, message, opts)
   opts = opts or {}
   message = message or ""
@@ -1772,8 +1792,10 @@ function M.write_index(root, path, value)
     return err == nil, err
   end
 
-  local tmp, write_err = write_temp_lines(text.split_lines(value))
-  if not tmp then
+  local tmp = vim.fn.tempname()
+  local written, write_err = write_raw(tmp, value)
+  if not written then
+    pcall(os.remove, tmp)
     return false, write_err
   end
 
@@ -1805,8 +1827,17 @@ function M.write_worktree(root, path, value, use_buffer)
           return false, tostring(mod_err)
         end
       end
-      local lines = value == nil and {} or text.split_lines(value)
+      local lines, format = text.decode(value or "")
       local ok, err = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
+      if ok and value ~= nil then
+        -- Keep the buffer's own writes in the format just stored.
+        pcall(vim.api.nvim_set_option_value, "endofline", format.eol, { buf = bufnr })
+        pcall(vim.api.nvim_set_option_value, "bomb", format.bom, { buf = bufnr })
+        if format.line_ending then
+          pcall(vim.api.nvim_set_option_value, "fileformat",
+            format.line_ending == "crlf" and "dos" or "unix", { buf = bufnr })
+        end
+      end
       if not was_modifiable then
         pcall(vim.api.nvim_set_option_value, "modifiable", false, { buf = bufnr })
       end
@@ -1822,9 +1853,9 @@ function M.write_worktree(root, path, value, use_buffer)
         end
       else
         vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
-        local write_ok, write_err = pcall(vim.fn.writefile, lines, full_path)
+        local write_ok, write_err = write_raw(full_path, value)
         if not write_ok then
-          return false, tostring(write_err)
+          return false, write_err
         end
       end
       pcall(vim.api.nvim_set_option_value, "modified", false, { buf = bufnr })
@@ -1843,11 +1874,7 @@ function M.write_worktree(root, path, value, use_buffer)
   end
 
   vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
-  local ok, err = pcall(vim.fn.writefile, text.split_lines(value), full_path)
-  if not ok then
-    return false, tostring(err)
-  end
-  return true, nil
+  return write_raw(full_path, value)
 end
 
 M._private = {

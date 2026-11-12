@@ -345,6 +345,11 @@ local function apply_diff_variants(config)
     italic = true,
   })
 
+  apply_group("DiffBanditEofNotice", {
+    fg = get_foreground_color("Comment", "#808080"),
+    italic = true,
+  })
+
   -- Per-diff-kind connector and overview groups:
   -- full-line connector backgrounds, stroke colors for connector routing
   -- (background colors reused as fg for visual continuity), expansion
