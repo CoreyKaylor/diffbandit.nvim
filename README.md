@@ -16,7 +16,9 @@ documents without distorting either one.
 ## Features
 
 - Three-part diff layout with left content, connector gutter, and right content.
-- Independent source scrolling with synchronized line-number panes.
+- Scroll lock: scrolling one pane scrolls the other through the diff, holding at
+  an added or deleted block's origin (`ui.scroll_lock = false` scrolls each pane
+  on its own). Line-number panes follow their source panes.
 - Native `'wrap'` (and virtual lines) in the source panes: line numbers, bands, and
   connectors follow wrapped rows, including `'smoothscroll'`.
 - Connector routes for additions, deletions, changes, mixed hunks, and
@@ -107,10 +109,11 @@ Recorded in Ghostty, so connectors render as bezier ribbons (see
 
 <h3>Diff view and connector routes</h3>
 
-Chunk navigation with `]c`, then scrolling one pane on its own: the ribbons
-re-project against the moving viewport while the other document holds still.
+Chunk navigation with `]c`, then scrolling one pane with the scroll lock off
+(`ui.scroll_lock = false`): the ribbons re-project against the moving viewport
+while the other document holds still.
 
-<img src="docs/demo/ghostty/01-diff.keyframe.gif" alt="Two-way diff with connector gutter, chunk navigation, and independent scrolling" width="860">
+<img src="docs/demo/ghostty/01-diff.keyframe.gif" alt="Two-way diff with connector gutter, chunk navigation, and one pane scrolling with the scroll lock off" width="860">
 
 <h3>The right pane is a real document</h3>
 

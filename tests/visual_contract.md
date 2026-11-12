@@ -1,6 +1,6 @@
 # DiffBandit Visual Contract
 
-This contract records the IntelliJ-inspired behavior that the focused specs and integration tests should preserve. Future specs should describe both the semantic diff and the terminal rendering details that make the visual mapping readable.
+This contract records the IntelliJ-inspired behavior that the integration tests (`tests/helpers/verify.lua`) preserve. Where this document and the working software disagree, treat the software as correct and update this document.
 
 ## Shared Principles
 
@@ -84,15 +84,3 @@ Scroll behavior uses the compact visual row model shared by the connector, not r
 - Scrolled-through middle rows show rails/background continuity without synthetic triangles or wedges at the viewport boundary.
 - Scroll clipping must not change the transition-cell rules: add background starts after the add transition cell, delete background stops before the delete transition cell, and unrelated gutter regions must still not touch.
 - Routes keep right-docked wedges only on their real connection rows; adds hide their wedge when the origin scrolls offscreen.
-
-## Future Spec Checklist
-
-Every new visual spec should include:
-
-- The input files and the semantic diff being exercised.
-- Expected pane backgrounds for context, add, delete, change, and word-level emphasis.
-- Expected connector glyphs, their display rows, and whether each glyph is a transition cell or a filled cell.
-- Expected connector approach direction for triangle glyphs, including whether the glyph should flip for from-above, from-below, or scroll-clipped paths.
-- Origin underline rows and whether they must reach a pane or gutter edge.
-- Lane assignment expectations when multiple paths overlap.
-- ANSI integration checks for background starts/stops, underline spans, and token-level color splits.
