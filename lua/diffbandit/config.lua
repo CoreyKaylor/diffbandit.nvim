@@ -16,6 +16,10 @@ local defaults = {
     cell_wedges = false,
     right_number_padding = 2,
     scroll_debounce_ms = 16,
+    -- Scrolling one source pane scrolls the other through the diff: together
+    -- across unchanged text, holding at the origin of an added or deleted
+    -- block. false scrolls each pane on its own.
+    scroll_lock = true,
     -- Full re-diff after editable right-pane edits (separate from scroll).
     edit_refresh_debounce_ms = 150,
     -- Wall-clock budget for the connector rail solver per repaint; on expiry

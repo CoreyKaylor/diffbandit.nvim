@@ -108,6 +108,23 @@ function M.set_win_view_topline(win, topline, opts)
   end)
 end
 
+--- Windows a WinScrolled event covers. <amatch> names only the first: one
+--- scroll moves every 'scrollbind' window at once, sidecars included. An
+--- event fired by hand carries no v:event, so fall back to <amatch>.
+function M.scrolled_wins(event)
+  local wins = {}
+  for key in pairs(vim.v.event or {}) do
+    local win = tonumber(key)
+    if win then
+      wins[#wins + 1] = win
+    end
+  end
+  if #wins == 0 then
+    wins[1] = tonumber(event and event.match)
+  end
+  return wins
+end
+
 function M.get_win_view_topline(win)
   if not (win and vim.api.nvim_win_is_valid(win)) then
     return 1

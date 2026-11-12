@@ -296,4 +296,36 @@ function M.counterpart_row(line_meta, from_side, row)
   return row, false
 end
 
+--- counterpart_row for every row of `from_side` at once (O(n) here, O(1) per
+--- lookup after), for callers that map on every scroll. Returns an array:
+--- result[row] is what counterpart_row(line_meta, from_side, row) returns.
+function M.counterpart_rows(line_meta, from_side)
+  local from_key = from_side == "left" and "left_index" or "right_index"
+  local to_key = from_side == "left" and "right_index" or "left_index"
+  local n = #line_meta
+  -- Nearest target row strictly below each meta index.
+  local below = {}
+  local nearest
+  for idx = n, 1, -1 do
+    below[idx] = nearest
+    local meta = line_meta[idx]
+    if meta and meta[to_key] then
+      nearest = meta[to_key]
+    end
+  end
+  local rows = {}
+  local above
+  for idx = 1, n do
+    local meta = line_meta[idx]
+    local from_idx = meta and meta[from_key]
+    if from_idx then
+      rows[from_idx] = meta[to_key] or above or below[idx] or from_idx
+    end
+    if meta and meta[to_key] then
+      above = meta[to_key]
+    end
+  end
+  return rows
+end
+
 return M

@@ -631,6 +631,9 @@ require("diffbandit").setup({
     connector_width = 9,
     connector_max_width = 9,
     scroll_debounce_ms = 16,
+    -- Scrolling one source pane scrolls the other through the diff; it holds
+    -- at an added/deleted block's origin. false scrolls each pane on its own.
+    scroll_lock = true,
     -- "auto" | "kitty" | "cells" (see Image connectors below).
     connector_renderer = "auto",
     kitty = {

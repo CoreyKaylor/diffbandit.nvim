@@ -127,9 +127,31 @@ function M.win_opts.gutter(winhl)
     foldcolumn = "0",
     scrolloff = 0,
     sidescrolloff = 0,
+    scrollbind = false,
+    cursorbind = false,
     winfixwidth = true,
     winhl = winhl or M.winhl.gutter,
   }
+end
+
+-- DiffBandit places its helper windows (gutters, connectors, overviews,
+-- headers) itself. A native bind would drag one off the rows it belongs to,
+-- so keep 'scrollbind' and 'cursorbind' off the windows `is_helper` names
+-- whenever something such as `:windo set scrollbind` turns them on.
+function M.keep_helpers_unbound(augroup, is_helper)
+  vim.api.nvim_create_autocmd("OptionSet", {
+    group = augroup,
+    pattern = { "scrollbind", "cursorbind" },
+    callback = function(event)
+      if vim.v.option_command == "setglobal" then
+        return
+      end
+      local win = vim.api.nvim_get_current_win()
+      if vim.wo[win][event.match] and is_helper(win) then
+        vim.api.nvim_set_option_value(event.match, false, { scope = "local", win = win })
+      end
+    end,
+  })
 end
 
 -- One-line status header above a pane.
@@ -142,6 +164,8 @@ function M.win_opts.header(winhl)
     wrap = false,
     signcolumn = "no",
     foldcolumn = "0",
+    scrollbind = false,
+    cursorbind = false,
     winfixheight = true,
     statusline = " ",
     winhl = winhl or M.winhl.status,

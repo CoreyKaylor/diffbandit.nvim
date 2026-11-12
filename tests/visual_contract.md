@@ -77,9 +77,9 @@ shared center result buffer. Both pairs treat the result as their "new" side.
 
 Scroll behavior uses the compact visual row model shared by the connector, not raw original line numbers or native Neovim `scrollbind`:
 
-- Scrolling the left or right content pane scrolls only that content pane and its corresponding line-number pane. The opposite content/number pair remains independent.
+- Scrolling the left or right content pane scrolls its corresponding line-number pane. With the scroll lock on (the default) the opposite pair follows through the diff, holding at an added or deleted block's origin; with it off, the opposite pair remains independent.
 - The connector pane is visual-only and non-interactive; it follows explicit navigation and viewport projection rather than user focus.
-- DiffBandit windows must disable native `scrollbind`, `cursorbind`, folds, and inherited scroll offsets that would fight custom synchronization.
+- DiffBandit's helper windows (number, connector, overview, header) must keep native `scrollbind` and `cursorbind` off, even after `:windo set scrollbind`; folds and inherited scroll offsets must not fight custom synchronization. Content panes keep a user's `scrollbind`.
 - Triangles and wedges are connection glyphs, not viewport-edge markers. They appear only when their real underline/origin/destination connection row is visible or immediately adjacent.
 - Scrolled-through middle rows show rails/background continuity without synthetic triangles or wedges at the viewport boundary.
 - Scroll clipping must not change the transition-cell rules: add background starts after the add transition cell, delete background stops before the delete transition cell, and unrelated gutter regions must still not touch.

@@ -474,23 +474,37 @@ function Session:setup_autocmds()
     callback = on_height_change,
   })
 
+  local function is_static_win(win)
+    return win == self.left_header_win
+      or win == self.center_header_win
+      or win == self.right_header_win
+      or win == self.left_overview_win
+      or win == self.right_overview_win
+  end
+
+  layout.keep_helpers_unbound(augroup, function(win)
+    return is_static_win(win)
+      or win == self.left_num_win
+      or win == self.connector_win
+      or win == self.right_num_win
+  end)
+
   vim.api.nvim_create_autocmd("WinScrolled", {
     group = augroup,
     callback = function(event)
       if self.syncing_scroll or self.rendering_viewport or self.disposed then
         return
       end
-      -- WinScrolled delivers the scrolled window ID via <amatch>.
-      local win = tonumber(event.match)
-      if win == self.left_header_win
-          or win == self.center_header_win
-          or win == self.right_header_win
-          or win == self.left_overview_win
-          or win == self.right_overview_win then
-        return
+      -- Headers and overviews never scroll with the panes; any other window
+      -- in the event (not only <amatch>, its first) moves the view.
+      for _, win in ipairs(nvim.scrolled_wins(event)) do
+        if not is_static_win(win) then
+          self:follow_scroll_lock()
+          self:sync_gutter_viewports()
+          self:request_viewport_rerender()
+          return
+        end
       end
-      self:sync_gutter_viewports()
-      self:request_viewport_rerender()
     end,
   })
 
@@ -880,6 +894,103 @@ function Session:request_editable_right_refresh()
   end, delay)
 end
 
+-- Validated topline of a source pane (line("w0") settles a pending scroll).
+local function pane_topline(win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return nil
+  end
+  local ok, top = pcall(vim.api.nvim_win_call, win, function()
+    return vim.fn.line("w0")
+  end)
+  return ok and top or nil
+end
+
+--- Remember where the source panes sit. DiffBandit's own placements call this
+--- so the scroll lock follows only what the user scrolls afterwards.
+function Session:note_pane_toplines()
+  self.locked_toplines = {
+    left = pane_topline(self.left_win),
+    right = pane_topline(self.right_win),
+  }
+end
+
+-- Scroll `win` by `delta` lines the way <C-e>/<C-y> would, so its cursor and
+-- 'scrolloff' behave as in a native scroll. 'smoothscroll' counts screen rows;
+-- the lock moves whole lines.
+local function scroll_pane(win, delta)
+  pcall(vim.api.nvim_win_call, win, function()
+    local smooth = vim.wo[win].smoothscroll
+    if smooth then
+      vim.cmd("noautocmd setlocal nosmoothscroll")
+    end
+    local key = delta > 0 and "\5" or "\25"
+    pcall(vim.cmd, "normal! " .. math.abs(delta) .. key)
+    if smooth then
+      vim.cmd("noautocmd setlocal smoothscroll")
+    end
+  end)
+end
+
+-- Counterpart of a topline row, through the current view. Rows past the
+-- document (scroll padding) continue one for one from its last row.
+local function lock_counterpart(self, side, row)
+  local view = self.view
+  if not (view and view.line_meta) then
+    return row
+  end
+  local cache = self.scroll_lock_maps
+  if not cache or cache.view ~= view then
+    cache = { view = view }
+    self.scroll_lock_maps = cache
+  end
+  local rows = cache[side]
+  if not rows then
+    rows = view_builder.counterpart_rows(view.line_meta, side)
+    cache[side] = rows
+  end
+  local last = #(view[side] or {})
+  if last == 0 then
+    return row
+  end
+  if row > last then
+    return (rows[last] or last) + (row - last)
+  end
+  return rows[row] or row
+end
+
+--- Scroll lock (ui.scroll_lock): when the user scrolls one source pane, the
+--- other follows through the diff. Across unchanged text both move together;
+--- while one pane scrolls through an added or deleted block, the other holds
+--- at the block's origin. DiffBandit's placements (navigation, snaps,
+--- refreshes) set both panes, and the lock keeps the offset they leave.
+function Session:follow_scroll_lock()
+  if config_mod.section(self.config, "ui").scroll_lock == false then
+    return
+  end
+  local before = self.locked_toplines
+  local left, right = pane_topline(self.left_win), pane_topline(self.right_win)
+  if not (left and right) then
+    return
+  end
+  if before and before.left and before.right then
+    local left_delta, right_delta = left - before.left, right - before.right
+    local follower, delta
+    if left_delta ~= 0 and right_delta == 0 then
+      follower = self.right_win
+      delta = lock_counterpart(self, "left", left) - lock_counterpart(self, "left", before.left)
+    elseif right_delta ~= 0 and left_delta == 0 then
+      follower = self.left_win
+      delta = lock_counterpart(self, "right", right) - lock_counterpart(self, "right", before.right)
+    end
+    if follower and delta ~= 0 then
+      self.syncing_scroll = true
+      scroll_pane(follower, delta)
+      self.syncing_scroll = false
+    end
+  end
+  self:note_pane_toplines()
+end
+
 local function apply_viewport_toplines(self, left_topline, right_topline, opts)
   set_win_view_topline(self.left_win, left_topline, opts)
   set_win_view_topline(self.right_win, right_topline, opts)
@@ -887,6 +998,7 @@ local function apply_viewport_toplines(self, left_topline, right_topline, opts)
   set_win_view_topline(self.left_num_win, left_row, opts)
   set_win_view_topline(self.right_num_win, right_row, opts)
   set_win_view_topline(self.connector_win, left_row, opts)
+  self:note_pane_toplines()
 end
 
 function Session:set_viewport_toplines(left_topline, right_topline)
@@ -1600,6 +1712,7 @@ function Session:highlight_active_chunk(chunk, opts)
       vim.api.nvim_win_set_cursor(self.right_win, { right_cursor, 0 })
     end
     vim.api.nvim_win_set_cursor(self.connector_win, { chunk.display_start, 0 })
+    self:note_pane_toplines()
   end
   if opts.sync_gutters ~= false then
     self:sync_gutter_viewports()

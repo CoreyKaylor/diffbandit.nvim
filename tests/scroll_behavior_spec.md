@@ -2,14 +2,15 @@
 
 ## Purpose
 
-DiffBandit uses compact source buffers, sidecar line-number panes, and a connector-core pane. Each source pane scrolls independently with its own line-number pane; the connector core renders route continuity between the current visual projections.
+DiffBandit uses compact source buffers, sidecar line-number panes, and a connector-core pane. Each source pane has its own line-number pane, and a scroll lock (`ui.scroll_lock`, on by default) carries a scroll in one pane to the other through the diff; the connector core renders route continuity between the current visual projections.
 
 ## Shared Scroll Rules
 
-- Scrolling the left content pane updates only the left line-number pane. Scrolling the right content pane updates only the right line-number pane.
-- Source panes are allowed to diverge. Each compact source buffer includes trailing scroll padding so users can continue scrolling past real EOF and manually align a changed region with its opposite-side origin.
+- Each line-number pane follows its own content pane.
+- Scroll lock: when the user scrolls one content pane, the other moves by as far as its counterpart rows move. Across context both panes move together; while one pane scrolls through an added or deleted block, the other holds at the block's origin. DiffBandit's own placements (navigation, snaps, refreshes) set both panes, and the lock keeps the offset they leave. With `scroll_lock = false` each pane scrolls on its own.
+- Source panes are allowed to diverge (navigation offsets, or the lock turned off). Each compact source buffer includes trailing scroll padding so users can continue scrolling past real EOF and manually align a changed region with its opposite-side origin.
 - Gutter panes are visual-only: window navigation and mouse interaction should not leave focus in the line-number or connector panes.
-- Native `scrollbind`, `cursorbind`, folds, and inherited scroll offsets must not change the source layout; DiffBandit owns gutter synchronization.
+- Native `scrollbind`, `cursorbind`, folds, and inherited scroll offsets must not change the source layout; DiffBandit owns gutter synchronization. A user's `scrollbind` (e.g. `:windo set scrollbind`) binds only the content panes: number, connector, overview, and header windows stay unbound, and every scrolled window in a `WinScrolled` event (not only `<amatch>`) resyncs the gutters and repaints.
 - Gutter routes are viewport-aware. Scrolled-through middle rows show rails/background continuity; they do not invent transition glyphs just because a route crosses the viewport boundary.
 - Route geometry is based on current screen-row projection, not only original source row distance. If an addition target is visible above its left-side origin after independent right-pane scrolling, the add transition flips to `◢` and the connector approaches the bottom edge of the transition cell.
 - Once a visible addition block reaches its visible left-side origin row, the route uses two adjacent boundary transitions at the origin: `◢` on the upper side of the boundary and `◥` on the lower side. The origin row remains the stationary underline across the gutter and into whichever transition cell sits on that row.

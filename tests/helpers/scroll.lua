@@ -46,6 +46,8 @@ function M.set(spec)
     T["keys"] = MiniTest.new_set({ parametrize = spec.keys })
     T["keys"]["phase"] = function(phase, side, count)
       child:start({ lines = 16 })
+      -- These phases scroll one pane apart from the other on purpose.
+      child:lua("require('diffbandit').setup({ ui = { scroll_lock = false } })")
       child:cmd(open):settle()
       child:keys("<Esc>")
       child:cmd("DBViewport 1 1")

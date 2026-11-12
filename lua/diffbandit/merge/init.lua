@@ -766,29 +766,41 @@ function Merge:setup_autocmds()
       self:request_render()
     end,
   })
-  -- The three content panes scroll independently; DiffBandit owns gutter
-  -- synchronization (same contract as two-way sessions — no scrollbind).
+  -- The three content panes scroll independently (no scroll lock yet);
+  -- DiffBandit owns gutter synchronization, so gutters and headers stay out
+  -- of a user's 'scrollbind'.
+  local function is_gutter_win(win)
+    return win == self.local_num_win
+      or win == self.local_result_connector_win
+      or win == self.result_left_num_win
+      or win == self.result_right_num_win
+      or win == self.result_remote_connector_win
+      or win == self.remote_num_win
+  end
+  layout.keep_helpers_unbound(self.augroup, function(win)
+    return is_gutter_win(win)
+      or win == self.local_header_win
+      or win == self.result_header_win
+      or win == self.remote_header_win
+  end)
   vim.api.nvim_create_autocmd("WinScrolled", {
     group = self.augroup,
     callback = function(event)
       if self.disposed or self.syncing_scroll then
         return
       end
-      -- WinScrolled delivers the scrolled window ID via <amatch>.
-      local win = tonumber(event.match)
-      if win ~= self.local_win
-          and win ~= self.result_win
-          and win ~= self.remote_win
-          and win ~= self.local_num_win
-          and win ~= self.local_result_connector_win
-          and win ~= self.result_left_num_win
-          and win ~= self.result_right_num_win
-          and win ~= self.result_remote_connector_win
-          and win ~= self.remote_num_win then
-        return
+      -- Any window in the event, not only <amatch> (its first): one scroll
+      -- moves every 'scrollbind' window at once.
+      for _, win in ipairs(nvim.scrolled_wins(event)) do
+        if win == self.local_win
+            or win == self.result_win
+            or win == self.remote_win
+            or is_gutter_win(win) then
+          self:sync_gutter_viewports()
+          self:request_render()
+          return
+        end
       end
-      self:sync_gutter_viewports()
-      self:request_render()
     end,
   })
   vim.api.nvim_create_autocmd("TabClosed", {
