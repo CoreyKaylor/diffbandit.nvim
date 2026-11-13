@@ -905,13 +905,77 @@ local function pane_topline(win)
   return ok and top or nil
 end
 
+-- Validated leftcol of a source pane (winsaveview settles the cursor first).
+local function pane_leftcol(win)
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return nil
+  end
+  local ok, view = pcall(vim.api.nvim_win_call, win, vim.fn.winsaveview)
+  return ok and view and view.leftcol or nil
+end
+
 --- Remember where the source panes sit. DiffBandit's own placements call this
 --- so the scroll lock follows only what the user scrolls afterwards.
-function Session:note_pane_toplines()
+function Session:note_pane_views()
   self.locked_toplines = {
     left = pane_topline(self.left_win),
     right = pane_topline(self.right_win),
   }
+  self.locked_leftcols = {
+    left = pane_leftcol(self.left_win),
+    right = pane_leftcol(self.right_win),
+  }
+end
+
+-- Scroll `win` sideways to `leftcol`. Neovim keeps the cursor on screen, so a
+-- leftcol past the end of the cursor's line snaps back (native 'scrollopt'
+-- "hor" does the same). Like zl/zh, the cursor moves instead: into the new
+-- columns, and onto the nearest visible line long enough to reach them. With
+-- no such line in view the pane goes as far as its cursor line allows.
+local function scroll_pane_sideways(win, leftcol)
+  if vim.wo[win].wrap then
+    return
+  end
+  pcall(vim.api.nvim_win_call, win, function()
+    local view = vim.fn.winsaveview()
+    if view.leftcol == leftcol then
+      return
+    end
+    local info = vim.fn.getwininfo(win)[1]
+    local width = math.max(1, vim.api.nvim_win_get_width(win) - (info and info.textoff or 0))
+    local so = vim.wo[win].sidescrolloff
+    if so < 0 then
+      so = vim.go.sidescrolloff
+    end
+    so = math.min(so, math.floor((width - 1) / 2))
+    -- Screen columns the cursor may sit in (1-based virtual columns).
+    local lo = leftcol > 0 and leftcol + 1 + so or 1
+    local hi = leftcol + width - so
+    local function reaches(lnum)
+      return vim.fn.virtcol({ lnum, "$" }) - 1 >= lo
+    end
+    local lnum = view.lnum
+    if not reaches(lnum) then
+      local top, bot = vim.fn.line("w0"), vim.fn.line("w$")
+      for dist = 1, math.max(lnum - top, bot - lnum) do
+        if lnum - dist >= top and reaches(lnum - dist) then
+          lnum = lnum - dist
+          break
+        end
+        if lnum + dist <= bot and reaches(lnum + dist) then
+          lnum = lnum + dist
+          break
+        end
+      end
+    end
+    local vcol = vim.fn.virtcol({ lnum, view.col + 1 })
+    if lnum ~= view.lnum then
+      vcol = view.curswant + 1
+    end
+    vcol = math.max(lo, math.min(hi, vcol))
+    local col = math.max(1, vim.fn.virtcol2col(0, lnum, vcol))
+    vim.fn.winrestview({ lnum = lnum, col = col - 1, curswant = vcol - 1, leftcol = leftcol, topline = view.topline })
+  end)
 end
 
 -- Scroll `win` by `delta` lines the way <C-e>/<C-y> would, so its cursor and
@@ -963,16 +1027,14 @@ end
 --- while one pane scrolls through an added or deleted block, the other holds
 --- at the block's origin. DiffBandit's placements (navigation, snaps,
 --- refreshes) set both panes, and the lock keeps the offset they leave.
+--- The horizontal lock runs here too, independent of ui.scroll_lock.
 function Session:follow_scroll_lock()
-  if config_mod.section(self.config, "ui").scroll_lock == false then
-    return
-  end
   local before = self.locked_toplines
   local left, right = pane_topline(self.left_win), pane_topline(self.right_win)
   if not (left and right) then
     return
   end
-  if before and before.left and before.right then
+  if config_mod.section(self.config, "ui").scroll_lock ~= false and before and before.left and before.right then
     local left_delta, right_delta = left - before.left, right - before.right
     local follower, delta
     if left_delta ~= 0 and right_delta == 0 then
@@ -988,7 +1050,34 @@ function Session:follow_scroll_lock()
       self.syncing_scroll = false
     end
   end
-  self:note_pane_toplines()
+  self:follow_horizontal_scroll_lock()
+  self:note_pane_views()
+end
+
+--- Horizontal scroll lock (ui.horizontal_scroll_lock): when the user scrolls
+--- one source pane sideways (zl, zh, zs, or the cursor running off the edge),
+--- the other pane shows the same columns. A pane with 'wrap' never scrolls
+--- sideways and is left alone.
+function Session:follow_horizontal_scroll_lock()
+  if config_mod.section(self.config, "ui").horizontal_scroll_lock == false then
+    return
+  end
+  local before = self.locked_leftcols
+  local left, right = pane_leftcol(self.left_win), pane_leftcol(self.right_win)
+  if not (left and right and before and before.left and before.right) then
+    return
+  end
+  local follower, leftcol
+  if left ~= before.left and right == before.right then
+    follower, leftcol = self.right_win, left
+  elseif right ~= before.right and left == before.left then
+    follower, leftcol = self.left_win, right
+  end
+  if follower then
+    self.syncing_scroll = true
+    scroll_pane_sideways(follower, leftcol)
+    self.syncing_scroll = false
+  end
 end
 
 local function apply_viewport_toplines(self, left_topline, right_topline, opts)
@@ -998,7 +1087,7 @@ local function apply_viewport_toplines(self, left_topline, right_topline, opts)
   set_win_view_topline(self.left_num_win, left_row, opts)
   set_win_view_topline(self.right_num_win, right_row, opts)
   set_win_view_topline(self.connector_win, left_row, opts)
-  self:note_pane_toplines()
+  self:note_pane_views()
 end
 
 function Session:set_viewport_toplines(left_topline, right_topline)
@@ -1712,7 +1801,7 @@ function Session:highlight_active_chunk(chunk, opts)
       vim.api.nvim_win_set_cursor(self.right_win, { right_cursor, 0 })
     end
     vim.api.nvim_win_set_cursor(self.connector_win, { chunk.display_start, 0 })
-    self:note_pane_toplines()
+    self:note_pane_views()
   end
   if opts.sync_gutters ~= false then
     self:sync_gutter_viewports()

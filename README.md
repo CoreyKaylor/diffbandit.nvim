@@ -18,7 +18,9 @@ documents without distorting either one.
 - Three-part diff layout with left content, connector gutter, and right content.
 - Scroll lock: scrolling one pane scrolls the other through the diff, holding at
   an added or deleted block's origin (`ui.scroll_lock = false` scrolls each pane
-  on its own). Line-number panes follow their source panes.
+  on its own). Scrolling sideways shows the same columns in both panes
+  (`ui.horizontal_scroll_lock = false` turns that off). Line-number panes follow
+  their source panes.
 - Native `'wrap'` (and virtual lines) in the source panes: line numbers, bands, and
   connectors follow wrapped rows, including `'smoothscroll'`.
 - Connector routes for additions, deletions, changes, mixed hunks, and
@@ -637,6 +639,8 @@ require("diffbandit").setup({
     -- Scrolling one source pane scrolls the other through the diff; it holds
     -- at an added/deleted block's origin. false scrolls each pane on its own.
     scroll_lock = true,
+    -- Scrolling one source pane sideways shows the same columns in the other.
+    horizontal_scroll_lock = true,
     -- "auto" | "kitty" | "cells" (see Image connectors below).
     connector_renderer = "auto",
     kitty = {

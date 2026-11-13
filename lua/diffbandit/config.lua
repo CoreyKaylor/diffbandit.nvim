@@ -20,6 +20,9 @@ local defaults = {
     -- across unchanged text, holding at the origin of an added or deleted
     -- block. false scrolls each pane on its own.
     scroll_lock = true,
+    -- Scrolling one source pane sideways (zl, zh, the cursor past the edge)
+    -- shows the same columns in the other. false scrolls each on its own.
+    horizontal_scroll_lock = true,
     -- Full re-diff after editable right-pane edits (separate from scroll).
     edit_refresh_debounce_ms = 150,
     -- Wall-clock budget for the connector rail solver per repaint; on expiry

@@ -171,6 +171,129 @@ T["scroll_lock = false scrolls each pane on its own"] = function()
   MiniTest.expect.equality(source_tops(), { 11, 1 })
 end
 
+-- Horizontal lock: rows are "base N" padded with digits to 300 columns, so
+-- every line is wide enough to scroll sideways. Row 1 of each side is short.
+local function open_wide(dir, config)
+  local function wide(lines)
+    local out = {}
+    for i, text in ipairs(lines) do
+      out[i] = i == 1 and text or (text .. " " .. string.rep("0123456789", 30))
+    end
+    return out
+  end
+  local left, right = dir .. "/left.txt", dir .. "/right.txt"
+  vim.fn.writefile(wide(left_lines()), left)
+  vim.fn.writefile(wide(right_lines()), right)
+  child:start()
+  if config then
+    child:lua("require('diffbandit').setup(...)", { config })
+  end
+  child:cmd("DiffBandit " .. left .. " " .. right)
+  child:settle()
+end
+
+local function source_views()
+  return child:lua([[
+    local s = require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
+    local out = {}
+    for _, key in ipairs({ "left_win", "right_win" }) do
+      local view = vim.api.nvim_win_call(s[key], vim.fn.winsaveview)
+      out[#out + 1] = { leftcol = view.leftcol, lnum = view.lnum, topline = view.topline }
+    end
+    return out
+  ]])
+end
+
+local function leftcols()
+  local views = source_views()
+  return { views[1].leftcol, views[2].leftcol }
+end
+
+T["the horizontal lock shows the same columns in both panes"] = function()
+  local dir = child_mod.case_dir("hscroll-lock")
+  open_wide(dir)
+  child:cmd("DBViewport 11 41")
+  child:cmd("DBFocus left")
+  child:keys("15G")
+  child:settle()
+  child:keys("40zl")
+  child:settle()
+  MiniTest.expect.equality(leftcols(), { 40, 40 })
+  child:cmd("DBFocus right")
+  child:keys("15zh")
+  child:settle()
+  MiniTest.expect.equality(leftcols(), { 25, 25 })
+  -- The vertical lock still holds.
+  MiniTest.expect.equality(source_tops(), { 11, 41 })
+  child:keys("100zh")
+  child:settle()
+  MiniTest.expect.equality(leftcols(), { 0, 0 })
+end
+
+-- The follower's cursor sits on its short first line; it moves to a line
+-- long enough to show the new columns instead of snapping the pane back.
+T["the horizontal lock moves a follower's cursor off a short line"] = function()
+  local dir = child_mod.case_dir("hscroll-lock-short")
+  open_wide(dir)
+  child:cmd("DBViewport 1 1")
+  child:cmd("DBFocus right")
+  child:keys("gg")
+  child:cmd("DBFocus left")
+  child:keys("5G")
+  child:settle()
+  child:keys("60zl")
+  child:settle()
+  local views = source_views()
+  MiniTest.expect.equality({ views[1].leftcol, views[2].leftcol }, { 60, 60 })
+  MiniTest.expect.equality(views[2].lnum, 2)
+  MiniTest.expect.equality(views[2].topline, 1)
+end
+
+-- A trackpad swipe is wheel input to the pane under the pointer, which need
+-- not be the focused pane.
+T["the horizontal lock follows a wheel scroll in the unfocused pane"] = function()
+  local dir = child_mod.case_dir("hscroll-lock-wheel")
+  open_wide(dir)
+  child:cmd("DBViewport 11 41")
+  child:cmd("DBFocus left")
+  child:keys("15G")
+  child:settle()
+  child:lua([[
+    local s = require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
+    local pos = vim.api.nvim_win_get_position(s.right_win)
+    for _ = 1, 5 do
+      vim.api.nvim_input_mouse("wheel", "right", "", 0, pos[1] + 5, pos[2] + 10)
+    end
+  ]])
+  child:settle()
+  -- 'mousescroll' moves 6 columns per wheel event by default.
+  MiniTest.expect.equality(leftcols(), { 30, 30 })
+end
+
+T["horizontal_scroll_lock = false scrolls each pane on its own"] = function()
+  local dir = child_mod.case_dir("hscroll-lock-off")
+  open_wide(dir, { ui = { horizontal_scroll_lock = false } })
+  child:cmd("DBViewport 11 41")
+  child:cmd("DBFocus left")
+  child:keys("15G")
+  child:settle()
+  child:keys("40zl")
+  child:settle()
+  MiniTest.expect.equality(leftcols(), { 40, 0 })
+end
+
+T["scroll_lock = false keeps the horizontal lock"] = function()
+  local dir = child_mod.case_dir("hscroll-lock-vertical-off")
+  open_wide(dir, { ui = { scroll_lock = false } })
+  child:cmd("DBViewport 11 41")
+  child:cmd("DBFocus left")
+  child:keys("15G")
+  child:settle()
+  child:keys("40zl")
+  child:settle()
+  MiniTest.expect.equality(leftcols(), { 40, 40 })
+end
+
 T["windo scrollbind binds the panes, not DiffBandit's sidecars"] = function()
   local dir = child_mod.case_dir("scrollbind-windo")
   open(dir)
