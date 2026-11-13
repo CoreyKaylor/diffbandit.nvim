@@ -97,8 +97,15 @@ function M.truncate_dotted(text, width)
   return result .. marker
 end
 
+--- Digits in the largest line number of a `count`-line document.
 function M.digits_of(count)
-  return math.max(3, #tostring(math.max(1, count or 1)))
+  return #tostring(math.max(1, count or 1))
+end
+
+--- Number pane width for `digits`-wide numbers: one blank cell on each side.
+--- The cell facing the connector doubles as the triangle/wedge column.
+function M.number_pane_width(digits)
+  return 1 + digits + 1
 end
 
 --- Resolve icon mode ("nerd" | "plain") from a config field that is

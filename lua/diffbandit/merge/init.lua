@@ -392,14 +392,15 @@ function Merge.start(data, config, opts)
     return layout.open_unfocusable_win(buf, anchor_win, { width = width })
   end
 
-  local num_width = math.max(3, ui.digits_of(math.max(#self.local_lines, #self.result_lines, #self.remote_lines)))
+  local num_width = ui.digits_of(math.max(#self.local_lines, #self.result_lines, #self.remote_lines))
   self.number_width = num_width
-  self.local_num_win = open_gutter(self.local_num_buf, self.local_win, num_width + 1)
+  local num_pane_width = ui.number_pane_width(num_width)
+  self.local_num_win = open_gutter(self.local_num_buf, self.local_win, num_pane_width)
   self.local_result_connector_win = open_gutter(self.local_result_connector_buf, self.local_num_win, self.connector_width)
-  self.result_left_num_win = open_gutter(self.result_left_num_buf, self.local_result_connector_win, num_width + 1)
-  self.result_right_num_win = open_gutter(self.result_right_num_buf, self.result_win, num_width + 1)
+  self.result_left_num_win = open_gutter(self.result_left_num_buf, self.local_result_connector_win, num_pane_width)
+  self.result_right_num_win = open_gutter(self.result_right_num_buf, self.result_win, num_pane_width)
   self.result_remote_connector_win = open_gutter(self.result_remote_connector_buf, self.result_right_num_win, self.connector_width)
-  self.remote_num_win = open_gutter(self.remote_num_buf, self.result_remote_connector_win, num_width + 1)
+  self.remote_num_win = open_gutter(self.remote_num_buf, self.result_remote_connector_win, num_pane_width)
 
   self.right_win = self.result_win
   document.ensure_syntax_features(self.local_buf, ft)
@@ -490,6 +491,14 @@ function Merge:apply_window_options()
       }))
     end
   end
+  -- The separators between each number pane and its connector core are
+  -- bridged by the connector renderer, not drawn.
+  local bridged = {
+    [self.local_num_win or -1] = true,
+    [self.local_result_connector_win or -1] = true,
+    [self.result_right_num_win or -1] = true,
+    [self.result_remote_connector_win or -1] = true,
+  }
   for _, win in ipairs({
     self.local_num_win,
     self.local_result_connector_win,
@@ -499,7 +508,7 @@ function Merge:apply_window_options()
     self.remote_num_win,
   }) do
     if win and vim.api.nvim_win_is_valid(win) then
-      set_win_options(win, layout.win_opts.gutter())
+      set_win_options(win, layout.win_opts.gutter(nil, bridged[win] == true))
     end
   end
   for _, win in ipairs({ self.local_header_win, self.result_header_win, self.remote_header_win }) do
@@ -522,7 +531,7 @@ function Merge:layout_windows()
       set_win_height(win, 1)
     end
   end
-  local num_pane_width = (self.number_width or 3) + 1
+  local num_pane_width = ui.number_pane_width(self.number_width or 1)
   local core_width = self.connector_width or connector_width.minimum(self.config)
   set_win_width(self.local_num_win, num_pane_width)
   set_win_width(self.local_result_connector_win, core_width)
@@ -911,7 +920,7 @@ function Merge:show_pane(side)
   if not (self.result_win and vim.api.nvim_win_is_valid(self.result_win)) then
     return
   end
-  local num_pane_width = (self.number_width or 3) + 1
+  local num_pane_width = ui.number_pane_width(self.number_width or 1)
   local core_width = self.connector_width or connector_width.minimum(self.config)
   local function open_gutter(buf, anchor_win, width)
     return layout.open_unfocusable_win(buf, anchor_win, { width = width })
@@ -1313,7 +1322,7 @@ function Merge:render_zero_range_delete_overlay(row, sides)
     right = sides.right and not hidden.remote_pane or false,
   }
   row = math.max(0, row or 0)
-  local number_pane_width = math.max(1, (self.number_width or 3) + 1)
+  local number_pane_width = ui.number_pane_width(self.number_width or 1)
   local connector_width = math.max(1, self.connector_width or 1)
   local result_width = self.result_win and vim.api.nvim_win_is_valid(self.result_win)
     and vim.api.nvim_win_get_width(self.result_win)
@@ -1465,7 +1474,7 @@ function Merge:render(opts)
 
   self.row_space_dirty = false
   self.result_lines = next_result_lines
-  self.number_width = math.max(3, ui.digits_of(math.max(#self.local_lines, #self.result_lines, #self.remote_lines)))
+  self.number_width = ui.digits_of(math.max(#self.local_lines, #self.result_lines, #self.remote_lines))
   local left_pair, left_err = diff_pair.build(self.local_lines, self.result_lines, self.config)
   local right_pair, right_err = diff_pair.build(self.remote_lines, self.result_lines, self.config)
   if not left_pair or not right_pair then

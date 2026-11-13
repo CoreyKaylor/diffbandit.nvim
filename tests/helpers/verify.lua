@@ -531,11 +531,11 @@ local function verify_deletions(lines, ansi_lines)
     end
     if stripped:find("Line to delete 1", 1, true) and stripped:find("Third line", 1, true) then
       saw_deleted_text = true
-      if stripped:find("3\226\151\164", 1, true) then
+      if stripped:find("3%s*\226\151\164\226\148\130") then
         pure_delete_triangle_after_left_number = true
       end
     elseif stripped:find("Line to delete 4", 1, true) then
-      if stripped:find("8\226\151\164", 1, true) then
+      if stripped:find("8%s*\226\151\164\226\148\130") then
         second_delete_triangle_after_left_number = true
       end
     elseif stripped:find("Third line", 1, true) and stripped:find("Sixth line", 1, true) then
@@ -681,7 +681,8 @@ local function verify_mixed(lines, ansi_lines)
         local number_pos = stripped:find("7%s+│Modified text here")
         local wedge_pos = stripped:find(change_wedge_top, 1, true)
         if wedge_pos then
-          top_wedge_docked_to_right_number = number_pos and (wedge_pos + #change_wedge_top == number_pos)
+          top_wedge_docked_to_right_number = number_pos ~= nil
+            and stripped:sub(wedge_pos + #change_wedge_top, number_pos - 1):match("^ *$") ~= nil
         end
       elseif stripped:find("Original text here", 1, true) then
         original_word_bg = ansi_bg_for_text(line, "Original")
@@ -878,8 +879,9 @@ local function glyph_docked_to_right_number(stripped, glyph)
   if not pos then
     return false
   end
-  local next_char = stripped:sub(pos + #glyph, pos + #glyph)
-  return next_char:match("%d") ~= nil
+  -- The wedge sits in the pane's connector-side cell; the number follows,
+  -- right-aligned toward the document.
+  return stripped:sub(pos + #glyph):match("^ *%d") ~= nil
 end
 
 local function contains_any_glyph(lines, labels, glyphs)
@@ -1625,7 +1627,7 @@ local function verify_scroll_additions(lines, ansi_lines, phase)
     for _, line in ipairs(lines) do
       local stripped = strip_ansi(line)
       if stripped:find("Scroll add origin B", 1, true)
-          and stripped:find("│  7 │", 1, true) then
+          and stripped:find("│ 7  │", 1, true) then
         found_lower_origin = true
       elseif stripped:find("Scroll add context 06", 1, true)
           and row_has_internal_connector_pipe(stripped) then
@@ -1708,7 +1710,7 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
     local _, stripped = find_plain_line_all(lines, {
       "Deleted scroll B 06",
       "│ 63◣│",
-      "│ " .. tostring(right_number),
+      "│ " .. string.format("%2d", right_number),
     })
     if not stripped then
       table.insert(errors, description)
@@ -1741,22 +1743,22 @@ local function verify_scroll_deletions(lines, ansi_lines, phase)
   end
 
   if phase == "initial" then
-    require_plain_fragments({ "Deleted scroll A 01", "│  4◤│" },
+    require_plain_fragments({ "Deleted scroll A 01", "│ 4 ◤│" },
       "Expected initial deletion target below the origin to use a down-route triangle")
   elseif phase == "target-aligned" then
-    require_plain_fragments({ "Deleted scroll A 01", "│  4◣│" },
+    require_plain_fragments({ "Deleted scroll A 01", "│ 4 ◣│" },
       "Expected deletion split upper triangle on the projected origin row")
-    require_plain_fragments({ "Deleted scroll A 02", "│  5◤│" },
+    require_plain_fragments({ "Deleted scroll A 02", "│ 5 ◤│" },
       "Expected deletion split lower triangle adjacent to the projected origin row")
   elseif phase == "target-flipped" then
-    require_plain_fragments({ "Deleted scroll A 02", "│  5◣│" },
+    require_plain_fragments({ "Deleted scroll A 02", "│ 5 ◣│" },
       "Expected scrolled deletion upper triangle to track the projected origin row")
-    require_plain_fragments({ "Deleted scroll A 03", "│  6◤│" },
+    require_plain_fragments({ "Deleted scroll A 03", "│ 6 ◤│" },
       "Expected scrolled deletion lower triangle to stay adjacent to the upper triangle")
   elseif phase == "target-spanning" then
-    require_plain_fragments({ "Deleted scroll A 03", "│  6◣│" },
+    require_plain_fragments({ "Deleted scroll A 03", "│ 6 ◣│" },
       "Expected spanning deletion upper triangle to stay anchored to the projected origin")
-    require_plain_fragments({ "Deleted scroll A 04", "│  7◤│" },
+    require_plain_fragments({ "Deleted scroll A 04", "│ 7 ◤│" },
       "Expected spanning deletion lower triangle to stay adjacent to the upper triangle")
   elseif phase == "lower-target-below" then
     require_plain_fragments({ "Deleted scroll A 49", "│ 52◣│" },
@@ -2628,32 +2630,32 @@ local function verify_scroll_changes(lines, ansi_lines, phase)
     table.insert(errors, "Left-pane change scroll should leave right pane stationary at the top context")
   end
   if phase == "right-diverged" then
-    require_pattern_fragment("│  3 │%s+│◢7",
+    require_pattern_fragment("│ 3  │%s+│◢ 7",
       "Expected right-diverged change route to dock the upper transition on the right number pane")
-    local _, rail_line = find_plain_line(lines, { "Scroll change context 04", "│  4 │" })
+    local _, rail_line = find_plain_line(lines, { "Scroll change context 04", "│ 4  │" })
     if not rail_line or not has_internal_connector_pipe(rail_line) then
       table.insert(errors, "Expected right-diverged change route to draw a connector rail between shifted regions")
     end
-    require_plain_fragment("│  5◤│",
+    require_plain_fragment("│ 5 ◤│",
       "Expected right-diverged change route to dock the lower transition on the left number pane")
   elseif phase == "left-diverged" then
-    require_plain_fragment("│  7◣│",
+    require_plain_fragment("│ 7 ◣│",
       "Expected left-diverged change route to dock the upper transition on the left number pane")
-    local _, rail_line = find_plain_line(lines, { "Scroll change context 05", "│  8 │" })
+    local _, rail_line = find_plain_line(lines, { "Scroll change context 05", "│ 8  │" })
     if not rail_line or not has_internal_connector_pipe(rail_line) then
       table.insert(errors, "Expected left-diverged change route to draw a connector rail between shifted regions")
     end
-    require_pattern_fragment("│  9 │%s+│◥5",
+    require_pattern_fragment("│ 9  │%s+│◥ 5",
       "Expected left-diverged change route to dock the lower transition on the right number pane")
   elseif phase == "both-diverged" then
-    require_pattern_fragment("│  4 │%s+│◢6",
+    require_pattern_fragment("│ 4  │%s+│◢ 6",
       "Expected both-diverged change route to dock the upper right transition beside the overlap")
-    require_pattern_fragment("│  5 │%s+│ 7",
+    require_pattern_fragment("│ 5  │%s+│  7",
       "Expected both-diverged change overlap row to remain solid without route lines")
     require_solid_change_connector("Old routed change A")
-    require_pattern_fragment("│  6◤│%s+│ 8",
+    require_pattern_fragment("│ 6 ◤│%s+│  8",
       "Expected both-diverged change route to dock the lower left transition beside the overlap")
-    require_pattern_fragment("│  7 │%s+│ 9",
+    require_pattern_fragment("│ 7  │%s+│  9",
       "Expected both-diverged change continuation to stay clear after the lower wedge row")
   end
 

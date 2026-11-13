@@ -62,15 +62,36 @@ return { ok = true }
 ]]
 
 -- Runs inside the child: read every cell of the default grid.
+--
+-- The separators between the number panes and the connector core are hidden
+-- (blank fillchar) and covered by bridge floats (connector/bridge.lua). A
+-- headless child does not composite floats into this grid, so those columns
+-- read as the blank separator underneath. Unless `raw` is set, they are
+-- captured as `│` so the layout parsers in verify.lua keep finding the pane
+-- boundaries; test_gutter_bridge.lua checks the bridges themselves.
 local CAPTURE = [[
+local raw = ...
 local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
 local lines, columns = vim.o.lines, vim.o.columns
+local marked = {}
+if not raw then
+  local ok, bridge = pcall(require, "diffbandit.connector.bridge")
+  for _, sep in ipairs(ok and bridge.separator_cells() or {}) do
+    for r = sep.top, sep.bottom do
+      marked[r * columns + sep.col] = true
+    end
+  end
+end
 local rows = {}
 for r = 0, lines - 1 do
   local row = {}
   for c = 0, columns - 1 do
     local cell = vim.api.nvim__inspect_cell(1, r, c)
-    row[c + 1] = { cell[1], cell[2] }
+    local text = cell[1]
+    if marked[r * columns + c] and text == " " then
+      text = "\226\148\130"
+    end
+    row[c + 1] = { text, cell[2] }
   end
   rows[r + 1] = row
 end
@@ -206,19 +227,20 @@ function Child:settle(timeout)
   return self
 end
 
-function Child:capture_grid()
-  return self.child.lua(CAPTURE)
+function Child:capture_grid(raw)
+  return self.child.lua(CAPTURE, { raw == true })
 end
 
 --- Capture the screen, write capture.txt / capture.ansi into dir, and return
---- plain_lines, ansi_lines.
-function Child:capture(dir, name)
+--- plain_lines, ansi_lines. opts.raw keeps bridged separators as drawn.
+function Child:capture(dir, name, opts)
+  local raw = opts and opts.raw == true
   -- The first read after a highlight redefinition can resolve cells against a
   -- stale attribute table (the grid holds attr ids; the table is rebuilt on the
   -- next event-loop turn). Read until two consecutive grids agree.
-  local rendered = M.render_grid(self:capture_grid())
+  local rendered = M.render_grid(self:capture_grid(raw))
   for _ = 1, 20 do
-    local again = M.render_grid(self:capture_grid())
+    local again = M.render_grid(self:capture_grid(raw))
     if vim.deep_equal(again, rendered) then
       break
     end

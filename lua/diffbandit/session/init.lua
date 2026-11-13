@@ -10,6 +10,7 @@ local queue_host = require("diffbandit.host.queue")
 local ui = require("diffbandit.util.ui")
 local rowmap = require("diffbandit.util.rowmap")
 local connector_width = require("diffbandit.connector.width")
+local separator_bridge = require("diffbandit.connector.bridge")
 local keymaps = require("diffbandit.util.keymaps")
 local session_layout = require("diffbandit.session.layout")
 local render_host = require("diffbandit.session.render_host")
@@ -85,13 +86,13 @@ end
 -- Width/marker fields shared by Session.start and replace_sources; both must
 -- recompute these identically whenever sources or view change.
 local function assign_pane_metrics(self, sources, view)
-  self.left_number_width = math.max(2, display_number_width(sources.left))
+  self.left_number_width = display_number_width(sources.left)
   self.right_number_width = display_number_width(sources.right)
   self.stage_marker_width = git_action_markers_enabled(self.file_queue, self.file_queue_index) and 1 or 0
   self.left_stage_marker_width = 0
   self.right_stage_marker_width = self.stage_marker_width
-  self.left_number_pane_width = self.left_number_width + 1 + self.left_stage_marker_width
-  self.right_number_pane_width = self.right_number_width + 1 + self.right_stage_marker_width
+  self.left_number_pane_width = ui.number_pane_width(self.left_number_width) + self.left_stage_marker_width
+  self.right_number_pane_width = ui.number_pane_width(self.right_number_width) + self.right_stage_marker_width
   self.connector_core_width = connector_width.base(view, self.config)
 end
 
@@ -1788,6 +1789,12 @@ function Session:highlight_active_chunk(chunk, opts)
     for meta_idx = lo, hi do
       paint_meta(meta_idx)
     end
+  end
+
+  -- The active tint reaches the connector's edge cells; carry it across the
+  -- separator bridges (a render repaints them itself afterwards).
+  if self.connector_renderer ~= "kitty" and not opts.skip_separator_bridge then
+    separator_bridge.paint(self)
   end
 
   if opts.position_cursor ~= false then

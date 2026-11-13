@@ -720,7 +720,13 @@ sentinel, so detection does not depend on terminal names (tmux is the
 exception, see [tmux](#tmux)). When the terminal answers, each connector is drawn as an anti-aliased image of filled bezier
 ribbons between the two panes, modelled on IntelliJ's diff divider. The curve
 also replaces the wedge glyphs in the number-pane edge columns. Otherwise the
-cell renderer is used, unchanged.
+cell renderer draws the connector with glyphs and underlines. Its number panes
+and core still read as one gutter: a one-column float over each separator
+between them continues the core's bands and underlines, so routes run straight
+into the triangles and wedges. The separators between each document and its
+number pane keep their line on plain rows and take the band color (or the
+insertion underline) where a band crosses, so bands run unbroken from one
+document to the other.
 
 - The image is shown through Unicode placeholder cells in a small, static,
   non-focusable float laid over the gutter from one wedge column to the other.

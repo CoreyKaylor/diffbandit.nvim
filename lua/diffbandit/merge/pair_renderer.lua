@@ -4,6 +4,7 @@
 local connector_width = require("diffbandit.connector.width")
 local config_mod = require("diffbandit.config")
 local render_host = require("diffbandit.session.render_host")
+local ui = require("diffbandit.util.ui")
 local kitty_canvas = require("diffbandit.kitty.canvas")
 
 local M = {}
@@ -14,7 +15,7 @@ end
 
 function M.from_pair(owner, id_suffix, pair, left_source, right_source, buffers, windows, opts)
   opts = opts or {}
-  local number_width = owner.number_width or 3
+  local number_width = owner.number_width or 1
   local width = connector_base_width(pair, owner.config)
   local renderer = {
     id = tostring(owner.id) .. "-" .. id_suffix,
@@ -33,8 +34,8 @@ function M.from_pair(owner, id_suffix, pair, left_source, right_source, buffers,
     stage_marker_width = 0,
     left_stage_marker_width = 0,
     right_stage_marker_width = 0,
-    left_number_pane_width = number_width + 1,
-    right_number_pane_width = number_width + 1,
+    left_number_pane_width = ui.number_pane_width(number_width),
+    right_number_pane_width = ui.number_pane_width(number_width),
     connector_core_width = width,
     connector_width_cache = {},
     overview_enabled = false,

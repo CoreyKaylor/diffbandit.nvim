@@ -10,6 +10,7 @@ local diff_mod = require("diffbandit.diff")
 local connector_width = require("diffbandit.connector.width")
 local ui = require("diffbandit.util.ui")
 local kitty_canvas = require("diffbandit.kitty.canvas")
+local separator_bridge = require("diffbandit.connector.bridge")
 
 local set_buffer_options = nvim.set_buffer_options
 local get_win_view_topline = nvim.get_win_view_topline
@@ -860,28 +861,30 @@ local function render_number_panes(self, ctx)
   for i = 1, ctx.right_rows_total do
     ctx.right_num_lines[i] = right_blank
   end
+  -- Every number sits between two blank cells; the cell facing the
+  -- connector is the triangle/wedge column (render_host *_triangle_col).
+  -- Numbers align away from the connector, toward their document (merge's
+  -- result→remote pair mirrors its sides). The right pane's stage marker
+  -- takes the outermost cell.
+  local right_marker = (self.right_stage_marker_width or 0) > 0
   for _, meta in ipairs(self.view.line_meta) do
     if meta.left_index then
       local left_row = left_map:first_row(meta.left_index)
-      if (self.left_stage_marker_width or 0) > 0 then
-        ctx.left_num_lines[left_row] = " "
-          .. format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false)
-          .. " "
-      else
-        ctx.left_num_lines[left_row] = format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width, false) .. " "
-      end
+      ctx.left_num_lines[left_row] = " "
+        .. format_display_number(source_display_number(self.left, meta.left_line), self.left_number_width,
+          not self.mirror_connector_sides)
+        .. " "
     end
     if meta.right_index then
       local right_row = right_map:first_row(meta.right_index)
-      if self.mirror_connector_sides then
-        ctx.right_num_lines[right_row] = format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, false) .. " "
-      elseif (self.right_stage_marker_width or 0) > 0 then
-        ctx.right_num_lines[right_row] = " "
-          .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
-          .. (ctx.right_stage_markers[meta.right_index] or " ")
-      else
-        ctx.right_num_lines[right_row] = " " .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width, true)
+      local text = " "
+        .. format_display_number(source_display_number(self.right, meta.right_line), self.right_number_width,
+          self.mirror_connector_sides == true)
+        .. " "
+      if right_marker and not self.mirror_connector_sides then
+        text = text .. (ctx.right_stage_markers[meta.right_index] or " ")
       end
+      ctx.right_num_lines[right_row] = text
     end
   end
 end
@@ -1802,6 +1805,8 @@ function M.render(session)
         position_cursor = false,
         sync_gutters = not viewport_only,
         render_chrome = false,
+        -- Painted once below, after the route glyphs.
+        skip_separator_bridge = true,
       })
     end
   end
@@ -1813,6 +1818,14 @@ function M.render(session)
     stages.kitty_curves = kitty_timings.curves
     stages.kitty_raster = kitty_timings.raster
     stages.kitty_transmit = kitty_timings.transmit
+  end
+
+  -- Cell renderer: carry the core's edge cells across the hidden number
+  -- pane | core separators. The image renderer covers them itself.
+  if kitty_mode(session) then
+    separator_bridge.close(session)
+  else
+    separator_bridge.paint(session)
   end
 
   -- One clip field for ns + path clears; commit after both have unioned with

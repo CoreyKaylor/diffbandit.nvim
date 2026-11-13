@@ -358,9 +358,10 @@ local function apply_window_options(session)
     end
   end
 
-  for _, win in ipairs({ session.left_num_win, session.connector_win, session.right_num_win }) do
-    set_window_options(win, layout.win_opts.gutter())
-  end
+  -- The number pane | core | number pane separators are bridged, not drawn.
+  set_window_options(session.left_num_win, layout.win_opts.gutter(nil, true))
+  set_window_options(session.connector_win, layout.win_opts.gutter(nil, true))
+  set_window_options(session.right_num_win, layout.win_opts.gutter())
 
   apply_right_source_window_options(session)
 

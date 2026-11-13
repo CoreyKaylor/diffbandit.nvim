@@ -66,6 +66,9 @@ M.winhl = {
   gutter = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
     .. "WinBar:DiffBanditConnectorContext,WinBarNC:DiffBanditConnectorContext,"
     .. split .. ",CursorLine:DiffBanditCursorLine",
+  hidden_gutter = "Normal:DiffBanditConnectorContext,NormalNC:DiffBanditConnectorContext,"
+    .. "WinBar:DiffBanditConnectorContext,WinBarNC:DiffBanditConnectorContext,"
+    .. hidden_split .. ",CursorLine:DiffBanditCursorLine",
   overview = "Normal:DiffBanditOverviewContext,NormalNC:DiffBanditOverviewContext,"
     .. "WinBar:DiffBanditOverviewContext,WinBarNC:DiffBanditOverviewContext,"
     .. hidden_split .. ",CursorLine:DiffBanditCursorLine",
@@ -116,7 +119,16 @@ function M.win_opts.source(winhl, overrides)
 end
 
 -- Fixed-width helper pane (number gutters, connectors, overview sidecars).
-function M.win_opts.gutter(winhl)
+-- `hide_separator` blanks the window's right separator: the two separators
+-- between the number panes and the connector core, which the connector
+-- renderers bridge (connector/bridge.lua, or the Kitty image) so a route
+-- runs straight from a triangle into the core.
+function M.win_opts.gutter(winhl, hide_separator)
+  if hide_separator then
+    local opts = M.win_opts.gutter(winhl or M.winhl.hidden_gutter)
+    opts.fillchars = M.hidden_separator_fillchars()
+    return opts
+  end
   return {
     number = false,
     relativenumber = false,
