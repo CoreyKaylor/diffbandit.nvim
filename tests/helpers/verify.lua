@@ -678,7 +678,10 @@ local function verify_mixed(lines, ansi_lines)
         modified_word_bg = ansi_bg_for_text(line, "Modified")
         modified_tail_bg = ansi_bg_for_text(line, "text here")
         added_suffix_bg = ansi_bg_for_text(line, "with extra content")
+        -- The document | number pane separator is a │ in headless captures
+        -- and a band-colored blank in a real terminal (its bridge float).
         local number_pos = stripped:find("7%s+│Modified text here")
+          or stripped:find("7%s+Modified text here")
         local wedge_pos = stripped:find(change_wedge_top, 1, true)
         if wedge_pos then
           top_wedge_docked_to_right_number = number_pos ~= nil
