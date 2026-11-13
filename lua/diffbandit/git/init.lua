@@ -855,17 +855,50 @@ function M.list_branches(root)
   return branches, nil
 end
 
+-- Fields of one log record, in format order. %D is the ref decoration
+-- ("HEAD -> main, origin/main, tag: v1"); %at the author time as a unix
+-- timestamp, which the log view turns into a compact age.
+local LOG_FORMAT = "%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%at%x1f%D%x1f%s%x1e"
+
 local function log_format_args()
   return {
-    "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%s%x1e",
+    "--pretty=format:" .. LOG_FORMAT,
     "--date=short",
   }
 end
 
-function M.log(root, opts)
-  opts = opts or {}
-  local args = { "log" }
-  vim.list_extend(args, log_format_args())
+local function parse_refs(decoration)
+  local refs = {}
+  for _, ref in ipairs(vim.split(decoration or "", ", ", { plain = true, trimempty = true })) do
+    refs[#refs + 1] = vim.trim(ref)
+  end
+  return refs
+end
+
+local function parse_log(output)
+  local commits = {}
+  for _, record in ipairs(split_char(output, "\30")) do
+    record = vim.trim(record)
+    if record ~= "" then
+      local fields = split_char(record, "\31")
+      commits[#commits + 1] = {
+        hash = fields[1],
+        short_hash = fields[2],
+        parents = fields[3] and vim.split(fields[3], " ", { plain = true, trimempty = true }) or {},
+        author = fields[4],
+        date = fields[5],
+        time = tonumber(fields[6]),
+        refs = parse_refs(fields[7]),
+        subject = fields[8],
+      }
+    end
+  end
+  return commits
+end
+
+-- The revision and path arguments shared by the log and its stats pass, so
+-- both walk the same commits.
+local function append_log_selection(args, opts)
   if opts.all then
     args[#args + 1] = "--all"
   end
@@ -876,63 +909,163 @@ function M.log(root, opts)
     args[#args + 1] = opts.rev
   end
   append_pathspecs(args, opts.pathspecs or {})
+end
+
+function M.log(root, opts)
+  opts = opts or {}
+  local args = { "log" }
+  vim.list_extend(args, log_format_args())
+  append_log_selection(args, opts)
 
   local output, err = git_output(root, args)
   if not output then
     return nil, err
   end
-
-  local commits = {}
-  for _, record in ipairs(split_char(output, "\30")) do
-    record = vim.trim(record)
-    if record ~= "" then
-      local fields = split_char(record, "\31")
-      local parents = fields[3] and vim.split(fields[3], " ", { plain = true, trimempty = true }) or {}
-      commits[#commits + 1] = {
-        hash = fields[1],
-        short_hash = fields[2],
-        parents = parents,
-        author = fields[4],
-        date = fields[5],
-        subject = fields[6],
-      }
-    end
-  end
-  return commits, nil
+  return parse_log(output), nil
 end
 
-function M.commit_metadata(root, rev)
-  local commits, err = M.log(root, { rev = "-1", max_count = 1 })
-  if not commits then
-    return nil, err
+-- " 3 files changed, 12 insertions(+), 4 deletions(-)" -> { files, added, removed }
+local function parse_shortstat(line)
+  local files = tonumber(line:match("(%d+) files? changed"))
+  if not files then
+    return nil
   end
-  if rev and rev ~= "" then
-    local args = { "log" }
-    vim.list_extend(args, log_format_args())
-    args[#args + 1] = "-1"
-    args[#args + 1] = rev
-    local output, output_err = git_output(root, args)
-    if not output then
-      return nil, output_err
+  return {
+    files = files,
+    added = tonumber(line:match("(%d+) insertions?%(%+%)")) or 0,
+    removed = tonumber(line:match("(%d+) deletions?%(%-%)")) or 0,
+  }
+end
+
+-- Size of every commit the log lists, measured the way a commit review
+-- diffs it (first parent, renames found), so the counts match what opens.
+-- callback(stats_by_hash | nil, err). A commit that changes nothing gets
+-- { files = 0, added = 0, removed = 0 }.
+function M.log_stats_async(root, opts, callback)
+  opts = opts or {}
+  local function run(diff_merges)
+    local args = { "log", "--pretty=format:%x1e%H", "--shortstat", "-M" }
+    if diff_merges then
+      args[#args + 1] = "--diff-merges=first-parent"
     end
-    commits = {}
-    for _, record in ipairs(split_char(output, "\30")) do
-      record = vim.trim(record)
-      if record ~= "" then
-        local fields = split_char(record, "\31")
-        local parents = fields[3] and vim.split(fields[3], " ", { plain = true, trimempty = true }) or {}
-        commits[#commits + 1] = {
-          hash = fields[1],
-          short_hash = fields[2],
-          parents = parents,
-          author = fields[4],
-          date = fields[5],
-          subject = fields[6],
+    append_log_selection(args, opts)
+    git_async(root, args, function(ok, err, output)
+      if not ok then
+        if diff_merges then
+          -- Git before 2.31 has no --diff-merges; merges then show no stat.
+          run(false)
+          return
+        end
+        callback(nil, err)
+        return
+      end
+      local stats = {}
+      for _, record in ipairs(split_char(output, "\30")) do
+        local hash, rest = record:match("^%s*(%x+)(.*)$")
+        if hash then
+          stats[hash] = parse_shortstat(rest) or { files = 0, added = 0, removed = 0 }
+        end
+      end
+      callback(stats, nil)
+    end)
+  end
+  run(true)
+end
+
+-- `--numstat -z`: "<added>\t<removed>\t<path>", or for a rename
+-- "<added>\t<removed>\t" followed by the old and new paths as tokens.
+-- Binary files report "-" for both counts.
+local function parse_numstat(tokens)
+  local by_path = {}
+  local i = 1
+  while i <= #tokens do
+    local added, removed, path = tokens[i]:match("^([%d%-]+)\t([%d%-]+)\t(.*)$")
+    if not added then
+      i = i + 1
+    else
+      if path == "" then
+        path = tokens[i + 2]
+        i = i + 3
+      else
+        i = i + 1
+      end
+      if path then
+        by_path[normalize_path(path)] = {
+          added = tonumber(added),
+          removed = tonumber(removed),
+          binary = added == "-",
         }
       end
     end
   end
-  return commits[1], nil
+  return by_path
+end
+
+local DETAILS_FORMAT = table.concat({ "%H", "%an", "%ae", "%ad", "%cn", "%ce", "%cd", "%D", "%P", "%B" }, "%x1f")
+
+-- Everything the log's detail pane shows for one commit: full message,
+-- author and committer, refs, and the files a review of it would open
+-- (diffed against the first parent, like commit_queue, and limited to the
+-- log's pathspecs, as its review is) with line counts.
+-- callback(details | nil, err)
+function M.commit_details_async(root, hash, pathspecs, callback)
+  local show_args = { "show", "-s", "--date=format:%Y-%m-%d %H:%M", "--pretty=format:" .. DETAILS_FORMAT, hash }
+  git_async(root, show_args, function(ok, err, output)
+    if not ok then
+      callback(nil, err)
+      return
+    end
+    local fields = split_char(output, "\31")
+    local details = {
+      hash = fields[1],
+      author = fields[2],
+      author_email = fields[3],
+      author_date = fields[4],
+      committer = fields[5],
+      committer_email = fields[6],
+      committer_date = fields[7],
+      refs = parse_refs(fields[8]),
+      parents = vim.split(fields[9] or "", " ", { plain = true, trimempty = true }),
+      message = vim.split((fields[10] or ""):gsub("%s+$", ""), "\n", { plain = true }),
+    }
+    -- The diff needs the parent, so it runs once the metadata is in.
+    local base = details.parents[1] or empty_tree
+    local diff_args_list = { "diff", "--raw", "--numstat", "-z", "--no-ext-diff", "-M", base, hash }
+    append_pathspecs(diff_args_list, pathspecs)
+    git_async(root, diff_args_list, function(diff_ok, diff_err, diff_output)
+      if not diff_ok then
+        callback(nil, diff_err)
+        return
+      end
+      local counts = parse_numstat(split_nul(diff_output))
+      local files = parse_raw(diff_output)
+      for _, file in ipairs(files) do
+        local count = counts[file.path]
+        if count then
+          file.added, file.removed, file.binary = count.added, count.removed, count.binary
+        end
+      end
+      table.sort(files, function(a, b)
+        return (a.path or "") < (b.path or "")
+      end)
+      details.files = files
+      callback(details, nil)
+    end)
+  end)
+end
+
+function M.commit_metadata(root, rev)
+  local args = { "log" }
+  vim.list_extend(args, log_format_args())
+  args[#args + 1] = "-1"
+  if rev and rev ~= "" then
+    args[#args + 1] = rev
+  end
+  local output, err = git_output(root, args)
+  if not output then
+    return nil, err
+  end
+  return parse_log(output)[1], nil
 end
 
 local function review_queue_opts(opts, review)

@@ -33,6 +33,8 @@ documents without distorting either one.
 - Read-only source panes keep filetype-driven syntax highlighting without
   showing source-side diagnostics.
 - Git queue navigation for changed files with `]f` and `[f`.
+- A Git log browser showing each commit's age, refs, and lines added/removed,
+  with a detail pane for the commit under the cursor (message, author, files).
 - Walk a Git log (or one file's history) commit by commit with `]r` and `[r`.
 - Read-only Git workflow review for branch comparisons, commit logs, commit
   changes, and guarded branch checkout.
@@ -259,6 +261,15 @@ Commit and branch review views are read-only Git queues. They reuse normal file
 and hunk navigation (`]f`/`[f`, `]c`/`[c`) but disable staging, discard, apply,
 and commit actions. Branch comparison defaults to a merge-base comparison; use
 `--direct` for an exact ref-to-ref comparison.
+
+The log (`:DiffBanditGitLog`) lists each commit's hash, age, author, lines
+added and removed, refs (branches, tags, `HEAD`), and subject. The counts load
+in the background, so long logs show immediately. A detail pane beside the
+list shows the commit under the cursor: full hash, refs, author and committer,
+the whole message, and the files it changes with their line counts. `p`
+toggles the pane (logs narrower than `git.log.details_min_columns` open
+without it), `<CR>` in the list reviews the commit, and `<CR>` on a file in
+the pane reviews the commit starting at that file. `R` refreshes.
 
 A commit review opened from the log (`:DiffBanditGitLog`, or "Show Current File
 History" in the menu) can walk the log without going back to it: `]r` opens the
@@ -558,6 +569,15 @@ require("diffbandit").setup({
     log_keys = {
       next = "]r", -- older commit in the log
       prev = "[r", -- newer commit in the log
+    },
+    log = {
+      details = true,            -- detail pane beside the log
+      details_width = 0.4,       -- fraction of the log window it takes
+      details_min_columns = 100, -- narrower logs open without it
+      keys = {
+        toggle_details = "p",
+        refresh = "R",
+      },
     },
     panel = {
       width = 42,

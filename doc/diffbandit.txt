@@ -121,6 +121,13 @@ COMMANDS                                            *diffbandit-commands*
         staying on the same file when the commit touches it; with a pathspec
         this walks one file's history. Keys: `git.log_keys` in |diffbandit-configuration|.
 
+        Each row shows the hash, age, author, lines added and removed, refs,
+        and subject; the counts fill in once git has measured them. A detail
+        pane beside the list shows the commit under the cursor: refs, author
+        and committer, the full message, and its files with line counts.
+        `p` toggles the pane, `R` refreshes, and <CR> on a file in the pane
+        reviews the commit starting at that file. Options: `git.log`.
+
                                               *:DiffBanditGitCommit*
 :DiffBanditGitCommit {rev}
         Open a read-only review of the files changed by {rev}.
@@ -530,6 +537,15 @@ Common configuration:
       log_keys = {
         next = "]r", -- older commit in the log
         prev = "[r", -- newer commit in the log
+      },
+      log = {
+        details = true,            -- detail pane beside the log
+        details_width = 0.4,       -- fraction of the log window it takes
+        details_min_columns = 100, -- narrower logs open without it
+        keys = {
+          toggle_details = "p",
+          refresh = "R",
+        },
       },
       panel = {
         width = 42,

@@ -149,6 +149,20 @@ local defaults = {
       next = "]r", -- older (down the log)
       prev = "[r", -- newer (up the log)
     },
+    -- The log browser (:DiffBanditGitLog).
+    log = {
+      -- A pane beside the log showing the commit under the cursor: full
+      -- message, author/committer, refs, and its files with line counts.
+      details = true,
+      -- Fraction of the log window the detail pane takes.
+      details_width = 0.4,
+      -- Narrower log windows open without the pane (toggle it with the key).
+      details_min_columns = 100,
+      keys = {
+        toggle_details = "p",
+        refresh = "R",
+      },
+    },
     panel = {
       width = 42,
       commit_height = 10,

@@ -461,3 +461,86 @@ do
   state.unregister_view(browser)
   vim.cmd("tabclose")
 end
+
+-- Log rows: compact ages, refs, and change counts that load after the list.
+do
+  local log_view = require("diffbandit.util.log_view")
+  assert_eq(log_view.age(1000, 1030), "now", "under a minute is now")
+  assert_eq(log_view.age(0, 47 * 60), "47m", "minutes")
+  assert_eq(log_view.age(0, 3 * 3600), "3h", "hours")
+  assert_eq(log_view.age(0, 4 * 86400), "4d", "days")
+  assert_eq(log_view.age(0, 21 * 86400), "3w", "weeks")
+  assert_eq(log_view.age(0, 90 * 86400), "3mo", "months")
+  assert_eq(log_view.age(0, 800 * 86400), "2y", "years")
+end
+
+-- The detail pane follows the log cursor and opens a review on a file.
+do
+  local diffbandit = require("diffbandit")
+  local state = require("diffbandit.state")
+  local repo = make_git_repo()
+  write_repo_file(repo, "a.txt", { "a1" })
+  commit_baseline(repo)
+  write_repo_file(repo, "a.txt", { "a1", "a2", "a3" })
+  write_repo_file(repo, "b.txt", { "b1" })
+  git_test_command({ "add", "-A" }, repo)
+  git_test_command({ "commit", "-q", "-m", "grow a", "-m", "with a body line" }, repo)
+  git_test_command({ "commit", "-q", "--allow-empty", "-m", "nothing" }, repo)
+  git_test_command({ "update-ref", "refs/tags/v1", "HEAD" }, repo)
+
+  vim.cmd("tabnew")
+  local browser = assert((diffbandit.git_log({ root = repo })))
+  assert_eq(browser.commits[1].refs[1]:match("^HEAD") ~= nil, true, "the newest commit carries HEAD")
+  assert_eq(vim.tbl_contains(browser.commits[1].refs, "tag: v1"), true, "tags are listed")
+  vim.wait(5000, function() return not browser.stats_loading end)
+  assert_eq(vim.deep_equal(browser.stats[browser.commits[2].hash], { files = 2, added = 3, removed = 0 }), true,
+    "stats count files and lines")
+  assert_eq(browser.stats[browser.commits[1].hash].files, 0, "an empty commit changes nothing")
+  local row = vim.api.nvim_buf_get_lines(browser.buf, 2, 3, false)[1]
+  assert_eq(row:find("+3 -0", 1, true) ~= nil, true, "the row shows the counts")
+  assert_eq(row:find("grow a", 1, true) ~= nil, true, "the row shows the subject")
+
+  -- 80 columns is under details_min_columns, so the pane starts closed.
+  assert_eq(browser.details_win, nil, "a narrow log opens without the pane")
+  buffer_keymap_callback(browser.buf, "n", "p")()
+  assert_eq(vim.api.nvim_win_is_valid(browser.details_win), true, "p opens the pane")
+  vim.api.nvim_win_set_cursor(browser.win, { 3, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = browser.buf })
+  local hash = browser.commits[2].hash
+  vim.wait(5000, function()
+    return browser.details_cache[hash] ~= nil and browser.details_hash == hash
+  end)
+  local lines = vim.api.nvim_buf_get_lines(browser.details_buf, 0, -1, false)
+  assert_eq(lines[1], hash, "the pane leads with the full hash")
+  assert_eq(vim.tbl_contains(lines, "with a body line"), true, "the pane shows the message body")
+  assert_eq(vim.tbl_contains(lines, "2 files changed  +3 -0"), true, "the pane sums the changes")
+  local b_row
+  for line, file in pairs(browser.details_file_rows) do
+    if file.path == "b.txt" then
+      b_row = line
+    end
+  end
+  assert_eq(lines[b_row]:match("^A") ~= nil, true, "added files are marked A")
+
+  vim.api.nvim_set_current_win(browser.details_win)
+  vim.api.nvim_win_set_cursor(browser.details_win, { b_row, 0 })
+  buffer_keymap_callback(browser.details_buf, "n", "<CR>")()
+  local review = state.sessions[vim.api.nvim_get_current_tabpage()]
+  assert_eq(review.file_queue.entries[review.file_queue_index].path, "b.txt", "Enter on a file opens the review there")
+  assert_eq(review.file_queue.log_walk.index, 2, "the review can still walk the log")
+  review:close()
+
+  buffer_keymap_callback(browser.buf, "n", "p")()
+  assert_eq(browser.details_win, nil, "p closes the pane")
+
+  -- A file history's pane lists only the files its review would open.
+  local scoped
+  require("diffbandit.git").commit_details_async(repo, hash, { "b.txt" }, function(details)
+    scoped = details
+  end)
+  vim.wait(5000, function() return scoped ~= nil end)
+  assert_eq(#scoped.files, 1, "pathspecs limit the pane's files")
+  assert_eq(scoped.files[1].path, "b.txt", "the pane keeps the matching file")
+  state.unregister_view(browser)
+  vim.cmd("tabclose")
+end

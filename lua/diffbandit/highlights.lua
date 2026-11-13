@@ -17,6 +17,14 @@ local base_defaults = {
   DiffBanditAccentText = { link = "Identifier" },
   DiffBanditOverviewContext = { link = "Normal" },
   DiffBanditOverviewCursor = { link = "CursorLineNr" },
+  -- Git log browser columns (fg only, so the log's tinted background shows).
+  DiffBanditLogHash = { link = "Constant", default = true },
+  DiffBanditLogRef = { link = "Label", default = true },
+  DiffBanditLogHead = { link = "Title", default = true },
+  DiffBanditLogTag = { link = "Special", default = true },
+  DiffBanditLogAdded = { link = "Added", default = true },
+  DiffBanditLogRemoved = { link = "Removed", default = true },
+  DiffBanditLogChanged = { link = "Changed", default = true },
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
 }
