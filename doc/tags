@@ -24,6 +24,7 @@ diffbandit-<<	diffbandit.txt	/*diffbandit-<<*
 diffbandit-<Space>	diffbandit.txt	/*diffbandit-<Space>*
 diffbandit->>	diffbandit.txt	/*diffbandit->>*
 diffbandit-C	diffbandit.txt	/*diffbandit-C*
+diffbandit-L	diffbandit.txt	/*diffbandit-L*
 diffbandit-[c	diffbandit.txt	/*diffbandit-[c*
 diffbandit-[d	diffbandit.txt	/*diffbandit-[d*
 diffbandit-[f	diffbandit.txt	/*diffbandit-[f*
@@ -39,6 +40,7 @@ diffbandit-configuration	diffbandit.txt	/*diffbandit-configuration*
 diffbandit-folder-diff	diffbandit.txt	/*diffbandit-folder-diff*
 diffbandit-g?	diffbandit.txt	/*diffbandit-g?*
 diffbandit-git	diffbandit.txt	/*diffbandit-git*
+diffbandit-gzg	diffbandit.txt	/*diffbandit-gzg*
 diffbandit-gzp	diffbandit.txt	/*diffbandit-gzp*
 diffbandit-hunk-actions	diffbandit.txt	/*diffbandit-hunk-actions*
 diffbandit-installation	diffbandit.txt	/*diffbandit-installation*
