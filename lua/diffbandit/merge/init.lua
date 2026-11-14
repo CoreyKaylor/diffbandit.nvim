@@ -1,5 +1,6 @@
 local diff_pair = require("diffbandit.diff.pair")
 local git = require("diffbandit.git")
+local vcs = require("diffbandit.vcs")
 local merge_model = require("diffbandit.merge.model")
 local nvim = require("diffbandit.util.nvim")
 local pending = require("diffbandit.util.pending")
@@ -150,11 +151,22 @@ function Merge.data_from_texts(root, path, texts, config)
 end
 
 function Merge.load(root, path, config)
-  local stages, err = git.conflict_stages(root, path)
+  local stages, err = vcs.conflict_stages(root, path)
   if not stages then
     return nil, err
   end
-  return Merge.data_from_texts(root, path, stages, config)
+  local data = Merge.data_from_texts(root, path, stages, config)
+  data.labels = stages.labels
+  return data
+end
+
+-- The backend's own merge host when it has one (jj), else git's.
+function Merge.host_for_root(root)
+  local backend = root and vcs.for_root(root)
+  if backend and type(backend.merge_host) == "function" then
+    return backend.merge_host()
+  end
+  return Merge.git_host()
 end
 
 local function read_file_text(path, what)
@@ -232,7 +244,7 @@ function Merge.start(data, config, opts)
   self.current_conflict = #self.conflicts > 0 and 1 or 0
   self.selected_pair_hunk = nil
   self.line_ending_warning = data.line_ending_warning
-  self.host = opts.host or Merge.git_host()
+  self.host = opts.host or Merge.host_for_root(data.root)
   self.file_queue = opts.queue
   self.file_queue_index = opts.queue_index or (opts.queue and opts.queue.index)
   self.right_win = nil
@@ -441,11 +453,11 @@ function Merge.start_for_path(path, opts, config)
   opts = opts or {}
   config = config or state.get_config()
   local start = path or vim.api.nvim_buf_get_name(0) or vim.loop.cwd()
-  local root, root_err = git.find_root(start)
+  local root, root_err = vcs.find_root(start)
   if not root then
     return nil, root_err
   end
-  local rel = path and git.relpath(root, path) or git.relpath(root, vim.api.nvim_buf_get_name(0))
+  local rel = path and vcs.relpath(root, path) or vcs.relpath(root, vim.api.nvim_buf_get_name(0))
   if not rel or rel == "" then
     return nil, "no conflict path provided"
   end

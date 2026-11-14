@@ -44,6 +44,9 @@ documents without distorting either one.
 - Merge conflict group in the commit panel with a local/result/remote resolver,
   editable result pane with editor integrations, gutter-guided accept actions,
   and resolve-on-write staging.
+- Native [Jujutsu (jj)](https://github.com/jj-vcs/jj) support: the same
+  review, hunk staging (squash workflow into `@-`), commit panel, log, compare,
+  and conflict resolution, plus `bin/diffbandit` as jj's merge and diff editor.
 - Recursive folder comparison with efficient external digest checks and child
   file diffs that return to the folder view.
 - One-column overview gutters that show changed regions proportionally across
@@ -349,7 +352,38 @@ git config --global mergetool.diffbandit.trustExitCode true
 git config --global difftool.diffbandit.cmd 'diffbandit diff "$LOCAL" "$REMOTE"'
 ```
 
-jj (`~/.config/jj/config.toml`), for `jj resolve`, `jj split`, `jj squash -i`:
+For jj, see [Jujutsu (jj)](#jujutsu-jj) below.
+
+## Jujutsu (jj)
+
+In a jj workspace (colocated or not), every Git command, the launcher, and the
+panel switch to the jj backend automatically. Set `vcs.prefer = "git"` to
+force Git in a colocated repo. Revisions accept any jj revset.
+
+| DiffBandit | jj |
+|---|---|
+| unstaged view (default) | `@-` → `@` (what `jj diff` shows) |
+| staged view (`--cached`) | `@--` → `@-` |
+| all view | `@--` → `@`, with stage indicators |
+| stage hunk / file | move it from `@` into the staging change `@-` (`@`'s content is unchanged) |
+| unstage hunk / file | move it from `@-` back into `@` |
+| discard | restore the file in `@` from `@-` |
+| commit (`:w` in the panel) | describe the staging change and open a fresh one under `@`. With nothing staged, all of `@` is committed. Without a staging change, `jj commit` |
+| amend | stage into and re-describe the commit `@-` |
+| conflicts | `jj resolve --list` entries open in the merge resolver; `:w` writes the working copy |
+| checkout | `jj new <rev>` |
+
+This is the jj "squash workflow". The staging change is an undescribed,
+mutable `@-`, and `@` is your scratch space. If `@-` is a described commit (for
+example right after `jj commit`), your first stage from the unstaged view
+creates an empty staging change under `@` (`jj new --insert-before @`), so an
+existing commit is never changed by accident. To change that commit, turn on
+amend: it abandons an empty staging change left by the last commit, stages
+straight into `@-`, and `:w` rewrites its description. `jj.default_mode = "all"`
+opens the all view instead.
+
+To use diffbandit as jj's merge and diff editor (`jj resolve`, `jj split`,
+`jj squash -i`, `jj commit -i`), add this to `~/.config/jj/config.toml`:
 
 ```toml
 [merge-tools.diffbandit]
@@ -363,6 +397,11 @@ merge-tool-edits-conflict-markers = false
 merge-editor = "diffbandit"
 diff-editor = "diffbandit"
 ```
+
+Current limits:
+- Conflicts with more than two sides, or that involve a deletion, are left to
+  `jj resolve`.
+- When `@` is a merge commit, the review lists only its conflicts.
 
 ## Default Keys
 
@@ -566,6 +605,12 @@ require("diffbandit").setup({
     snap_key = "]s",
     close_key = "q",
     help_key = "g?",
+  },
+  vcs = {
+    prefer = "auto", -- "auto" (jj in jj workspaces), "git", or "jj"
+  },
+  jj = {
+    default_mode = "unstaged", -- or "all"
   },
   git = {
     default_mode = "all",

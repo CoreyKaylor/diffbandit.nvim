@@ -4,7 +4,7 @@
 --
 -- Row N + 1 of the list is commits[N] (row 1 is the header); the log walk
 -- (diffbandit.git_log_step) relies on that to keep the cursor in sync.
-local git = require("diffbandit.git")
+local git = require("diffbandit.vcs")
 local nvim = require("diffbandit.util.nvim")
 local ui = require("diffbandit.util.ui")
 local keyhelp = require("diffbandit.util.keyhelp")

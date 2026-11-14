@@ -16,6 +16,7 @@ CONTENTS                                                     *diffbandit*
  11. Configuration                                 |diffbandit-configuration|
  12. Lua API                                       |diffbandit-lua-api|
  13. Testing                                       |diffbandit-testing|
+ 14. Jujutsu (jj)                                  |diffbandit-jj|
 
 ==============================================================================
 OVERVIEW                                            *diffbandit-overview*
@@ -403,19 +404,7 @@ External tool mode works outside any repository:
   git config --global mergetool.diffbandit.trustExitCode true
   git config --global difftool.diffbandit.cmd 'diffbandit diff "$LOCAL" "$REMOTE"'
 <
-jj setup (`~/.config/jj/config.toml`):
->toml
-  [merge-tools.diffbandit]
-  program = "diffbandit"
-  merge-args = ["merge", "$base", "$left", "$right", "$output", "--path", "$path"]
-  edit-args = ["edit", "$left", "$right"]
-  diff-args = ["diff", "$left", "$right"]
-  merge-tool-edits-conflict-markers = false
-
-  [ui]
-  merge-editor = "diffbandit"
-  diff-editor = "diffbandit"
-<
+See |diffbandit-jj| for the jj configuration.
 
 ==============================================================================
 COMMIT PANEL                                  *diffbandit-commit-panel*
@@ -736,4 +725,52 @@ binary diffs, and scrolling behavior without a terminal. `tests/smoke/tmux.sh`
 repeats one check in a real TUI under tmux.
 
 ==============================================================================
+
+==============================================================================
+JUJUTSU (JJ)                                                  *diffbandit-jj*
+
+In a jj workspace (colocated or not), the Git commands, the launcher, and the
+commit panel use the jj backend automatically. `vcs.prefer = "git"` forces Git
+in a colocated repository. Revisions accept jj revsets.
+
+The jj "squash workflow" maps onto staging:
+
+  unstaged view (default)   @-  -> @   (what `jj diff` shows)
+  staged view (--cached)    @-- -> @-
+  all view                  @-- -> @   (with stage indicators)
+  stage hunk/file           moves it from @ into the staging change @-
+                            (@ keeps its content)
+  unstage hunk/file         moves it from @- back into @
+  discard                   restores the file in @ from @-
+  commit (:w)               describes the staging change and opens a fresh
+                            one under @; with nothing staged, all of @ is
+                            committed; without a staging change, `jj commit`
+  amend                     stages into and re-describes the commit @-
+  conflicts                 `jj resolve --list` entries open the merge
+                            resolver; :w writes the working copy
+  checkout                  `jj new <rev>`
+
+The staging change is an undescribed, mutable @-. When @- is a described
+commit, the first stage from the unstaged view creates an empty staging
+change under @ (`jj new --insert-before @`), so an existing commit is never
+changed by accident. Amend changes that commit instead: it abandons an empty
+staging change left by the last commit, stages straight into @-, and :w
+rewrites its description. `jj.default_mode = "all"` opens the all view.
+
+Merge and diff editor for `jj resolve`, `jj split`, `jj squash -i`:
+>toml
+  [merge-tools.diffbandit]
+  program = "diffbandit"
+  merge-args = ["merge", "$base", "$left", "$right", "$output", "--path", "$path"]
+  edit-args = ["edit", "$left", "$right"]
+  diff-args = ["diff", "$left", "$right"]
+  merge-tool-edits-conflict-markers = false
+
+  [ui]
+  merge-editor = "diffbandit"
+  diff-editor = "diffbandit"
+<
+Conflicts with more than two sides, or that involve a deletion, are left to
+`jj resolve`. When @ is a merge commit the review lists only its conflicts.
+
  vim:tw=78:ts=8:ft=help:norl:
