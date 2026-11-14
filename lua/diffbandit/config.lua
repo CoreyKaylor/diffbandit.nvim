@@ -132,6 +132,11 @@ local defaults = {
     prompt_message = "Reached final change in this diff. Open next file with changes?",
     on_request_next_file = nil,
   },
+  fugitive = {
+    -- Open DiffBandit from vim-fugitive's own commands. true enables every flow;
+    -- a table picks: { mergetool = true, difftool = true, dd = true }.
+    auto_open = false,
+  },
   git = {
     default_mode = "all",
     default_scope = "repo",

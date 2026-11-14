@@ -37,6 +37,7 @@ diffbandit-commands	diffbandit.txt	/*diffbandit-commands*
 diffbandit-commit-panel	diffbandit.txt	/*diffbandit-commit-panel*
 diffbandit-configuration	diffbandit.txt	/*diffbandit-configuration*
 diffbandit-folder-diff	diffbandit.txt	/*diffbandit-folder-diff*
+diffbandit-fugitive	diffbandit.txt	/*diffbandit-fugitive*
 diffbandit-g?	diffbandit.txt	/*diffbandit-g?*
 diffbandit-git	diffbandit.txt	/*diffbandit-git*
 diffbandit-gzp	diffbandit.txt	/*diffbandit-gzp*

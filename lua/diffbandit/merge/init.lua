@@ -11,6 +11,7 @@ local document = require("diffbandit.util.document")
 local pair_renderer = require("diffbandit.merge.pair_renderer")
 local panel_mod = require("diffbandit.panel")
 local queue_host = require("diffbandit.host.queue")
+local quickfix = require("diffbandit.host.quickfix")
 local render_host = require("diffbandit.session.render_host")
 local source_mod = require("diffbandit.util.source")
 local state = require("diffbandit.state")
@@ -49,6 +50,123 @@ end
 local function can_use_real_result_buffer(path)
   return document.find_loaded_buffer(path) ~= nil or vim.fn.filereadable(path) == 1
 end
+
+local function lines_equal(a, b)
+  if #a ~= #b then
+    return false
+  end
+  for index = 1, #a do
+    if a[index] ~= b[index] then
+      return false
+    end
+  end
+  return true
+end
+
+-- The merge writes base text into the user's real file buffer while it runs.
+-- A buffer that was already open (fugitive's quickfix jump, the user's own
+-- edit) is snapshotted here so an untouched merge can put it back; stacked
+-- sessions on one buffer share the first snapshot, the only one holding the
+-- user's text. Buffers DiffBandit loaded itself are deleted on release instead.
+local result_claims = {}
+
+local function claim_result_buffer(editable, buf)
+  editable.saved_bufhidden = vim.api.nvim_get_option_value("bufhidden", { buf = buf })
+  -- The session owns this buffer until released: leaving its window (a
+  -- quickfix jump under 'nohidden') must neither unload it nor raise E37.
+  vim.api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
+  if editable.created_by_diffbandit then
+    return
+  end
+  editable.claimed = true
+  local claim = result_claims[buf]
+  if claim then
+    claim.holders = claim.holders + 1
+    return
+  end
+  local cursors = {}
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    cursors[win] = vim.api.nvim_win_get_cursor(win)
+  end
+  result_claims[buf] = {
+    holders = 1,
+    lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false),
+    modified = vim.api.nvim_get_option_value("modified", { buf = buf }),
+    cursors = cursors,
+  }
+end
+
+-- Replace a whole buffer without letting marks and quickfix entries collapse
+-- onto the deleted range: :lockmarks is command-scoped, so the lines travel
+-- through this slot to a command run under it.
+local locked_replacement
+
+function Merge._apply_locked_replacement()
+  local replacement = locked_replacement
+  locked_replacement = nil
+  vim.api.nvim_buf_set_lines(replacement.buf, 0, -1, false, replacement.lines)
+end
+
+local function replace_lines_keeping_marks(buf, lines)
+  locked_replacement = { buf = buf, lines = lines }
+  vim.cmd("lockmarks lua require('diffbandit.merge')._apply_locked_replacement()")
+end
+
+-- status (see Merge:result_status) says what the buffer holds now: only an
+-- "untouched" merge goes back to the snapshot. Edits and resolved text stay.
+local function release_result_buffer(editable, buf, status)
+  if not editable or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  local claim = editable.claimed and result_claims[buf]
+  if claim then
+    claim.holders = claim.holders - 1
+    if claim.holders <= 0 then
+      result_claims[buf] = nil
+      if status == "untouched" then
+        pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = buf })
+        replace_lines_keeping_marks(buf, claim.lines)
+        vim.api.nvim_set_option_value("modified", claim.modified, { buf = buf })
+        for win, cursor in pairs(claim.cursors) do
+          if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+            pcall(vim.api.nvim_win_set_cursor, win, cursor)
+          end
+        end
+      end
+    end
+  elseif status == "untouched" then
+    pcall(vim.api.nvim_set_option_value, "modified", false, { buf = buf })
+  end
+  -- Unsaved edits must survive the buffer leaving its last window.
+  if status ~= "edited" and editable.saved_bufhidden then
+    pcall(vim.api.nvim_set_option_value, "bufhidden", editable.saved_bufhidden, { buf = buf })
+  end
+  document.cleanup_created_buffer(editable, { discard_if_unchanged = true })
+end
+
+-- Per-file session state kept for a file left with unsaved edits, so coming
+-- back to it (a panel selection, a quickfix jump) resumes instead of resetting
+-- the result to base.
+local DRAFT_FIELDS = {
+  "base_lines",
+  "local_lines",
+  "remote_lines",
+  "has_local",
+  "has_remote",
+  "delete_result",
+  "result_lines",
+  "conflicts",
+  "non_conflicting",
+  "local_hunks",
+  "remote_hunks",
+  "current_conflict",
+  "line_ending_warning",
+  "merge_context",
+  "result_editable",
+  "result_buf",
+  "result_initial_lines",
+  "resolved_lines",
+}
 
 -- A merge host decides where the three sides came from and what resolving
 -- means. The git host reads index stages, writes the worktree, and runs
@@ -297,7 +415,8 @@ function Merge.start(data, config, opts)
     if ft and ft ~= "" then
       pcall(vim.api.nvim_set_option_value, "filetype", ft, { buf = self.result_buf })
     end
-    self:set_result_buffer_lines(self.result_lines)
+    claim_result_buffer(self.result_editable, self.result_buf)
+    self:set_result_buffer_lines(self.result_lines, { keep_marks = true })
     self.result_editable.initial_changedtick = vim.api.nvim_buf_get_changedtick(self.result_buf)
   else
     if result_err then
@@ -310,6 +429,9 @@ function Merge.start(data, config, opts)
       filetype = ft,
     })
   end
+  self.drafts = {}
+  self.result_initial_lines = logical_buffer_lines(self.result_buf)
+  self.resolved_lines = nil
   self.remote_buf = make_buffer(source_label(self.path, "remote"), self.remote_lines, {
     modifiable = false,
     filetype = ft,
@@ -445,7 +567,7 @@ function Merge.start_for_path(path, opts, config)
   if not root then
     return nil, root_err
   end
-  local rel = path and git.relpath(root, path) or git.relpath(root, vim.api.nvim_buf_get_name(0))
+  local rel = git.relpath(root, path or git.current_file())
   if not rel or rel == "" then
     return nil, "no conflict path provided"
   end
@@ -820,6 +942,17 @@ function Merge:setup_autocmds()
       end
     end,
   })
+  -- File-host merges edit one tool-owned file; there is nothing to follow.
+  if self.host.kind ~= "file" then
+    quickfix.watch(self, self.augroup, {
+      panes = function()
+        return self:pane_buffers()
+      end,
+      follow = function(entry, items, idx)
+        self:follow_quickfix_entry(entry, items, idx)
+      end,
+    })
+  end
 end
 
 -- Snap every number pane and connector window to its owning content pane's
@@ -1084,9 +1217,16 @@ function Merge:render_view_key(result_tick)
   }, ":")
 end
 
-function Merge:set_result_buffer_lines(lines)
+-- opts.keep_marks: the text is being swapped in rather than edited (see
+-- replace_lines_keeping_marks).
+function Merge:set_result_buffer_lines(lines, opts)
   self.result_buffer_update_depth = (self.result_buffer_update_depth or 0) + 1
-  local ok, err = pcall(vim.api.nvim_buf_set_lines, self.result_buf, 0, -1, false, lines or {})
+  local ok, err
+  if opts and opts.keep_marks then
+    ok, err = pcall(replace_lines_keeping_marks, self.result_buf, lines or {})
+  else
+    ok, err = pcall(vim.api.nvim_buf_set_lines, self.result_buf, 0, -1, false, lines or {})
+  end
   self.result_buffer_update_depth = math.max(0, (self.result_buffer_update_depth or 1) - 1)
   if not ok then
     error(err)
@@ -2074,13 +2214,13 @@ end
 
 function Merge:open_merge_file(index, opts)
   opts = opts or {}
-  self:clear_keymaps()
   local queue = self.file_queue
   local entry = queue and queue.entries and queue.entries[index]
   if not entry then
     return false
   end
   if entry.status ~= "U" and entry.kind ~= "unmerged" then
+    self:clear_keymaps()
     return self:goto_queue_file(index, "top", opts)
   end
   local data, err = Merge.load(queue.root, entry.path, self.config)
@@ -2089,52 +2229,130 @@ function Merge:open_merge_file(index, opts)
     return false
   end
   queue_host.set_index(self, index)
-  self.root = data.root
-  self.path = data.path
-  self.base_lines = data.base_lines or {}
-  self.local_lines = data.local_lines or {}
-  self.remote_lines = data.remote_lines or {}
-  self.has_local = data.has_local ~= false
-  self.has_remote = data.has_remote ~= false
-  self.delete_result = false
-  self.result_lines = data.result_lines or vim.deepcopy(self.base_lines)
-  self.conflicts = data.conflicts or {}
-  self.non_conflicting = data.non_conflicting or {}
-  self.local_hunks = data.local_hunks or {}
-  self.remote_hunks = data.remote_hunks or {}
-  self.current_conflict = #self.conflicts > 0 and 1 or 0
-  self.line_ending_warning = data.line_ending_warning
-  self.merge_context = self.host.context(self.root, data)
+  return self:switch_merge_file(data, opts, index)
+end
 
-  local ft = source_mod.detect_filetype(self.path)
+-- What the result buffer holds relative to this file's merge: "resolved" (the
+-- text :w wrote), "untouched" (the text the merge started from), or "edited".
+function Merge:result_status()
+  if not (self.result_buf and vim.api.nvim_buf_is_valid(self.result_buf)) then
+    return "gone"
+  end
+  local lines = logical_buffer_lines(self.result_buf)
+  if self.resolved_lines and lines_equal(lines, self.resolved_lines) then
+    return "resolved"
+  end
+  if not self.delete_result and self.result_initial_lines and lines_equal(lines, self.result_initial_lines) then
+    return "untouched"
+  end
+  return "edited"
+end
+
+-- Show `data` (from Merge.load) in this session's panes. panel_index is the
+-- file's queue index, when it has one.
+function Merge:switch_merge_file(data, opts, panel_index)
+  opts = opts or {}
+  local old_path = self.path
+  local old_status = self:result_status()
+  local same_file = data.path == old_path
+  if not (same_file and old_status ~= "resolved") then
+    self:clear_keymaps()
+    self:load_merge_data(data, old_status)
+    self:configure_windows()
+    self:setup_autocmds()
+    self:setup_keymaps()
+    self:render({ force_pair_rebuild = true })
+  end
+  if self.panel then
+    panel_mod.render(self, panel_index or self.file_queue_index)
+  end
+  if opts.navigate_change == "prev" then
+    self:goto_prev_conflict()
+  elseif opts.navigate_change == "next" then
+    self:goto_next_conflict()
+  end
+  if opts.preserve_focus and self.panel and self.panel.nav_win and vim.api.nvim_win_is_valid(self.panel.nav_win) then
+    vim.api.nvim_set_current_win(self.panel.nav_win)
+  end
+  return true
+end
+
+function Merge:load_merge_data(data, old_status)
+  local same_file = data.path == self.path
   local old_result_editable = self.result_editable
   local old_result_buf = self.result_buf
-  self.result_editable = nil
-  local result_path = self.host.result_path(self.root, self.path)
-  if result_path and can_use_real_result_buffer(result_path) then
-    self.result_editable = {
-      target = "merge-result",
-      path = document.normalize_path(result_path) or result_path,
-    }
-  end
-  local result_buf, result_err
-  if self.result_editable then
-    result_buf, result_err = document.acquire_buffer(self.result_editable)
-  end
-  if result_buf then
-    self.result_buf = result_buf
-  else
-    -- An acquire failure must still fall back to a scratch result buffer so
-    -- the session never keeps rendering into the previous file's buffer.
-    if result_err then
-      nvim.notify_warn(tostring(result_err))
-      self.result_editable = nil
+  if old_status == "edited" then
+    local stash = {}
+    for _, field in ipairs(DRAFT_FIELDS) do
+      stash[field] = self[field]
     end
-    self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, {}, {
-      buftype = "acwrite",
-      modifiable = true,
-      filetype = ft,
-    })
+    stash.result_lines = logical_buffer_lines(old_result_buf)
+    self.drafts[self.path] = stash
+  end
+  local draft = self.drafts[data.path]
+  self.drafts[data.path] = nil
+  if draft and not vim.api.nvim_buf_is_valid(draft.result_buf) then
+    draft = nil
+  end
+
+  self.root = data.root
+  self.path = data.path
+  if draft then
+    for _, field in ipairs(DRAFT_FIELDS) do
+      self[field] = draft[field]
+    end
+  else
+    self.base_lines = data.base_lines or {}
+    self.local_lines = data.local_lines or {}
+    self.remote_lines = data.remote_lines or {}
+    self.has_local = data.has_local ~= false
+    self.has_remote = data.has_remote ~= false
+    self.delete_result = false
+    self.result_lines = data.result_lines or vim.deepcopy(self.base_lines)
+    self.conflicts = data.conflicts or {}
+    self.non_conflicting = data.non_conflicting or {}
+    self.local_hunks = data.local_hunks or {}
+    self.remote_hunks = data.remote_hunks or {}
+    self.current_conflict = #self.conflicts > 0 and 1 or 0
+    self.line_ending_warning = data.line_ending_warning
+    self.merge_context = self.host.context(self.root, data)
+  end
+
+  local ft = source_mod.detect_filetype(self.path)
+  -- Re-merging the file already shown keeps its buffer and claim.
+  if not draft and not same_file then
+    self.result_editable = nil
+    local result_path = self.host.result_path(self.root, self.path)
+    if result_path and can_use_real_result_buffer(result_path) then
+      self.result_editable = {
+        target = "merge-result",
+        path = document.normalize_path(result_path) or result_path,
+      }
+    end
+    local result_buf, result_err
+    if self.result_editable then
+      result_buf, result_err = document.acquire_buffer(self.result_editable)
+    end
+    if result_buf then
+      self.result_buf = result_buf
+      claim_result_buffer(self.result_editable, self.result_buf)
+    else
+      -- An acquire failure must still fall back to a scratch result buffer so
+      -- the session never keeps rendering into the previous file's buffer.
+      if result_err then
+        nvim.notify_warn(tostring(result_err))
+        self.result_editable = nil
+      end
+      self.result_buf = make_buffer("diffbandit-merge-result-" .. tostring(self.id) .. ":" .. self.path, {}, {
+        buftype = "acwrite",
+        modifiable = true,
+        filetype = ft,
+      })
+    end
+  end
+  if old_status == "edited" and old_result_buf ~= self.result_buf then
+    -- The stashed draft lives in this buffer until the session comes back.
+    pcall(vim.api.nvim_set_option_value, "bufhidden", "hide", { buf = old_result_buf })
   end
   if self.result_win and vim.api.nvim_win_is_valid(self.result_win) then
     vim.api.nvim_win_set_buf(self.result_win, self.result_buf)
@@ -2143,7 +2361,9 @@ function Merge:open_merge_file(index, opts)
   -- that is still displayed closes its window.
   if old_result_buf ~= self.result_buf then
     self:clear_result_paint_namespaces(old_result_buf)
-    document.cleanup_created_buffer(old_result_editable, { discard_if_unchanged = true })
+    if old_status ~= "edited" then
+      release_result_buffer(old_result_editable, old_result_buf, old_status)
+    end
   end
   -- The outer source buffers are reused across file switches; rename them so
   -- window statuslines follow the newly opened file.
@@ -2154,12 +2374,15 @@ function Merge:open_merge_file(index, opts)
   vim.api.nvim_set_option_value("modified", false, { buf = self.local_buf })
   vim.api.nvim_set_option_value("modifiable", false, { buf = self.local_buf })
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.result_buf })
-  self:set_result_buffer_lines(self.result_lines)
-  if self.result_editable then
-    self.result_editable.initial_changedtick = vim.api.nvim_buf_get_changedtick(self.result_buf)
+  if not draft then
+    self:set_result_buffer_lines(self.result_lines, { keep_marks = true })
+    if self.result_editable then
+      self.result_editable.initial_changedtick = vim.api.nvim_buf_get_changedtick(self.result_buf)
+    end
+    vim.api.nvim_set_option_value("modified", false, { buf = self.result_buf })
+    self.result_initial_lines = logical_buffer_lines(self.result_buf)
+    self.resolved_lines = nil
   end
-  vim.api.nvim_set_option_value("modified", false, { buf = self.result_buf })
-  vim.api.nvim_set_option_value("modifiable", true, { buf = self.result_buf })
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.remote_buf })
   vim.api.nvim_buf_set_lines(self.remote_buf, 0, -1, false, self.remote_lines)
   vim.api.nvim_set_option_value("modified", false, { buf = self.remote_buf })
@@ -2174,22 +2397,62 @@ function Merge:open_merge_file(index, opts)
   if self.result_editable then
     document.ensure_language_features(self.result_buf, ft)
   end
-  self:configure_windows()
-  self:setup_autocmds()
-  self:setup_keymaps()
-  self:render({ force_pair_rebuild = true })
+end
+
+-- The content and panel windows, each with the buffer it should be showing.
+function Merge:pane_buffers()
+  local panes = {
+    { self.local_win, self.local_buf },
+    { self.result_win, self.result_buf },
+    { self.remote_win, self.remote_buf },
+  }
   if self.panel then
-    panel_mod.render(self, index)
+    panes[#panes + 1] = { self.panel.nav_win, self.panel.nav_buf }
+    panes[#panes + 1] = { self.panel.commit_win, self.panel.commit_buf }
   end
-  if opts.navigate_change == "prev" then
-    self:goto_prev_conflict()
-  elseif opts.navigate_change == "next" then
-    self:goto_next_conflict()
+  return panes
+end
+
+function Merge:follow_quickfix_entry(entry, items, idx)
+  -- Entries are per hunk: the Nth entry of a file is its Nth conflict. Their
+  -- line numbers count conflict-marker lines, which the result does not have.
+  local ordinal = 0
+  for index = 1, idx do
+    if items[index].bufnr == entry.bufnr and items[index].valid == 1 then
+      ordinal = ordinal + 1
+    end
   end
-  if opts.preserve_focus and self.panel and self.panel.nav_win and vim.api.nvim_win_is_valid(self.panel.nav_win) then
-    vim.api.nvim_set_current_win(self.panel.nav_win)
+  local focus = vim.api.nvim_get_current_win()
+  local name = vim.api.nvim_buf_get_name(entry.bufnr)
+  local rel = name ~= "" and git.relpath(self.root, name) or nil
+  if quickfix.restore_panes(self:pane_buffers()) then
+    self:apply_window_options()
   end
-  return true
+  if rel ~= self.path then
+    local data = rel and Merge.load(self.root, rel, self.config)
+    if not data then
+      self:sync_gutter_viewports()
+      nvim.notify_info(string.format("%s has no unresolved conflict", rel or name))
+      return
+    end
+    local queue_index
+    for index, queued in ipairs(self.file_queue and self.file_queue.entries or {}) do
+      if queued.path == rel then
+        queue_index = index
+      end
+    end
+    if queue_index then
+      queue_host.set_index(self, queue_index)
+    end
+    self:switch_merge_file(data, {}, queue_index)
+  end
+  if #self.conflicts > 0 then
+    self:goto_conflict(math.max(ordinal, 1))
+  end
+  self:sync_gutter_viewports()
+  if vim.api.nvim_win_is_valid(focus) then
+    vim.api.nvim_set_current_win(focus)
+  end
 end
 
 function Merge:goto_queue_file(index, chunk_position, opts)
@@ -2392,6 +2655,7 @@ function Merge:resolve()
     return false
   end
   pcall(vim.api.nvim_set_option_value, "modified", false, { buf = self.result_buf })
+  self.resolved_lines = logical_buffer_lines(self.result_buf)
   if self.host.after_resolve then
     self.host.after_resolve(self)
   end
@@ -2450,6 +2714,7 @@ function Merge:close(from_autocmd)
     return
   end
   panel_mod.save_draft(self)
+  local result_status = self:result_status()
   self.disposed = true
   kitty.detach(self)
   self:clear_keymaps()
@@ -2465,7 +2730,22 @@ function Merge:close(from_autocmd)
   end
   pending.done(self.render_timer_token)
   self:clear_result_paint_namespaces(self.result_buf)
-  document.cleanup_created_buffer(self.result_editable, { discard_if_unchanged = true })
+  release_result_buffer(self.result_editable, self.result_buf, result_status)
+  local unsaved = {}
+  if result_status == "edited" and self.result_editable then
+    unsaved[#unsaved + 1] = self.path
+  end
+  for path, draft in pairs(self.drafts or {}) do
+    release_result_buffer(draft.result_editable, draft.result_buf, "edited")
+    if draft.result_editable then
+      unsaved[#unsaved + 1] = path
+    end
+  end
+  if #unsaved > 0 then
+    table.sort(unsaved)
+    nvim.notify_warn("unsaved merge edits kept in the buffers of: " .. table.concat(unsaved, ", ")
+      .. " (:w now writes without staging)")
+  end
   state.unregister(self.tabpage)
   if not from_autocmd and self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
     pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
