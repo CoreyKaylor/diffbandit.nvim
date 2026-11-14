@@ -147,7 +147,16 @@ setmetatable(M, {
       local backend = route(name, first)
       local impl = backend[name]
       if type(impl) ~= "function" then
-        return nil, string.format("%s is not supported in this repository", name)
+        local err = string.format("%s is not supported in this repository", name)
+        -- An async caller waits on its callback, not the return value.
+        local args = { ... }
+        local callback = args[select("#", ...)]
+        if type(callback) == "function" then
+          vim.schedule(function()
+            callback(nil, err)
+          end)
+        end
+        return nil, err
       end
       return impl(first, ...)
     end
