@@ -353,7 +353,12 @@ end
 local function focused_role(session)
   local win = vim.api.nvim_get_current_win()
   local panel = session.panel or {}
-  if win == panel.nav_win then
+  local dock = session.log_dock or {}
+  if win == dock.win then
+    return "log"
+  elseif dock.details_win and win == dock.details_win then
+    return "log_details"
+  elseif win == panel.nav_win then
     return "nav"
   elseif win == panel.commit_win then
     return "commit"
@@ -367,7 +372,10 @@ end
 
 local function focus_role(session, role)
   local panel = session.panel or {}
+  local dock = session.log_dock or {}
   local win = ({
+    log = dock.win,
+    log_details = dock.details_win or dock.win,
     nav = panel.nav_win,
     commit = panel.commit_win,
     left = session.left_win,
@@ -378,21 +386,26 @@ local function focus_role(session, role)
   end
 end
 
--- Replace a commit review opened from the log with the review of the commit
--- delta rows away (1 = older, -1 = newer), keeping the file and focused pane.
-function M.git_log_step(session, delta)
-  session = session or current_session()
-  local walk = session and session.file_queue and session.file_queue.log_walk
-  if not walk then
-    nvim.notify_info("this review was not opened from a Git log")
-    return false
+-- Replace a commit review opened from a log with the review of
+-- walk.commits[target], keeping the file and the focused pane. A commit with
+-- nothing to show (an empty commit) cannot open, so the walk steps over it
+-- in direction delta (1 = older, -1 = newer).
+-- opts.commits: the log's current list (R may have refreshed it).
+-- opts.preferred_path: the file to open; defaults to the current one.
+-- opts.role: the pane to focus afterwards; defaults to the focused one.
+local function log_goto(session, target, delta, opts)
+  opts = opts or {}
+  local walk = session.file_queue.log_walk
+  if opts.commits then
+    walk = vim.tbl_extend("force", {}, walk, { commits = opts.commits })
   end
-  local entry = queue_host.current_entry(session)
-  local preferred_path = entry and { path = entry.path, old_path = entry.old_path } or nil
-  local role = focused_role(session)
-  local target = walk.index + delta
+  local preferred_path = opts.preferred_path
+  if not preferred_path then
+    local entry = queue_host.current_entry(session)
+    preferred_path = entry and { path = entry.path, old_path = entry.old_path } or nil
+  end
+  local role = opts.role or focused_role(session)
   local next_session, commit, skipped
-  -- A commit with nothing to show (an empty commit) cannot open; step over it.
   while walk.commits[target] do
     commit = walk.commits[target]
     next_session = M.git_commit(commit.hash, vim.tbl_extend("force", {}, walk.opts or {}, {
@@ -414,18 +427,47 @@ function M.git_log_step(session, delta)
   end
   session:close_for_replacement(next_session)
   focus_role(next_session, role)
-  local browser = walk.browser
-  if browser and browser.is_open and browser:is_open() then
-    -- Keep the log's cursor on the commit under review; find it by hash, as
-    -- R may have refreshed the log since the walk began.
-    for row, listed in ipairs(browser.commits or {}) do
-      if listed.hash == commit.hash then
-        pcall(vim.api.nvim_win_set_cursor, browser.win, { row + 1, 0 })
-        break
+  if walk.browser and not walk.browser.disposed then
+    -- Keep every view of the log on the commit under review.
+    require("diffbandit.util.log_view").sync_cursor(walk.browser, commit.hash)
+  end
+  return true
+end
+
+-- Replace a commit review opened from the log with the review of the commit
+-- delta rows away (1 = older, -1 = newer), keeping the file and focused pane.
+function M.git_log_step(session, delta)
+  session = session or current_session()
+  local walk = session and session.file_queue and session.file_queue.log_walk
+  if not walk then
+    nvim.notify_info("this review was not opened from a Git log")
+    return false
+  end
+  return log_goto(session, walk.index + delta, delta)
+end
+
+-- Live commit reviews walking this log browser, the current tab's first.
+local function log_reviews(browser)
+  local list = {}
+  local current = live_session()
+  for _, session in pairs(state.sessions) do
+    local walk = session and not session.disposed and session.file_queue and session.file_queue.log_walk
+    if walk and walk.browser == browser then
+      if session == current then
+        table.insert(list, 1, session)
+      else
+        list[#list + 1] = session
       end
     end
   end
-  return true
+  return list
+end
+
+-- The hash a review walking the log shows.
+local function reviewed_hash(session)
+  local walk = session.file_queue.log_walk
+  local commit = walk.commits[walk.index]
+  return commit and commit.hash
 end
 
 function M.git_compare(base, target, opts)
@@ -467,11 +509,44 @@ function M.git_log(opts)
   return git_workflows.open_log(config, opts, {
     open_commit = function(rev, open_opts)
       open_opts = open_opts or {}
-      local commit_opts = vim.tbl_extend("force", {}, opts, open_opts)
       local browser = open_opts.browser
+      local index = open_opts.log_index
+      -- A review already walking this log takes the commit in place (its dock
+      -- shows the log), instead of stacking another review tab.
+      local review = browser and index and log_reviews(browser)[1]
+      if review then
+        if reviewed_hash(review) == rev and not open_opts.preferred_path then
+          if not open_opts.from_dock then
+            pcall(vim.api.nvim_set_current_tabpage, review.tabpage)
+            focus_role(review, "log")
+          end
+          return
+        end
+        -- Empty commits are skipped moving away from the reviewed one.
+        local current_row = review.file_queue.log_walk.index
+        for row, listed in ipairs(browser.commits) do
+          if listed.hash == reviewed_hash(review) then
+            current_row = row
+            break
+          end
+        end
+        if not open_opts.from_dock then
+          -- From the home pane: go to the review, then replace it.
+          pcall(vim.api.nvim_set_current_tabpage, review.tabpage)
+        end
+        log_goto(review, index, current_row <= index and 1 or -1, {
+          commits = browser.commits,
+          preferred_path = open_opts.preferred_path,
+          -- The cursor stays on the log row; the dock is the log there.
+          role = not open_opts.from_dock and "log" or nil,
+        })
+        return
+      end
+      local commit_opts = vim.tbl_extend("force", {}, opts, open_opts)
       commit_opts.browser = nil
       commit_opts.log_index = nil
-      if browser and open_opts.log_index then
+      commit_opts.from_dock = nil
+      if browser and index then
         commit_opts.log_walk = {
           commits = browser.commits,
           index = open_opts.log_index,
@@ -482,6 +557,95 @@ function M.git_log(opts)
       local session, err = M.git_commit(rev, commit_opts)
       if not session and err then
         nvim.notify_error(tostring(err))
+      elseif session then
+        -- Keep the cursor on the log row, now in the review's dock.
+        focus_role(session, "log")
+      end
+    end,
+    -- Diff keys that work from a review's dock, acting on the review while
+    -- the cursor stays in the log.
+    remote_keys = (function()
+      local navigation = config.navigation or {}
+      local document_keys = navigation.document_keys or {}
+      local file_keys = config_mod.section(config, "git", "file_keys")
+      local log_keys = config_mod.section(config, "git", "log_keys")
+      local keys, seen = {}, {}
+      for _, key in ipairs({
+        { "]c", "Next hunk" },
+        { "[c", "Previous hunk" },
+        { document_keys.top, "Align the diff to the top" },
+        { document_keys.bottom, "Align the diff to the bottom" },
+        { navigation.snap_key, "Snap the other pane to the cursor line" },
+        { file_keys.next, "Next changed file" },
+        { file_keys.prev, "Previous changed file" },
+        { log_keys.next, "Next commit in the log (older)" },
+        { log_keys.prev, "Previous commit in the log (newer)" },
+      }) do
+        local lhs = key[1]
+        if lhs and lhs ~= "" and not seen[lhs] then
+          seen[lhs] = true
+          keys[#keys + 1] = { lhs = lhs, desc = key[2] }
+        end
+      end
+      return keys
+    end)(),
+    remote = function(tabpage, lhs)
+      local review = live_session(tabpage)
+      if not review then
+        return
+      end
+      local role = focused_role(review)
+      local win = review.last_source_win
+      if not (win and vim.api.nvim_win_is_valid(win)) then
+        win = review.right_win
+      end
+      if not (win and vim.api.nvim_win_is_valid(win)) then
+        return
+      end
+      vim.api.nvim_set_current_win(win)
+      local ok, err = pcall(function()
+        local mapping = vim.fn.maparg(lhs, "n", false, true)
+        if type(mapping) == "table" and mapping.callback then
+          mapping.callback()
+        else
+          vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(lhs, true, false, true), "mx", false)
+        end
+      end)
+      -- ]f and ]r replace the review, so focus whichever one is here now.
+      local now = live_session()
+      if now then
+        focus_role(now, role or "log")
+      end
+      if not ok then
+        error(err, 0)
+      end
+    end,
+    in_use = function(browser)
+      return #log_reviews(browser) > 0
+    end,
+    is_reviewing = function(browser, index)
+      local review = live_session()
+      local walk = review and review.file_queue and review.file_queue.log_walk
+      local commit = browser.commits[index]
+      return not (walk and walk.browser == browser) or (commit and reviewed_hash(review) == commit.hash)
+    end,
+    focus_review = function(tabpage, target)
+      local review = live_session(tabpage)
+      if not review then
+        return
+      end
+      if target == "panel" then
+        review:focus_commit_panel_for_current_file()
+      else
+        review:focus_source()
+      end
+    end,
+    hide_dock = function(browser, tabpage)
+      local review = live_session(tabpage)
+      if review and review.hide_log_dock then
+        review:hide_log_dock()
+      else
+        require("diffbandit.util.log_view").undock(browser, tabpage)
       end
     end,
   })

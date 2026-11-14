@@ -121,6 +121,18 @@ COMMANDS                                            *diffbandit-commands*
         staying on the same file when the commit touches it; with a pathspec
         this walks one file's history. Keys: `git.log_keys` in |diffbandit-configuration|.
 
+        The review keeps the log docked along its bottom. <CR> on a commit
+        opens it with the cursor still on that log row (in the dock), and
+        moving the cursor in the dock then swaps the review to the commit
+        under it (`git.log.follow`). `]c` `[c` `]f` `[f` `]d` `[d` `]s` `]r`
+        `[r` in the dock act on the review while the cursor stays in the log.
+        <Tab> in the dock goes to the diff and `C` to the commit panel; `L`
+        in either comes back, reopening a hidden dock. <CR> on a file in the
+        dock's detail pane opens the commit at that file; <CR> in the
+        original log reuses the open review instead of opening another tab.
+        `gzg`, or `q` in the dock, hides it; `gzg` shows it again.
+        `git.log.dock = false` turns the dock off.
+
         Each row shows the hash, age, author, lines added and removed, refs,
         and subject; the counts fill in once git has measured them. A detail
         pane beside the list shows the commit under the cursor: refs, author
@@ -225,6 +237,14 @@ Diff view mappings:
                                                         *diffbandit-[r*
   [r            In a commit review opened from the log, open the previous
                 (newer) commit in place.
+
+                                                        *diffbandit-gzg*
+  gzg           In a commit review opened from the log, show or hide the
+                log docked along the bottom of the review.
+
+                                                        *diffbandit-L*
+  L             In a commit review opened from the log, focus the docked
+                log, opening it if hidden.
 
                                                         *diffbandit-[d*
   [d            Align both panes to the top of their documents.
@@ -557,14 +577,22 @@ Common configuration:
       log_keys = {
         next = "]r", -- older commit in the log
         prev = "[r", -- newer commit in the log
+        toggle_dock = "gzg", -- show or hide the docked log
+        focus_dock = "L",    -- focus the docked log
       },
       log = {
         details = true,            -- detail pane beside the log
         details_width = 0.4,       -- fraction of the log window it takes
         details_min_columns = 100, -- narrower logs open without it
+        dock = true,               -- reviews from the log keep it docked below
+        dock_height = 12,
+        follow = true,             -- moving in the dock opens that commit
+        follow_debounce_ms = 150,
         keys = {
           toggle_details = "p",
           refresh = "R",
+          focus_diff = "<Tab>", -- in a review's dock: back to the diff
+          focus_panel = "C",    -- in a review's dock: the commit panel
         },
       },
       panel = {

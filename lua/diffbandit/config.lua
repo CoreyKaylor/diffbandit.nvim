@@ -148,6 +148,10 @@ local defaults = {
     log_keys = {
       next = "]r", -- older (down the log)
       prev = "[r", -- newer (up the log)
+      -- Show or hide the log docked along the bottom of the review.
+      toggle_dock = "gzg",
+      -- From the diff or the commit panel, focus the docked log.
+      focus_dock = "L",
     },
     -- The log browser (:DiffBanditGitLog).
     log = {
@@ -158,9 +162,19 @@ local defaults = {
       details_width = 0.4,
       -- Narrower log windows open without the pane (toggle it with the key).
       details_min_columns = 100,
+      -- A review opened from the log keeps the log docked along its bottom,
+      -- so you can browse commits beside the diff (q in the dock hides it).
+      dock = true,
+      dock_height = 12,
+      -- Moving the cursor in the dock opens the commit under it.
+      follow = true,
+      follow_debounce_ms = 150,
       keys = {
         toggle_details = "p",
         refresh = "R",
+        -- In a review's dock: back to the diff, or to the commit panel.
+        focus_diff = "<Tab>",
+        focus_panel = "C",
       },
     },
     panel = {

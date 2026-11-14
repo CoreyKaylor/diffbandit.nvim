@@ -172,6 +172,11 @@ function Session.start(sources, config, opts)
       no_initial_selection = not self.panel_initial_selection,
     })
   end
+  local walk = self.file_queue and self.file_queue.log_walk
+  if walk and walk.browser and not walk.dock_hidden
+      and config_mod.section(self.config, "git", "log").dock ~= false then
+    self:show_log_dock()
+  end
   self:precompute_connector_core_width()
   self:render()
   self:setup_autocmds()
@@ -699,6 +704,11 @@ function Session:setup_keymaps()
         require("diffbandit").git_log_step(self, -1)
       end, "Commits", "Previous commit in the log (newer)")
     end
+    if log_walk and log_walk.browser and log_keys.toggle_dock then
+      map(buf, log_keys.toggle_dock, function()
+        self:toggle_log_dock()
+      end, "Commits", "Show or hide the Git log")
+    end
     if action_keys.toggle_stage then
       action_map(buf, action_keys.toggle_stage, "DiffBanditToggleStageHunk", function()
         self:toggle_stage_hunk()
@@ -737,6 +747,13 @@ function Session:setup_keymaps()
       map(buf, panel_keys.focus_panel, function()
         self:focus_commit_panel_for_current_file()
       end, "Panel", "Open or focus the commit panel")
+    end
+  end
+  if log_walk and log_walk.browser and log_keys.focus_dock then
+    for _, buf in ipairs({ self.left_buf, self.right_buf }) do
+      map(buf, log_keys.focus_dock, function()
+        self:focus_log_dock()
+      end, "Commits", "Focus the Git log (opening it if hidden)")
     end
   end
   if is_git and panel_keys.toggle_panel then
@@ -2128,6 +2145,76 @@ function Session:hide_commit_panel()
     end
   end
   return true
+end
+
+-- The log a review was opened from, docked along the bottom of its tab.
+function Session:show_log_dock()
+  local walk = self.file_queue and self.file_queue.log_walk
+  local browser = walk and walk.browser
+  if not browser or browser.disposed then
+    nvim.notify_info("the Git log this review came from is closed")
+    return false
+  end
+  local log_view = require("diffbandit.util.log_view")
+  local commit = walk.commits[walk.index]
+  self.log_dock = log_view.dock(browser, commit and commit.hash)
+  walk.dock_hidden = false
+  self:resize_layout()
+  return self.log_dock ~= nil
+end
+
+function Session:hide_log_dock()
+  local walk = self.file_queue and self.file_queue.log_walk
+  local dock = self.log_dock
+  self.log_dock = nil
+  if walk then
+    -- Remembered as the walk steps, so the next commit opens without it.
+    walk.dock_hidden = true
+  end
+  if not (walk and walk.browser and dock) then
+    return false
+  end
+  local current = vim.api.nvim_get_current_win()
+  local in_dock = current == dock.win or current == dock.details_win
+  require("diffbandit.util.log_view").undock(walk.browser, self.tabpage)
+  self:resize_layout()
+  if in_dock then
+    self:focus_source()
+  end
+  return true
+end
+
+function Session:focus_log_dock()
+  local dock = self.log_dock
+  if not (dock and dock.win and vim.api.nvim_win_is_valid(dock.win)) then
+    if not self:show_log_dock() then
+      return false
+    end
+    dock = self.log_dock
+  end
+  pcall(vim.api.nvim_set_current_win, dock.win)
+  return true
+end
+
+-- Back to the diff pane last used (the right pane at first).
+function Session:focus_source()
+  local target = self.last_source_win
+  if not (target and vim.api.nvim_win_is_valid(target)) then
+    target = self.right_win
+  end
+  if target and vim.api.nvim_win_is_valid(target) then
+    pcall(vim.api.nvim_set_current_win, target)
+    return true
+  end
+  return false
+end
+
+function Session:toggle_log_dock()
+  local dock = self.log_dock
+  if dock and dock.win and vim.api.nvim_win_is_valid(dock.win) then
+    return self:hide_log_dock()
+  end
+  return self:show_log_dock()
 end
 
 function Session:toggle_commit_panel()

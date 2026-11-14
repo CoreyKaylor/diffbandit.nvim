@@ -277,6 +277,20 @@ History" in the menu) can walk the log without going back to it: `]r` opens the
 next (older) commit and `[r` the previous (newer) one, in place, staying on the
 same file when the commit touches it. The log's cursor follows along.
 
+The review keeps the log docked along its bottom, so you can browse commits
+beside the diff. `<CR>` on a commit opens it with the cursor still on that log
+row (in the dock), and from then on moving the cursor in the dock swaps the
+review to the commit under it. The diff keys work from the dock too: `]c`/`[c`,
+`]f`/`[f`, `]d`/`[d`, `]s` and `]r`/`[r` act on the review while the cursor
+stays in the log. Focus leaves the log only when you ask: `<Tab>` goes to the
+diff and `C` to the commit panel; `L` from either comes back (reopening a
+hidden dock). `<CR>` on a file in the dock's detail pane opens the commit at
+that file. `<CR>` in the original log reuses the open review rather than
+opening another tab. `gzg` (or `q` in the dock) hides the dock and `gzg` shows
+it again; a hidden dock stays hidden as you walk. Set `git.log.follow = false`
+to swap commits only on `<CR>`, and `git.log.dock = false` to turn the dock
+off.
+
 ## Standalone Launcher
 
 `bin/diffbandit` opens DiffBandit for the repository in the current directory,
@@ -383,6 +397,8 @@ Inside a diff view:
 | `[f` | Previous changed file in a Git queue |
 | `]r` | Next (older) commit in a review opened from the log |
 | `[r` | Previous (newer) commit in a review opened from the log |
+| `gzg` | Show or hide the log docked in a review opened from it |
+| `L` | Focus the docked log (from the diff or commit panel) |
 | `[d` | Align both panes to the top of the documents |
 | `]d` | Align both panes to the bottom of the documents |
 | `]s` | Snap the other pane to the cursor line |
@@ -600,14 +616,22 @@ require("diffbandit").setup({
     log_keys = {
       next = "]r", -- older commit in the log
       prev = "[r", -- newer commit in the log
+      toggle_dock = "gzg", -- show or hide the docked log
+      focus_dock = "L",    -- focus the docked log
     },
     log = {
       details = true,            -- detail pane beside the log
       details_width = 0.4,       -- fraction of the log window it takes
       details_min_columns = 100, -- narrower logs open without it
+      dock = true,               -- reviews from the log keep it docked below
+      dock_height = 12,
+      follow = true,             -- moving in the dock opens that commit
+      follow_debounce_ms = 150,
       keys = {
         toggle_details = "p",
         refresh = "R",
+        focus_diff = "<Tab>", -- in a review's dock: back to the diff
+        focus_panel = "C",    -- in a review's dock: the commit panel
       },
     },
     panel = {

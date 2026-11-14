@@ -2,6 +2,12 @@
 -- it for the commit under the cursor. Extracted from git_workflows.lua,
 -- which keeps only workflow orchestration.
 --
+-- One log buffer can show in several panes: the home pane (browser.win and
+-- browser.details_win, where the log was opened) and a dock in each commit
+-- review opened from it (browser.docks[tabpage]), so the log stays beside
+-- the diff while the review walks it. A pane is any table with win and
+-- details_win; the home pane is the browser itself.
+--
 -- Row N + 1 of the list is commits[N] (row 1 is the header); the log walk
 -- (diffbandit.git_log_step) relies on that to keep the cursor in sync.
 local git = require("diffbandit.git")
@@ -147,15 +153,67 @@ local function build_row(browser, commit, widths, width)
   return line
 end
 
+local function shows(win, buf)
+  return win ~= nil and buf ~= nil and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf
+end
+
+-- Home pane first, then the docks still on screen.
+local function panes(browser)
+  local list = { browser }
+  for tab, dock in pairs(browser.docks or {}) do
+    if shows(dock.win, browser.buf) then
+      list[#list + 1] = dock
+    else
+      browser.docks[tab] = nil
+    end
+  end
+  return list
+end
+
+-- The pane the user is working in: the one holding the current window, else
+-- this tab's dock, else the home pane, else any pane still on screen.
+local function active_pane(browser)
+  local current = vim.api.nvim_get_current_win()
+  local all = panes(browser)
+  for _, pane in ipairs(all) do
+    if pane.win == current or (pane.details_win and pane.details_win == current) then
+      return pane
+    end
+  end
+  local dock = (browser.docks or {})[vim.api.nvim_get_current_tabpage()]
+  if dock then
+    return dock
+  end
+  for _, pane in ipairs(all) do
+    if shows(pane.win, browser.buf) then
+      return pane
+    end
+  end
+  return nil
+end
+
+-- Every window showing the list, so cursor syncs reach the home pane and docks.
+function M.list_windows(browser)
+  local wins = {}
+  for _, pane in ipairs(panes(browser)) do
+    if shows(pane.win, browser.buf) then
+      wins[#wins + 1] = pane.win
+    end
+  end
+  return wins
+end
+
 local function list_width(browser)
-  if browser.win and vim.api.nvim_win_is_valid(browser.win) then
-    return math.max(40, vim.api.nvim_win_get_width(browser.win))
+  local pane = active_pane(browser)
+  if pane and vim.api.nvim_win_is_valid(pane.win) then
+    return math.max(40, vim.api.nvim_win_get_width(pane.win))
   end
   return 80
 end
 
 local function render_log(browser)
   local width = list_width(browser)
+  browser.rendered_width = width
   local widths = measure(browser, width)
   local header = string.format("Git Log (%d)", #browser.commits)
   if browser.stats_loading then
@@ -205,18 +263,28 @@ local function load_stats(browser)
 end
 
 local function commit_at_cursor(browser)
-  if not browser:is_open() then
+  local pane = active_pane(browser)
+  if not pane then
     return nil, nil
   end
-  local index = vim.api.nvim_win_get_cursor(browser.win)[1] - 1
+  local index = vim.api.nvim_win_get_cursor(pane.win)[1] - 1
   return browser.commits[index], index
 end
 
 -- Detail pane ---------------------------------------------------------------
 
-local function details_open(browser)
-  return browser.details_win ~= nil and vim.api.nvim_win_is_valid(browser.details_win)
-    and vim.api.nvim_win_get_buf(browser.details_win) == browser.details_buf
+local function details_open(browser, pane)
+  pane = pane or browser
+  return shows(pane.details_win, browser.details_buf)
+end
+
+local function any_details_open(browser)
+  for _, pane in ipairs(panes(browser)) do
+    if details_open(browser, pane) then
+      return true
+    end
+  end
+  return false
 end
 
 local function status_highlight(status)
@@ -354,13 +422,15 @@ local function set_details_content(browser, lines, marks, file_rows)
     vim.api.nvim_buf_set_extmark(buf, browser.ns, mark[1], mark[2], { end_col = mark[3], hl_group = mark[4] })
   end
   nvim.set_buffer_options(buf, { modifiable = false })
-  if details_open(browser) then
-    pcall(vim.api.nvim_win_set_cursor, browser.details_win, { 1, 0 })
+  for _, pane in ipairs(panes(browser)) do
+    if details_open(browser, pane) then
+      pcall(vim.api.nvim_win_set_cursor, pane.details_win, { 1, 0 })
+    end
   end
 end
 
 local function show_details(browser)
-  if not details_open(browser) then
+  if not any_details_open(browser) then
     return
   end
   local commit = commit_at_cursor(browser)
@@ -396,38 +466,42 @@ local function show_details(browser)
 end
 
 local function schedule_details(browser)
-  if details_open(browser) then
+  if any_details_open(browser) then
     ui.reschedule_once(browser, "details_pending", function()
       show_details(browser)
     end, DETAILS_DEBOUNCE_MS)
   end
 end
 
-local function close_details(browser)
-  if details_open(browser) then
-    pcall(vim.api.nvim_win_close, browser.details_win, true)
+local function close_details(browser, pane)
+  pane = pane or browser
+  if details_open(browser, pane) then
+    pcall(vim.api.nvim_win_close, pane.details_win, true)
   end
-  browser.details_win = nil
-  browser.details_hash = nil
+  pane.details_win = nil
+  if not any_details_open(browser) then
+    browser.details_hash = nil
+  end
 end
 
-local function open_details(browser)
-  if details_open(browser) or not browser:is_open() then
+local function open_details(browser, pane)
+  pane = pane or browser
+  if details_open(browser, pane) or not shows(pane.win, browser.buf) then
     return
   end
   if not browser.details_buf or not vim.api.nvim_buf_is_valid(browser.details_buf) then
     browser.details_buf = nvim.make_buffer("diffbandit-git-log-details", nil, { modifiable = false })
     browser.map_details(browser.details_buf)
   end
-  local total = vim.api.nvim_win_get_width(browser.win)
+  local total = vim.api.nvim_win_get_width(pane.win)
   local fraction = tonumber(log_config(browser.config).details_width) or 0.4
   local width = math.max(30, math.floor(total * fraction))
-  browser.details_win = vim.api.nvim_open_win(browser.details_buf, false, {
+  pane.details_win = vim.api.nvim_open_win(browser.details_buf, false, {
     split = "right",
-    win = browser.win,
+    win = pane.win,
     width = width,
   })
-  nvim.set_window_options(browser.details_win, {
+  nvim.set_window_options(pane.details_win, {
     number = false,
     relativenumber = false,
     cursorline = false,
@@ -443,12 +517,135 @@ local function open_details(browser)
 end
 
 local function toggle_details(browser)
-  if details_open(browser) then
-    close_details(browser)
+  local pane = active_pane(browser)
+  if not pane then
+    return
+  end
+  if details_open(browser, pane) then
+    close_details(browser, pane)
   else
-    open_details(browser)
+    open_details(browser, pane)
+  end
+  if pane ~= browser then
+    -- Later docks open the way this one was left.
+    browser.dock_details = details_open(browser, pane)
   end
   render_log(browser)
+end
+
+local function details_fit(browser, pane)
+  local log_opts = log_config(browser.config)
+  return log_opts.details
+    and shows(pane.win, browser.buf)
+    and vim.api.nvim_win_get_width(pane.win) >= (tonumber(log_opts.details_min_columns) or 0)
+end
+
+-- Docks ---------------------------------------------------------------------
+
+local function list_window_options(win)
+  nvim.set_window_options(win, {
+    number = false,
+    relativenumber = false,
+    cursorline = true,
+    wrap = false,
+    signcolumn = "no",
+    foldcolumn = "0",
+    winfixheight = true,
+    winhl = WINHL,
+  })
+end
+
+local function row_for_hash(browser, hash)
+  for index, commit in ipairs(browser.commits or {}) do
+    if commit.hash == hash then
+      return index + 1
+    end
+  end
+  return nil
+end
+
+-- Put every list window's cursor on the commit with this hash.
+function M.sync_cursor(browser, hash)
+  local row = row_for_hash(browser, hash)
+  if not row then
+    return
+  end
+  for _, win in ipairs(M.list_windows(browser)) do
+    if vim.api.nvim_win_get_cursor(win)[1] ~= row then
+      pcall(vim.api.nvim_win_set_cursor, win, { row, 0 })
+    end
+  end
+end
+
+function M.dock_for(browser, tabpage)
+  local dock = (browser.docks or {})[tabpage]
+  if dock and shows(dock.win, browser.buf) then
+    return dock
+  end
+  return nil
+end
+
+-- Open the log along the bottom of the current tab (a review's), its cursor
+-- on hash. Returns the dock pane.
+function M.dock(browser, hash)
+  if browser.disposed or not vim.api.nvim_buf_is_valid(browser.buf) then
+    return nil
+  end
+  local tab = vim.api.nvim_get_current_tabpage()
+  local existing = M.dock_for(browser, tab)
+  if existing then
+    return existing
+  end
+  local log_opts = log_config(browser.config)
+  local height = tonumber(log_opts.dock_height) or 12
+  height = math.max(3, math.min(height, math.floor(vim.o.lines * 0.4)))
+  local ok, win = pcall(vim.api.nvim_open_win, browser.buf, false, {
+    split = "below",
+    win = -1,
+    height = height,
+  })
+  if not ok then
+    return nil
+  end
+  list_window_options(win)
+  local dock = { win = win, tabpage = tab }
+  browser.docks[tab] = dock
+  local row = hash and row_for_hash(browser, hash)
+  if row then
+    pcall(vim.api.nvim_win_set_cursor, win, { row, 0 })
+    vim.api.nvim_win_call(win, function()
+      vim.cmd("normal! zz")
+    end)
+  end
+  local want_details = browser.dock_details
+  if want_details == nil then
+    want_details = details_fit(browser, dock)
+  end
+  if want_details then
+    open_details(browser, dock)
+  end
+  render_log(browser)
+  return dock
+end
+
+-- Close the dock on tabpage (the current one by default).
+function M.undock(browser, tabpage)
+  tabpage = tabpage or vim.api.nvim_get_current_tabpage()
+  local dock = (browser.docks or {})[tabpage]
+  if not dock then
+    return false
+  end
+  browser.docks[tabpage] = nil
+  if dock.details_win and vim.api.nvim_win_is_valid(dock.details_win) then
+    pcall(vim.api.nvim_win_close, dock.details_win, true)
+  end
+  if dock.win and vim.api.nvim_win_is_valid(dock.win) then
+    pcall(vim.api.nvim_win_close, dock.win, true)
+  end
+  if not any_details_open(browser) then
+    browser.details_hash = nil
+  end
+  return true
 end
 
 -- Opening -------------------------------------------------------------------
@@ -475,9 +672,12 @@ function M.open(config, opts, callbacks)
     stats = {},
     details_cache = {},
     callbacks = callbacks,
+    docks = {},
     ns = vim.api.nvim_create_namespace("DiffBanditGitLog"),
   }
-  browser.buf = nvim.make_buffer("diffbandit-git-log", nil, { modifiable = false })
+  -- Kept while hidden: a review's dock can be toggled off and back on after
+  -- the home pane is gone. dispose_if_unused wipes it once nothing needs it.
+  browser.buf = nvim.make_buffer("diffbandit-git-log", nil, { modifiable = false, bufhidden = "hide" })
   if opts.fill then
     -- The launcher's log takes the whole (empty) startup window.
     browser.win = vim.api.nvim_get_current_win()
@@ -488,54 +688,85 @@ function M.open(config, opts, callbacks)
       height = opts.height or 15,
     })
   end
+  -- Open while the home pane shows the list: a review's dock alone does not
+  -- keep the launcher alive, the review it sits in does.
   function browser.is_open(self)
-    return self.win ~= nil and vim.api.nvim_win_is_valid(self.win) and vim.api.nvim_win_get_buf(self.win) == self.buf
+    return shows(self.win, self.buf)
   end
   function browser.tabpage(self)
     return self:is_open() and vim.api.nvim_win_get_tabpage(self.win) or nil
   end
   state.register_view(browser)
   local group = vim.api.nvim_create_augroup("DiffBanditGitLog" .. browser.buf, { clear = true })
-  vim.api.nvim_create_autocmd({ "BufWipeout", "BufHidden" }, {
+  vim.api.nvim_create_autocmd("BufWipeout", {
     group = group,
     buffer = browser.buf,
     once = true,
     callback = function()
       state.unregister_view(browser)
       browser.disposed = true
-      close_details(browser)
+      for _, pane in ipairs(panes(browser)) do
+        close_details(browser, pane)
+      end
       if browser.details_buf and vim.api.nvim_buf_is_valid(browser.details_buf) then
         pcall(vim.api.nvim_buf_delete, browser.details_buf, { force = true })
       end
       pcall(vim.api.nvim_del_augroup_by_id, group)
     end,
   })
-  -- BufEnter: a review walked with ]r moves this cursor from another tab.
-  vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter" }, {
+  -- Once no window shows the list and no review walks it, wipe it.
+  local function dispose_if_unused()
+    if browser.disposed or not vim.api.nvim_buf_is_valid(browser.buf) then
+      return
+    end
+    if #vim.fn.win_findbuf(browser.buf) > 0 then
+      return
+    end
+    if callbacks.in_use and callbacks.in_use(browser) then
+      return
+    end
+    pcall(vim.api.nvim_buf_delete, browser.buf, { force = true })
+  end
+  vim.api.nvim_create_autocmd({ "WinClosed", "TabClosed" }, {
+    group = group,
+    callback = function()
+      -- Scheduled so a review replacing its tab opens its dock first.
+      vim.schedule(dispose_if_unused)
+    end,
+  })
+  -- BufEnter: a review walked with ]r moves this cursor from another tab,
+  -- and the home pane and a dock can differ in width.
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    buffer = browser.buf,
+    callback = function()
+      if browser.rendered_width ~= list_width(browser) then
+        render_log(browser)
+      end
+      schedule_details(browser)
+    end,
+  })
+  vim.api.nvim_create_autocmd("CursorMoved", {
     group = group,
     buffer = browser.buf,
     callback = function()
       schedule_details(browser)
+      browser.schedule_follow()
     end,
   })
   vim.api.nvim_create_autocmd("WinResized", {
     group = group,
     callback = function()
-      if browser:is_open() and vim.tbl_contains(vim.v.event.windows or {}, browser.win) then
-        render_log(browser)
+      local resized = vim.v.event.windows or {}
+      for _, win in ipairs(M.list_windows(browser)) do
+        if vim.tbl_contains(resized, win) then
+          render_log(browser)
+          return
+        end
       end
     end,
   })
-  nvim.set_window_options(browser.win, {
-    number = false,
-    relativenumber = false,
-    cursorline = true,
-    wrap = false,
-    signcolumn = "no",
-    foldcolumn = "0",
-    winfixheight = true,
-    winhl = WINHL,
-  })
+  list_window_options(browser.win)
 
   local base_opts = { nowait = true, noremap = true, silent = true }
   local function map_opts(buf, section, desc)
@@ -544,6 +775,16 @@ function M.open(config, opts, callbacks)
   local help_key = config_mod.section(config, "navigation").help_key
 
   local function close_log()
+    local pane = active_pane(browser)
+    if pane and pane ~= browser then
+      -- q in a review's dock hides the dock; the review stays.
+      if callbacks.hide_dock then
+        callbacks.hide_dock(browser, pane.tabpage)
+      else
+        M.undock(browser, pane.tabpage)
+      end
+      return
+    end
     if require("diffbandit.launcher").should_quit_on_close(browser:tabpage()) then
       pcall(vim.cmd, "confirm qall")
       return
@@ -556,9 +797,12 @@ function M.open(config, opts, callbacks)
         pcall(vim.api.nvim_win_set_buf, browser.win, vim.api.nvim_create_buf(true, true))
       end
     end
+    vim.schedule(dispose_if_unused)
   end
 
-  local function open_commit(index, preferred_path)
+  -- from_dock: the request came from a review's dock, so the review on this
+  -- tab is replaced and focus stays in the dock.
+  local function open_commit(index, preferred_path, from_dock)
     local commit = browser.commits[index]
     if commit and callbacks.open_commit then
       callbacks.open_commit(commit.hash, {
@@ -566,8 +810,29 @@ function M.open(config, opts, callbacks)
         browser = browser,
         log_index = index,
         preferred_path = preferred_path,
+        from_dock = from_dock,
       })
     end
+  end
+
+  -- With git.log.follow, moving the cursor in a dock opens that commit.
+  function browser.schedule_follow()
+    if not log_opts.follow then
+      return
+    end
+    local pane = active_pane(browser)
+    if not pane or pane == browser or pane.win ~= vim.api.nvim_get_current_win() then
+      return
+    end
+    ui.reschedule_once(browser, "follow_pending", function()
+      if browser.disposed or vim.api.nvim_get_current_win() ~= pane.win then
+        return
+      end
+      local _, index = commit_at_cursor(browser)
+      if index and callbacks.is_reviewing and not callbacks.is_reviewing(browser, index) then
+        open_commit(index, nil, true)
+      end
+    end, tonumber(log_opts.follow_debounce_ms) or 150)
   end
 
   local function refresh()
@@ -591,7 +856,7 @@ function M.open(config, opts, callbacks)
         keyhelp.open(buf, { title = title, help_key = help_key })
       end, map_opts(buf, "General", "Show this key help"))
     end
-    vim.keymap.set("n", "q", close_log, map_opts(buf, "General", "Close the log"))
+    vim.keymap.set("n", "q", close_log, map_opts(buf, "General", "Close the log (hide it in a review's dock)"))
     if keys.toggle_details then
       vim.keymap.set("n", keys.toggle_details, function()
         toggle_details(browser)
@@ -600,13 +865,38 @@ function M.open(config, opts, callbacks)
     if keys.refresh then
       vim.keymap.set("n", keys.refresh, refresh, map_opts(buf, "Log", "Refresh the log"))
     end
+    -- Leaving a review's dock; the home log has no review beside it.
+    local function leave_dock(target)
+      return function()
+        local pane = active_pane(browser)
+        if pane and pane ~= browser and callbacks.focus_review then
+          callbacks.focus_review(pane.tabpage, target)
+        end
+      end
+    end
+    for _, remote in ipairs(callbacks.remote_keys or {}) do
+      vim.keymap.set("n", remote.lhs, function()
+        local pane = active_pane(browser)
+        if pane and pane ~= browser and callbacks.remote then
+          callbacks.remote(pane.tabpage, remote.lhs)
+        end
+      end, map_opts(buf, "Dock", remote.desc .. " (in a review's dock)"))
+    end
+    if keys.focus_diff then
+      vim.keymap.set("n", keys.focus_diff, leave_dock("diff"),
+        map_opts(buf, "Dock", "Back to the diff (in a review's dock)"))
+    end
+    if keys.focus_panel then
+      vim.keymap.set("n", keys.focus_panel, leave_dock("panel"),
+        map_opts(buf, "Dock", "Focus the commit panel (in a review's dock)"))
+    end
   end
 
   map_common(browser.buf, "Git log")
   vim.keymap.set("n", "<CR>", function()
     local _, index = commit_at_cursor(browser)
     if index then
-      open_commit(index)
+      open_commit(index, nil, active_pane(browser) ~= browser)
     end
   end, map_opts(browser.buf, "Log", "Review the commit under the cursor"))
 
@@ -618,7 +908,7 @@ function M.open(config, opts, callbacks)
       for index, commit in ipairs(browser.commits) do
         if commit.hash == browser.details_hash then
           local row = vim.api.nvim_win_get_cursor(0)[1]
-          open_commit(index, (browser.details_file_rows or {})[row])
+          open_commit(index, (browser.details_file_rows or {})[row], active_pane(browser) ~= browser)
           return
         end
       end
@@ -630,8 +920,7 @@ function M.open(config, opts, callbacks)
     pcall(vim.api.nvim_win_set_cursor, browser.win, { 2, 0 })
   end
   load_stats(browser)
-  local show = log_opts.details
-  if show and list_width(browser) >= (tonumber(log_opts.details_min_columns) or 0) then
+  if details_fit(browser, browser) then
     open_details(browser)
     render_log(browser)
   end
