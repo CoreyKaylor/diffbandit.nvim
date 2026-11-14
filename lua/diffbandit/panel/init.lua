@@ -10,6 +10,11 @@ local keyhelp = require("diffbandit.util.keyhelp")
 
 local M = {}
 
+-- The open file's row: a bar in the gutter and a line highlight, kept apart
+-- from the row highlights so it can move without a re-render.
+local current_ns = vim.api.nvim_create_namespace("DiffBanditPanelCurrent")
+local CURRENT_MARKER = "▎"
+
 local plain_icons = {
   modified = "M",
   added = "A",
@@ -236,6 +241,33 @@ local function set_nav_cursor(session, row)
   row = math.max(1, math.min(row or 1, line_count))
   local model = panel.rows and panel.rows[row]
   pcall(vim.api.nvim_win_set_cursor, panel.nav_win, { row, model and model.name_col or 0 })
+end
+
+-- Mark the row of the file open in the diff (host.file_queue_index). Outside
+-- the panel its cursor follows that row too, so focusing the panel lands on
+-- the open file; opts.cursor moves it even while the panel is focused.
+function M.sync_current(session, opts)
+  opts = opts or {}
+  local panel = session and session.panel
+  if not panel or not panel.nav_buf or not vim.api.nvim_buf_is_valid(panel.nav_buf) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(panel.nav_buf, current_ns, 0, -1)
+  local row = find_file_row(panel.rows, session.file_queue_index)
+  if not row or row > vim.api.nvim_buf_line_count(panel.nav_buf) then
+    return
+  end
+  vim.api.nvim_buf_set_extmark(panel.nav_buf, current_ns, row - 1, 0, {
+    line_hl_group = "DiffBanditPanelCurrent",
+    virt_text = { { CURRENT_MARKER, "DiffBanditPanelCurrentMarker" } },
+    virt_text_pos = "overlay",
+    priority = 200,
+  })
+  local nav_win = panel.nav_win
+  if nav_win and vim.api.nvim_win_is_valid(nav_win)
+      and (opts.cursor or vim.api.nvim_get_current_win() ~= nav_win) then
+    set_nav_cursor(session, row)
+  end
 end
 
 local function row_highlight(entry)
@@ -654,6 +686,7 @@ function M.render_nav(session, preferred_entry_index, opts)
       or first_file_row(panel.rows)
   end
   set_nav_cursor(session, target_row)
+  M.sync_current(session)
 end
 
 function M.render_commit(session)
@@ -1261,6 +1294,21 @@ function M.attach(session, opts)
   M.refresh_stage_states(session)
   M.render(session, opts.initial_selection, { no_initial_selection = opts.no_initial_selection ~= false })
   M.setup_keymaps(session)
+  -- Entering the panel puts the cursor on the open file. The panel buffers
+  -- can outlive a host, so the latest host to attach owns the autocmd.
+  local buf = session.panel.nav_buf
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    local group = vim.api.nvim_create_augroup("DiffBanditPanelCurrent" .. buf, { clear = true })
+    vim.api.nvim_create_autocmd("WinEnter", {
+      group = group,
+      buffer = buf,
+      callback = function()
+        if not session.disposed and session.panel and session.panel.nav_buf == buf then
+          M.sync_current(session, { cursor = true })
+        end
+      end,
+    })
+  end
 end
 
 M._private = {

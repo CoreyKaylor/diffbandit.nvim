@@ -33,6 +33,10 @@ function M.set_index(host, index)
   if host.file_queue then
     host.file_queue.index = index
   end
+  if host.panel then
+    -- Keep the panel's open-file marker on the file being shown.
+    require("diffbandit.panel").sync_current(host)
+  end
 end
 
 function M.current_index(host)

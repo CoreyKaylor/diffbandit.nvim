@@ -460,6 +460,10 @@ selection restored.
 Open the panel with `:DiffBanditCommitPanel`, or press `C` from a Git diff
 opened by `:DiffBanditGit`.
 
+The file open in the diff is marked with a bar and a highlighted row
+(`DiffBanditPanelCurrent`, `DiffBanditPanelCurrentMarker`) that follows `]f`/`[f`
+and every other file switch, and focusing the panel puts the cursor on it.
+
 | Key | Action |
 | --- | --- |
 | `j` / `k` | Move through changed files and preview the selected file |

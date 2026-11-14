@@ -709,6 +709,64 @@ do
   pcall(vim.cmd, "tabclose")
 end
 
+-- The commit panel marks the file open in the diff, follows it as the review
+-- moves between files, and entering the panel lands the cursor on it.
+do
+  local diffbandit = require("diffbandit")
+  local state = require("diffbandit.state")
+  local repo = make_git_repo()
+  for _, name in ipairs({ "a.txt", "b.txt", "c.txt" }) do
+    write_repo_file(repo, name, { name })
+  end
+  commit_baseline(repo)
+  for _, name in ipairs({ "a.txt", "b.txt", "c.txt" }) do
+    write_repo_file(repo, name, { name, "more" })
+  end
+  git_test_command({ "commit", "-q", "-am", "three files" }, repo)
+
+  local review = assert((diffbandit.git_commit("HEAD", { root = repo })))
+  local panel = review.panel
+  local ns = vim.api.nvim_get_namespaces()["DiffBanditPanelCurrent"]
+  local function marked_rows()
+    local rows = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(panel.nav_buf, ns, 0, -1, {})) do
+      rows[#rows + 1] = mark[2] + 1
+    end
+    return rows
+  end
+  local function row_of(index)
+    for row, model in ipairs(panel.rows) do
+      if model.type == "file" and model.index == index then
+        return row
+      end
+    end
+  end
+  local function nav_row()
+    return vim.api.nvim_win_get_cursor(panel.nav_win)[1]
+  end
+
+  assert_eq(table.concat(marked_rows(), ","), tostring(row_of(1)), "the open file is marked")
+  assert_eq(nav_row(), row_of(1), "the panel cursor starts on the open file")
+
+  vim.api.nvim_set_current_win(review.right_win)
+  review:goto_next_file()
+  assert_eq(review.file_queue_index, 2, "]f opens the next file")
+  assert_eq(table.concat(marked_rows(), ","), tostring(row_of(2)), "the mark follows the open file")
+  assert_eq(nav_row(), row_of(2), "the panel cursor follows the open file")
+
+  -- Browsing the panel without opening a file, then leaving and coming back
+  -- after the diff moved on, lands on the open file.
+  vim.api.nvim_set_current_win(panel.nav_win)
+  vim.api.nvim_win_set_cursor(panel.nav_win, { 1, 0 })
+  vim.api.nvim_set_current_win(review.right_win)
+  review:goto_next_file()
+  assert_eq(review.file_queue_index, 3, "]f opens the last file")
+  vim.api.nvim_set_current_win(panel.nav_win)
+  assert_eq(nav_row(), row_of(3), "entering the panel puts the cursor on the open file")
+  assert_eq(table.concat(marked_rows(), ","), tostring(row_of(3)), "only the open file is marked")
+  review:close()
+end
+
 -- Log rows: compact ages, refs, and change counts that load after the list.
 do
   local log_view = require("diffbandit.util.log_view")

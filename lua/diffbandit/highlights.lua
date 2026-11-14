@@ -25,6 +25,9 @@ local base_defaults = {
   DiffBanditLogAdded = { link = "Added", default = true },
   DiffBanditLogRemoved = { link = "Removed", default = true },
   DiffBanditLogChanged = { link = "Changed", default = true },
+  -- The commit panel's bar beside the file open in the diff (the row's
+  -- background, DiffBanditPanelCurrent, is derived in apply_panel_current).
+  DiffBanditPanelCurrentMarker = { link = "Special", default = true },
   -- Neutral cursorline so it doesn't wash out range backgrounds
   DiffBanditCursorLine = { bg = "NONE" },
 }
@@ -166,6 +169,18 @@ local function change_emphasis_background(change_bg, normal_bg, normal_fg, theme
     emphasis = blend_color(change_bg, target, math.min(1, amount + 0.06))
   end
   return emphasis
+end
+
+-- The panel paints StatusLine and maps CursorLine away in its window, so
+-- the open file's row takes CursorLine's colour by value, or a step off the
+-- panel background when CursorLine would not show against it.
+local function apply_panel_current(normal_bg, normal_fg)
+  local panel_bg = color_to_number(adopt_diff_colors("StatusLine").bg) or normal_bg
+  local bg = color_to_number(adopt_diff_colors("CursorLine").bg)
+  if not bg or color_delta(bg, panel_bg) < 0.03 then
+    bg = blend_color(panel_bg, normal_fg, 0.12)
+  end
+  apply_group("DiffBanditPanelCurrent", { bg = bg })
 end
 
 local function apply_theme_overrides(theme)
@@ -435,6 +450,7 @@ local function apply_diff_variants(config)
     apply_group("DiffBanditLineNumber" .. name, { fg = line_number_fg, underline = true, sp = color })
   end
 
+  apply_panel_current(normal_bg, normal_fg)
   apply_theme_overrides(theme)
 end
 
