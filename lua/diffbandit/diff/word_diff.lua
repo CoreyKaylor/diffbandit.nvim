@@ -618,6 +618,172 @@ function M.inner_fragments(text1, text2)
   return default_corrector(changes, text1, text2)
 end
 
+-- TrimUtil's isSpaceEnterOrTab, used by the whitespace correctors.
+local function is_space_enter_tab(text, i) -- 0-based
+  local b = text:byte(i + 1)
+  return b == 32 or b == 10 or b == 9
+end
+
+local function strip_whitespace(s)
+  return (s:gsub("%s+", ""))
+end
+
+-- One side of the three-way comparison: word-match base against `side`,
+-- slide and punctuation-match as the two-way path does, and return the
+-- matched (unchanged) char ranges; start1/end1 index base, start2/end2 side.
+local function unchanged_chars(base_text, side_text, base_words, side_words)
+  local keys1, keys2 = {}, {}
+  for i, w in ipairs(base_words) do
+    keys1[i] = w.key
+  end
+  for i, w in ipairs(side_words) do
+    keys2[i] = w.key
+  end
+  local unchanged = unchanged_from_changes(myers.diff(keys1, keys2), #base_words, #side_words)
+  unchanged = optimize_word_chunks(base_text, side_text, base_words, side_words, unchanged)
+  local changes = match_adjustment_delimiters(base_text, side_text, base_words, side_words, unchanged)
+  return unchanged_from_changes(changes, #base_text, #side_text)
+end
+
+-- ComparisonMergeUtil.FairMergeBuilder: walk both sides' matched ranges
+-- (base-indexed) together; whatever all three texts do not share becomes a
+-- merge range. Ranges use 1 = left, 2 = base, 3 = right.
+local function build_merge_ranges(unchanged1, unchanged2, len1, len2, len3)
+  local ranges = {}
+  local index1, index2, index3 = 0, 0, 0
+  local function add_change(s1, s2, s3, e1, e2, e3)
+    if s1 == e1 and s2 == e2 and s3 == e3 then
+      return
+    end
+    ranges[#ranges + 1] = { start1 = s1, end1 = e1, start2 = s2, end2 = e2, start3 = s3, end3 = e3 }
+  end
+  local a, b = 1, 1
+  while a <= #unchanged1 and b <= #unchanged2 do
+    local r1, r2 = unchanged1[a], unchanged2[b]
+    if r1.end1 <= r2.start1 then
+      a = a + 1
+    elseif r2.end1 <= r1.start1 then
+      b = b + 1
+    else
+      local start_base = math.max(r1.start1, r2.start1)
+      local end_base = math.min(r1.end1, r2.end1)
+      local count = end_base - start_base
+      local start_left = r1.start2 + (start_base - r1.start1)
+      local start_right = r2.start2 + (start_base - r2.start1)
+      add_change(index1, index2, index3, start_left, start_base, start_right)
+      index1, index2, index3 = start_left + count, end_base, start_right + count
+      if r1.end1 <= r2.end1 then
+        a = a + 1
+      else
+        b = b + 1
+      end
+    end
+  end
+  add_change(index1, index2, index3, len1, len2, len3)
+  return ranges
+end
+
+-- TrimUtil.expandIgnoredForward/Backward over three texts: count leading
+-- (or trailing) whitespace chars equal on all three sides.
+local function expand_ws_forward(t1, t2, t3, s1, s2, s3, e1, e2, e3)
+  local n = 0
+  while s1 + n < e1 and s2 + n < e2 and s3 + n < e3 do
+    local c = t1:byte(s1 + n + 1)
+    if c ~= t2:byte(s2 + n + 1) or c ~= t3:byte(s3 + n + 1) or not is_space_enter_tab(t1, s1 + n) then
+      break
+    end
+    n = n + 1
+  end
+  return n
+end
+
+local function expand_ws_backward(t1, t2, t3, s1, s2, s3, e1, e2, e3)
+  local n = 0
+  while s1 < e1 - n and s2 < e2 - n and s3 < e3 - n do
+    local c = t1:byte(e1 - n)
+    if c ~= t2:byte(e2 - n) or c ~= t3:byte(e3 - n) or not is_space_enter_tab(t1, e1 - n - 1) then
+      break
+    end
+    n = n + 1
+  end
+  return n
+end
+
+local function merge_range_empty(r)
+  return r.start1 == r.end1 and r.start2 == r.end2 and r.start3 == r.end3
+end
+
+-- ByWordRt.MergeDefaultCorrector: trim whitespace shared by all three sides
+-- off each range's edges.
+local function merge_default_corrector(ranges, t1, t2, t3)
+  local out = {}
+  for _, r in ipairs(ranges) do
+    local end_cut = expand_ws_backward(t1, t2, t3, r.start1, r.start2, r.start3, r.end1, r.end2, r.end3)
+    local start_cut = expand_ws_forward(t1, t2, t3, r.start1, r.start2, r.start3,
+      r.end1 - end_cut, r.end2 - end_cut, r.end3 - end_cut)
+    local e = {
+      start1 = r.start1 + start_cut, end1 = r.end1 - end_cut,
+      start2 = r.start2 + start_cut, end2 = r.end2 - end_cut,
+      start3 = r.start3 + start_cut, end3 = r.end3 - end_cut,
+    }
+    if not merge_range_empty(e) then
+      out[#out + 1] = e
+    end
+  end
+  return out
+end
+
+-- ByWordRt.MergeIgnoreSpacesCorrector: expand over shared whitespace, trim
+-- each side's own edge whitespace, and drop ranges whose three sides only
+-- differ in whitespace.
+local function merge_ignore_spaces_corrector(ranges, t1, t2, t3)
+  local function trim(text, s, e)
+    while s < e and is_space_enter_tab(text, s) do
+      s = s + 1
+    end
+    while s < e and is_space_enter_tab(text, e - 1) do
+      e = e - 1
+    end
+    return s, e
+  end
+  local out = {}
+  for _, r in ipairs(ranges) do
+    local f = expand_ws_forward(t1, t2, t3, r.start1, r.start2, r.start3, r.end1, r.end2, r.end3)
+    local s1, s2, s3 = r.start1 + f, r.start2 + f, r.start3 + f
+    local b = expand_ws_backward(t1, t2, t3, s1, s2, s3, r.end1, r.end2, r.end3)
+    local e1, e2, e3 = r.end1 - b, r.end2 - b, r.end3 - b
+    s1, e1 = trim(t1, s1, e1)
+    s2, e2 = trim(t2, s2, e2)
+    s3, e3 = trim(t3, s3, e3)
+    local t = { start1 = s1, end1 = e1, start2 = s2, end2 = e2, start3 = s3, end3 = e3 }
+    if not merge_range_empty(t) then
+      local base = strip_whitespace(t2:sub(s2 + 1, e2))
+      local equal = strip_whitespace(t1:sub(s1 + 1, e1)) == base and strip_whitespace(t3:sub(s3 + 1, e3)) == base
+      if not equal then
+        out[#out + 1] = t
+      end
+    end
+  end
+  return out
+end
+
+-- ByWordRt.compare(text1, text2, text3, policy): three-way word comparison
+-- of left (text1), base (text2) and right (text3). Returns merge ranges as
+-- 0-based half-open char offsets (start1/end1 left, start2/end2 base,
+-- start3/end3 right). policy: "default" or "ignore_whitespace".
+function M.compare_merge(text1, text2, text3, policy)
+  local words1 = M.tokenize(text1)
+  local words2 = M.tokenize(text2)
+  local words3 = M.tokenize(text3)
+  local unchanged1 = unchanged_chars(text2, text1, words2, words1)
+  local unchanged2 = unchanged_chars(text2, text3, words2, words3)
+  local ranges = build_merge_ranges(unchanged1, unchanged2, #text1, #text2, #text3)
+  if policy == "ignore_whitespace" then
+    return merge_ignore_spaces_corrector(ranges, text1, text2, text3)
+  end
+  return merge_default_corrector(ranges, text1, text2, text3)
+end
+
 local function count_newlines(words, from, to)
   local count = 0
   for i = from, to - 1 do

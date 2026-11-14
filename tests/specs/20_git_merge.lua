@@ -2705,3 +2705,212 @@ do
   local short = vim.trim(git_test_command({ "rev-parse", "--short", "HEAD" }, repo))
   assert_eq(git_mod.current_branch(repo), "detached " .. short, "a detached HEAD reports its commit")
 end
+
+-- ==============================================================================
+-- Merge: resolve simple conflicts (the magic wand, issue #17)
+-- ==============================================================================
+-- A port of IntelliJ's MergeResolveUtil.tryResolve; the cases below are
+-- MergeResolveUtilTest's (simple variant), plus the example from the issue.
+do
+  local simple_mod = require("diffbandit.merge.simple_resolve")
+  local function check(base, left, right, expected, label)
+    assert_eq(simple_mod.resolve_text(left, base, right), expected, label)
+  end
+  check("", "", "", "", "empty texts")
+  check("x x x", "x Y x", "x x x", "x Y x", "a change on one side")
+  check("x x", "x x", "x Y x", "x Y x", "an insertion on one side")
+  check("x X x", "x x", "x X x", "x x", "a deletion on one side")
+  check("x x x", "x Y x", "x Y x", "x Y x", "the same change on both sides")
+  check("x X x", "x x", "x x", "x x", "the same deletion on both sides")
+  check("x x x", "x Y x x", "x x Z x", "x Y x Z x", "separate insertions")
+  check("x", "x Y", "Z x", "Z x Y", "insertions at either end")
+  check("x x", "x", "Z x x", "Z x", "a deletion and a separate insertion")
+  check("x x x", "x Y x", "x Z x", nil, "different changes to one word conflict")
+  check("x x", "x Y x", "x Z x", nil, "different insertions at one point conflict")
+  check("version: 1.0.0", "version: 2.0.0", "version: 1.0.4", "version: 2.0.4",
+    "punctuation separates words (IDEA-200696)")
+  check("i\n", "i", "\ni", "i", "regression: newline edits")
+  check("Y X Y", "Y C\nX\nC Y", "Y \nX\n Y", "Y \nC\nX\nC Y", "regression: lines around a word")
+  check("foo(a, b)", "foo(a, b, c)", "bar(a, b)", "bar(a, b, c)", "the issue's example")
+
+  -- The whitespace pass: a reindent on one side, a rename on the other.
+  local base = table.concat({
+    "  public static class ChangeData {",
+    "    @NotNull public final ChangeKind kind;",
+    "  }",
+    "",
+    "  private enum ChangeKind {",
+    "    MODIFIED((byte)0),",
+    "    RENAMED_FROM((byte)1);",
+  }, "\n")
+  local left = table.concat({
+    "  public enum ChangeKind {",
+    "    NOT_CHANGED((byte)-1),",
+    "    MODIFIED((byte)0),",
+    "    ADDED((byte)1);",
+  }, "\n")
+  local right = table.concat({
+    "  public static class ChangeData {",
+    "  @NotNull public final ChangeKind kind;",
+    "}",
+    "",
+    "private enum ChangeKind {",
+    "  MODIFIED((byte)0),",
+    "  RENAMED_FROM((byte)1);",
+  }, "\n")
+  local expected = table.concat({
+    "  public enum ChangeKind {",
+    "    NOT_CHANGED((byte)-1),",
+    "  MODIFIED((byte)0),",
+    "  ADDED((byte)1);",
+  }, "\n")
+  check(base, left, right, expected, "a reindent does not block the other side's change")
+  assert_eq(simple_mod.resolve_text(left, base, right, { ignore_whitespace = false }), nil,
+    "without the whitespace pass the reindent collides")
+
+  -- Lines: no lines and one empty line stay distinct.
+  assert_eq(table.concat(assert(simple_mod.resolve_lines({ "x" }, {}, { "x" })), ","), "",
+    "a deleted line resolves to no lines")
+  assert_eq(#assert(simple_mod.resolve_lines({ "x" }, {}, { "x" })), 0, "deletion leaves zero lines")
+  assert_eq(#assert(simple_mod.resolve_lines({ "x" }, { "" }, { "x" })), 1, "an emptied line stays one line")
+end
+
+-- Planning against the current result: clusters, side lines, and conflicts
+-- the result already changed.
+do
+  local simple_mod = require("diffbandit.merge.simple_resolve")
+  local text_mod = require("diffbandit.util.text")
+  local base = { "keep", "foo(a, b)", "keep2", "x = 1", "keep3" }
+  local local_lines = { "keep", "foo(a, b, c)", "keep2", "x = 2", "keep3" }
+  local remote_lines = { "keep", "bar(a, b)", "keep2", "x = 3", "keep3" }
+  local data = merge_mod.data_from_texts("/tmp", "wand.txt", {
+    base = text_mod.to_text(base),
+    local_text = text_mod.to_text(local_lines),
+    remote = text_mod.to_text(remote_lines),
+  }, {})
+  assert_eq(#data.conflicts, 2, "fixture: two conflicts")
+  local clusters = simple_mod.clusters(data.conflicts)
+  assert_eq(#clusters, 2, "separate conflicts are separate clusters")
+  assert_eq(table.concat(assert(simple_mod.side_lines(base, local_lines, data.local_hunks, 2, 1)), ","),
+    "foo(a, b, c)", "side lines for a region apply that side's hunk")
+
+  local plan = simple_mod.plan(data, base, {})
+  assert_eq(#plan.edits, 1, "one conflict is simple")
+  assert_eq(plan.not_simple, 1, "x = 2 against x = 3 is not")
+  local result = text_mod.replace_range(base, plan.edits[1].start, plan.edits[1].count, plan.edits[1].replacement)
+  assert_eq(table.concat(result, "|"), "keep|bar(a, b, c)|keep2|x = 1|keep3", "the simple conflict resolves in place")
+
+  local again = simple_mod.plan(data, result, {})
+  assert_eq(#again.edits, 0, "a resolved conflict is not resolved twice")
+  assert_eq(again.touched, 1, "it counts as already changed")
+
+  -- Rows above the conflict moved: the edit follows them.
+  local shifted = { "new", "lines", "keep", "foo(a, b)", "keep2", "x = 1", "keep3" }
+  local shifted_plan = simple_mod.plan(data, shifted, {})
+  assert_eq(shifted_plan.edits[1].start, 4, "the edit lands on the conflict's current row")
+
+  -- Overlapping regions (one local hunk against two remote hunks) cluster.
+  local grouped = simple_mod.clusters({
+    { base_start = 2, base_count = 3 },
+    { base_start = 4, base_count = 1 },
+    { base_start = 7, base_count = 0 },
+  })
+  assert_eq(#grouped, 2, "overlapping regions share a cluster")
+  assert_eq(grouped[1].start .. "+" .. grouped[1].count, "2+3", "cluster spans its regions")
+  assert_eq(grouped[2].start .. "+" .. grouped[2].count, "7+0", "an insertion cluster has no base lines")
+
+  -- Both sides inserting different text at one point is never simple; the
+  -- same insertion is.
+  local ins = merge_mod.data_from_texts("/tmp", "ins.txt", {
+    base = "a\nb\n", local_text = "a\nX\nb\n", remote = "a\nX\nb\n",
+  }, {})
+  if #ins.conflicts > 0 then
+    local ins_plan = simple_mod.plan(ins, { "a", "b" }, {})
+    assert_eq(#ins_plan.edits, 1, "an identical insertion on both sides is simple")
+    assert_eq(table.concat(ins_plan.edits[1].replacement, ","), "X", "it is inserted once")
+  end
+  local clash = merge_mod.data_from_texts("/tmp", "clash.txt", {
+    base = "a\nb\n", local_text = "a\nX\nb\n", remote = "a\nY\nb\n",
+  }, {})
+  assert_eq(#clash.conflicts, 1, "fixture: competing insertions conflict")
+  assert_eq(#simple_mod.plan(clash, { "a", "b" }, {}).edits, 0, "competing insertions are not simple")
+end
+
+-- The merge view: gS resolves every simple conflict in one undoable change,
+-- gs the one at the cursor, the header counts them, and the auto option runs
+-- the wand when the file opens.
+do
+  local text_mod = require("diffbandit.util.text")
+  local base = { "keep", "foo(a, b)", "keep2", "x = 1", "keep3", "say(hello)", "end" }
+  local local_lines = { "keep", "foo(a, b, c)", "keep2", "x = 2", "keep3", "say(hello, world)", "end" }
+  local remote_lines = { "keep", "bar(a, b)", "keep2", "x = 3", "keep3", "shout(hello)", "end" }
+  local function data()
+    local d = merge_mod.data_from_texts(vim.fn.tempname(), "wand-session.txt", {
+      base = text_mod.to_text(base),
+      local_text = text_mod.to_text(local_lines),
+      remote = text_mod.to_text(remote_lines),
+    }, config)
+    vim.fn.mkdir(d.root, "p")
+    return d
+  end
+  local function result_text(session)
+    return table.concat(vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false), "|")
+  end
+
+  local session = assert((merge_mod.start(data(), config, {})))
+  assert_eq(#session.conflicts, 3, "fixture: three conflicts")
+  assert_eq(type(buffer_keymap_callback(session.result_buf, "n", config.merge.keys.resolve_simple)), "function",
+    "gs is mapped in the result pane")
+  assert_eq(type(buffer_keymap_callback(session.local_buf, "n", config.merge.keys.resolve_all_simple)), "function",
+    "gS is mapped in the side panes")
+
+  -- gs on a conflict that is not simple changes nothing.
+  vim.api.nvim_set_current_win(session.result_win)
+  vim.api.nvim_win_set_cursor(session.result_win, { 4, 0 })
+  assert_eq(session:resolve_simple_conflicts({ quiet = true }), false, "x = 2 / x = 3 is not simple")
+  assert_eq(result_text(session), table.concat(base, "|"), "nothing changed")
+
+  -- gs at the first conflict resolves only that one.
+  vim.api.nvim_win_set_cursor(session.result_win, { 2, 0 })
+  assert_eq(session:resolve_simple_conflicts({ quiet = true }), true, "gs resolves the conflict at the cursor")
+  assert_eq(result_text(session), "keep|bar(a, b, c)|keep2|x = 1|keep3|say(hello)|end", "only that conflict")
+  assert_eq(session:auto_resolved_count(), 1, "the header counts one auto-resolved conflict")
+  assert_ne(session:status_text():find("1 auto%-resolved"), nil, "status names the count")
+
+  -- A hand edit to the last conflict keeps gS away from it.
+  vim.api.nvim_buf_set_lines(session.result_buf, 5, 6, false, { "by hand" })
+  vim.cmd("let &undolevels = &undolevels")
+  assert_eq(session:resolve_simple_conflicts({ all = true, quiet = true }), false,
+    "gS has nothing left: one done, one by hand, one not simple")
+  vim.api.nvim_buf_set_lines(session.result_buf, 5, 6, false, { "say(hello)" })
+  vim.cmd("let &undolevels = &undolevels")
+
+  -- gS resolves what is left in one change; one u reverts it.
+  assert_eq(session:resolve_simple_conflicts({ all = true, quiet = true }), true, "gS resolves the rest")
+  assert_eq(result_text(session), "keep|bar(a, b, c)|keep2|x = 1|keep3|shout(hello, world)|end",
+    "both simple conflicts are resolved, the real one is left")
+  assert_eq(session:auto_resolved_count(), 2, "two auto-resolved")
+  vim.api.nvim_buf_call(session.result_buf, function()
+    vim.cmd("silent undo")
+  end)
+  assert_eq(result_text(session), "keep|bar(a, b, c)|keep2|x = 1|keep3|say(hello)|end", "u reverts the gS pass")
+  assert_eq(session:auto_resolved_count(), 1, "undo takes it out of the count")
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = session.result_buf })
+  session:close()
+
+  -- merge.auto_resolve_simple and merge.auto_apply_non_conflicting.
+  local auto_config = config_mod.apply({ merge = { auto_resolve_simple = true, auto_apply_non_conflicting = true } })
+  local d = data()
+  d.base_lines[#d.base_lines + 1] = "tail"
+  d.local_lines[#d.local_lines + 1] = "tail"
+  d.remote_lines[#d.remote_lines + 1] = "TAIL"
+  d.result_lines = vim.deepcopy(d.base_lines)
+  d.conflicts, d.non_conflicting, d.local_hunks, d.remote_hunks =
+    merge_model_mod.build_regions(d.base_lines, d.local_lines, d.remote_lines, auto_config)
+  local auto = assert((merge_mod.start(d, auto_config, {})))
+  assert_eq(result_text(auto), "keep|bar(a, b, c)|keep2|x = 1|keep3|shout(hello, world)|end|TAIL",
+    "opening the file resolves simple conflicts and applies non-conflicting changes")
+  assert_eq(auto:auto_resolved_count(), 2, "the auto pass counts too")
+  pcall(vim.api.nvim_set_option_value, "modified", false, { buf = auto.result_buf })
+  auto:close()
+end

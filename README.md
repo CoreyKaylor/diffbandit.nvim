@@ -131,8 +131,9 @@ underneath the edit.
 
 Local, result, and remote side by side, each side reshaping the same code
 differently. `]c` walks the changes; `>>`, `<<`, and `gb` take local, remote, or
-both per conflict; `gA` applies the non-conflicting changes; `:w` resolves and
-stages.
+both per conflict; `gA` applies the non-conflicting changes; `gs`/`gS` resolve
+simple conflicts, where both sides changed the same lines but not the same words;
+`:w` resolves and stages.
 
 <img src="docs/demo/ghostty/06-merge-geometry.keyframe.gif" alt="Three-way merge taking local, remote, and both sides per conflict, then applying non-conflicting changes" width="860">
 
@@ -490,6 +491,8 @@ Default merge keys:
 | `<<` | Accept remote/incoming into the result |
 | `gb` | Accept both sides, local then remote |
 | `gA` | Apply non-conflicting changes from both sides |
+| `gs` | Resolve the conflict at the cursor if it is simple |
+| `gS` | Resolve every simple conflict in the file |
 | `]s` | Snap the other two panes to the cursor line |
 | `gzp` | Toggle the commit panel |
 | `gzh` | Toggle the left (local) pane |
@@ -500,6 +503,25 @@ Default merge keys:
 Hiding panes gives the remaining panes the reclaimed width — useful for
 focusing on the editable result when screen space is tight. The center result
 pane is always visible.
+
+A conflict is simple when both sides changed the same lines but their
+word-level edits don't collide, like IntelliJ's "Resolve simple conflicts":
+
+```text
+base:   foo(a, b)
+local:  foo(a, b, c)
+remote: bar(a, b)
+result: bar(a, b, c)
+```
+
+`gs` resolves the conflict at the cursor and `gS` every simple conflict in the
+file. Edits collide when they overlap, touch, or only whitespace separates them;
+a second pass ignores whitespace, so one side's reindent doesn't block the other
+side's real change (`merge.simple_resolve.ignore_whitespace = false` turns that
+pass off). Conflicts already accepted or edited by hand are left alone, the
+result header counts the auto-resolved ones, one `u` reverts a whole `gS`, and
+nothing is staged until `:w`. `merge.auto_resolve_simple = true` runs `gS` when
+a conflict file opens, and `merge.auto_apply_non_conflicting = true` runs `gA`.
 
 DiffBandit warns when conflict stages have mixed line endings, but it does not
 normalize them automatically.
@@ -607,6 +629,10 @@ require("diffbandit").setup({
   merge = {
     result_initial_content = "base",
     auto_apply_non_conflicting = false,
+    auto_resolve_simple = false,
+    simple_resolve = {
+      ignore_whitespace = true,
+    },
     resolve_on_write = true,
     line_endings = {
       warn = true,
@@ -618,6 +644,8 @@ require("diffbandit").setup({
       accept_remote = "<<",
       accept_both = "gb",
       apply_non_conflicting = "gA",
+      resolve_simple = "gs",
+      resolve_all_simple = "gS",
       focus_panel = "C",
       snap = "]s",
       toggle_panel = "gzp",

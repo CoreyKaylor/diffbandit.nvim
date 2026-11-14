@@ -1,6 +1,7 @@
 local diff_pair = require("diffbandit.diff.pair")
 local git = require("diffbandit.git")
 local merge_model = require("diffbandit.merge.model")
+local simple_resolve = require("diffbandit.merge.simple_resolve")
 local nvim = require("diffbandit.util.nvim")
 local pending = require("diffbandit.util.pending")
 local keymaps = require("diffbandit.util.keymaps")
@@ -230,6 +231,8 @@ function Merge.start(data, config, opts)
   self.local_hunks = data.local_hunks or {}
   self.remote_hunks = data.remote_hunks or {}
   self.current_conflict = #self.conflicts > 0 and 1 or 0
+  -- Resolutions the magic wand wrote, by cluster key (see simple_resolve).
+  self.simple_resolved = {}
   self.selected_pair_hunk = nil
   self.line_ending_warning = data.line_ending_warning
   self.host = opts.host or Merge.git_host()
@@ -422,6 +425,7 @@ function Merge.start(data, config, opts)
   self:setup_autocmds()
   self:setup_keymaps()
   self:render()
+  self:run_auto_resolve()
   if self.panel_enabled then
     panel_mod.attach(self, {
       initial_selection = self.panel_initial_selection,
@@ -1120,6 +1124,10 @@ function Merge:setup_keymaps()
     map(buf, keys.accept_both, function() self:accept("both") end, "Merge", "Accept both, local then remote")
     map(buf, keys.apply_non_conflicting, function() self:apply_non_conflicting() end,
       "Merge", "Apply every non-conflicting change")
+    map(buf, keys.resolve_simple, function() self:resolve_simple_conflicts() end,
+      "Merge", "Resolve the conflict at the cursor if it is simple")
+    map(buf, keys.resolve_all_simple, function() self:resolve_simple_conflicts({ all = true }) end,
+      "Merge", "Resolve every simple conflict in the file")
     map(buf, keys.focus_panel, function() self:focus_commit_panel_for_current_file() end,
       "Panel", "Open or focus the commit panel")
     map(buf, document_keys.top, function() self:goto_document_edge("top") end,
@@ -1174,6 +1182,10 @@ function Merge:status_text()
     conflict_text = string.format("conflict %d/%d", self.current_conflict, #self.conflicts)
   else
     conflict_text = string.format("%d conflicts", #self.conflicts)
+  end
+  local auto_resolved = self:auto_resolved_count()
+  if auto_resolved > 0 then
+    conflict_text = conflict_text .. string.format("  %d auto-resolved", auto_resolved)
   end
   if self.line_ending_warning and config_mod.section(self.config, "merge", "line_endings").warn ~= false then
     conflict_text = conflict_text .. "  " .. self.line_ending_warning
@@ -2103,6 +2115,8 @@ function Merge:open_merge_file(index, opts)
   self.local_hunks = data.local_hunks or {}
   self.remote_hunks = data.remote_hunks or {}
   self.current_conflict = #self.conflicts > 0 and 1 or 0
+  self.simple_resolved = {}
+  self.auto_resolved_cache = nil
   self.line_ending_warning = data.line_ending_warning
   self.merge_context = self.host.context(self.root, data)
 
@@ -2178,6 +2192,7 @@ function Merge:open_merge_file(index, opts)
   self:setup_autocmds()
   self:setup_keymaps()
   self:render({ force_pair_rebuild = true })
+  self:run_auto_resolve()
   if self.panel then
     panel_mod.render(self, index)
   end
@@ -2356,13 +2371,16 @@ function Merge:accept(side)
   return self:replace_result_region(self.current_conflict, replacement)
 end
 
-function Merge:apply_non_conflicting()
+function Merge:apply_non_conflicting(opts)
+  opts = opts or {}
   -- Base line numbers are stale once a conflict was resolved or the result
   -- edited, so place each hunk against the current result (see model).
   local lines = logical_buffer_lines(self.result_buf)
   local plan = merge_model.plan_non_conflicting(self.base_lines, lines, self.non_conflicting, self.config)
   if #plan.edits == 0 then
-    nvim.notify_info("no non-conflicting changes left to apply")
+    if not opts.quiet then
+      nvim.notify_info("no non-conflicting changes left to apply")
+    end
     return false
   end
   -- Bottom-to-top, so each edit's rows are still valid when it applies;
@@ -2372,13 +2390,173 @@ function Merge:apply_non_conflicting()
     merge_model.track_result_edit(self.conflicts, edit.start, edit.count, #edit.replacement)
   end
   self:set_result_buffer_lines(lines)
-  if plan.skipped > 0 then
-    nvim.notify_info(string.format("applied non-conflicting changes (%d already in the result)", plan.skipped))
-  else
-    nvim.notify_info("applied non-conflicting changes")
+  if not opts.quiet then
+    if plan.skipped > 0 then
+      nvim.notify_info(string.format("applied non-conflicting changes (%d already in the result)", plan.skipped))
+    else
+      nvim.notify_info("applied non-conflicting changes")
+    end
   end
   self:render()
   return true
+end
+
+function Merge:simple_resolve_input()
+  return {
+    base_lines = self.base_lines,
+    local_lines = self.local_lines,
+    remote_lines = self.remote_lines,
+    local_hunks = self.local_hunks,
+    remote_hunks = self.remote_hunks,
+    conflicts = self.conflicts,
+  }
+end
+
+-- The result row the cursor stands for: the cursor itself in the result
+-- pane, the facing result row in a side pane.
+function Merge:cursor_result_row()
+  local win = vim.api.nvim_get_current_win()
+  local function cursor_row(w)
+    return w and vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_cursor(w)[1] or 1
+  end
+  if win == self.local_win and self.local_result_pair then
+    return view_builder.counterpart_row((self.local_result_pair.view or {}).line_meta or {}, "left", cursor_row(win))
+  end
+  if win == self.remote_win and self.result_remote_pair then
+    return view_builder.counterpart_row((self.result_remote_pair.view or {}).line_meta or {}, "left", cursor_row(win))
+  end
+  return cursor_row(self.result_win)
+end
+
+-- The conflict cluster whose rows in the current result hold `row`; an
+-- empty (insertion) region matches the rows on either side of it.
+function Merge:cluster_at_result_row(row, result_lines)
+  local hunks = simple_resolve.result_hunks(self.base_lines, result_lines, self.config)
+  for _, cluster in ipairs(simple_resolve.clusters(self.conflicts)) do
+    local where = simple_resolve.locate(hunks, cluster.start, cluster.count)
+    local first, count = where.rows_first, where.rows_count
+    if count > 0 and row >= first and row < first + count then
+      return cluster
+    end
+    if count == 0 and (row == first - 1 or row == first) then
+      return cluster
+    end
+  end
+  return nil
+end
+
+--- The magic wand (gs / gS): resolve conflicts where both sides changed the
+--- same lines but their word-level edits do not collide. opts.all resolves
+--- every simple conflict in the file, otherwise the one at the cursor;
+--- opts.quiet skips the messages. Conflicts the result already changed
+--- (accepted or edited by hand) are left alone. All edits land in one
+--- buffer change, so one `u` reverts them; nothing is staged until :w.
+function Merge:resolve_simple_conflicts(opts)
+  opts = opts or {}
+  local function info(message)
+    if not opts.quiet then
+      nvim.notify_info(message)
+    end
+  end
+  if #self.conflicts == 0 then
+    info("no merge conflicts in this file")
+    return false
+  end
+  local lines = logical_buffer_lines(self.result_buf)
+  local only
+  if not opts.all then
+    local cluster = self:cluster_at_result_row(self:cursor_result_row(), lines)
+    if not cluster then
+      info("no conflict at the cursor")
+      return false
+    end
+    only = cluster.key
+  end
+  local plan = simple_resolve.plan(self:simple_resolve_input(), lines, {
+    only = only,
+    config = self.config,
+    ignore_whitespace = config_mod.section(self.config, "merge", "simple_resolve").ignore_whitespace ~= false,
+  })
+  if #plan.edits == 0 then
+    if not opts.all then
+      info(plan.touched > 0 and "this conflict was already changed in the result"
+        or "this conflict is not simple; resolve it by hand")
+    elseif plan.not_simple > 0 then
+      info(string.format("no simple conflicts to resolve (%d need a hand resolution)", plan.not_simple))
+    else
+      info("no unresolved conflicts left")
+    end
+    return false
+  end
+  for _, edit in ipairs(plan.edits) do
+    lines = text.replace_range(lines, edit.start, edit.count, edit.replacement)
+    merge_model.track_result_edit(self.conflicts, edit.start, edit.count, #edit.replacement)
+    self.simple_resolved[edit.cluster.key] = edit.replacement
+  end
+  self.delete_result = false
+  self:set_result_buffer_lines(lines)
+  if opts.all then
+    local left = plan.not_simple > 0 and string.format(", %d need a hand resolution", plan.not_simple) or ""
+    info(string.format("resolved %d simple conflict%s%s", #plan.edits, #plan.edits == 1 and "" or "s", left))
+  else
+    info("resolved a simple conflict")
+  end
+  self:render()
+  return true
+end
+
+-- Conflicts whose rows in the result still hold the wand's resolution
+-- (an undo or a hand edit takes them out of the count). Cached per result
+-- change: the status line renders on every scroll.
+function Merge:auto_resolved_count()
+  if not next(self.simple_resolved or {}) then
+    return 0
+  end
+  local buf = self.result_buf
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return 0
+  end
+  local key = tostring(buf) .. ":" .. tostring(vim.api.nvim_buf_get_changedtick(buf))
+  local cache = self.auto_resolved_cache
+  if cache and cache.key == key then
+    return cache.count
+  end
+  local lines = logical_buffer_lines(buf)
+  local hunks = simple_resolve.result_hunks(self.base_lines, lines, self.config)
+  local count = 0
+  for _, cluster in ipairs(simple_resolve.clusters(self.conflicts)) do
+    local resolved = self.simple_resolved[cluster.key]
+    if resolved then
+      local where = simple_resolve.locate(hunks, cluster.start, cluster.count)
+      if where.touched and where.rows_count == #resolved then
+        local same = true
+        for i, line in ipairs(resolved) do
+          if lines[where.rows_first + i - 1] ~= line then
+            same = false
+            break
+          end
+        end
+        if same then
+          count = count + 1
+        end
+      end
+    end
+  end
+  self.auto_resolved_cache = { key = key, count = count }
+  return count
+end
+
+-- merge.auto_resolve_simple / merge.auto_apply_non_conflicting: run the
+-- wand and gA when a conflict file opens. Simple conflicts go first so a
+-- non-conflicting change next to an insertion conflict cannot hold it back.
+function Merge:run_auto_resolve()
+  local merge_config = config_mod.section(self.config, "merge")
+  if merge_config.auto_resolve_simple == true and #self.conflicts > 0 then
+    self:resolve_simple_conflicts({ all = true, quiet = true })
+  end
+  if merge_config.auto_apply_non_conflicting == true and #self.non_conflicting > 0 then
+    self:apply_non_conflicting({ quiet = true })
+  end
 end
 
 function Merge:resolve()
