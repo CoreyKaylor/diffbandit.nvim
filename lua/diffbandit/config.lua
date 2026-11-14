@@ -217,6 +217,9 @@ local defaults = {
       refresh = "R",
       filter = "s",
       close = "q",
+      -- Only mapped when the right folder is editable (`diffbandit edit`).
+      take_left = "<<",
+      undo = "u",
     },
   },
   actions = {

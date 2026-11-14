@@ -222,6 +222,55 @@ local function row_matches_filter(row, filter)
   return true
 end
 
+-- Filesystem helpers for the editable right side. Paths are absolute; links
+-- are copied as links, never followed.
+local function remove_path(path)
+  local stat = uv.fs_lstat(path)
+  if not stat then
+    return true
+  end
+  local result = stat.type == "directory" and vim.fn.delete(path, "rf") or vim.fn.delete(path)
+  if result ~= 0 then
+    return false, "unable to remove " .. path
+  end
+  return true
+end
+
+local function copy_path(src, dst)
+  local stat = uv.fs_lstat(src)
+  if not stat then
+    return false, "missing " .. src
+  end
+  if stat.type == "directory" then
+    local ok, err = uv.fs_mkdir(dst, stat.mode)
+    if not ok and not tostring(err):match("^EEXIST") then
+      return false, err
+    end
+    local handle = uv.fs_scandir(src)
+    while handle do
+      local name = uv.fs_scandir_next(handle)
+      if not name then
+        break
+      end
+      local copied, copy_err = copy_path(src .. "/" .. name, dst .. "/" .. name)
+      if not copied then
+        return false, copy_err
+      end
+    end
+    return true
+  elseif stat.type == "link" then
+    local target = uv.fs_readlink(src)
+    local ok, err = uv.fs_symlink(target, dst)
+    return ok ~= nil, err
+  end
+  local ok, err = uv.fs_copyfile(src, dst)
+  if not ok then
+    return false, err
+  end
+  uv.fs_chmod(dst, stat.mode)
+  return true
+end
+
 local function compare_config(self)
   return config_mod.section(self.config, "folder", "compare")
 end
@@ -828,6 +877,72 @@ function Folder:open_selected()
   })
 end
 
+-- Diff-editor mode: make the right side of a row match the left. A file or
+-- directory that exists only on the right is removed, one only on the left is
+-- copied over, and a changed one is replaced by the left version. Under
+-- `jj split` this moves the whole entry out of the first commit. The previous
+-- right contents are kept in a scratch directory so `undo` can put them back.
+function Folder:take_left(row)
+  if not self.editable_right then
+    nvim.notify_info("the right folder is read-only")
+    return false
+  end
+  row = row or self:row_under_cursor()
+  if not row then
+    return false
+  end
+  if row.status == "same" and (row.diff_count or 0) == 0 then
+    nvim.notify_info("no difference to take: " .. row.rel)
+    return false
+  end
+  local right_path = self.right_root .. "/" .. row.rel
+  local left_path = self.left_root .. "/" .. row.rel
+  local backup = vim.fn.tempname()
+  local had_right = uv.fs_lstat(right_path) ~= nil
+  if had_right then
+    local ok, err = copy_path(right_path, backup)
+    if not ok then
+      nvim.notify_error("could not save " .. row.rel .. ": " .. tostring(err))
+      return false
+    end
+  end
+  local ok, err = remove_path(right_path)
+  if ok and uv.fs_lstat(left_path) then
+    vim.fn.mkdir(vim.fn.fnamemodify(right_path, ":h"), "p")
+    ok, err = copy_path(left_path, right_path)
+  end
+  if not ok then
+    nvim.notify_error("could not take " .. row.rel .. ": " .. tostring(err))
+    return false
+  end
+  self.undo_stack = self.undo_stack or {}
+  table.insert(self.undo_stack, { rel = row.rel, backup = had_right and backup or nil })
+  self:refresh()
+  return true
+end
+
+function Folder:undo_take()
+  local entry = self.undo_stack and table.remove(self.undo_stack)
+  if not entry then
+    nvim.notify_info("nothing to undo")
+    return false
+  end
+  local right_path = self.right_root .. "/" .. entry.rel
+  local ok, err = remove_path(right_path)
+  if ok and entry.backup then
+    vim.fn.mkdir(vim.fn.fnamemodify(right_path, ":h"), "p")
+    ok, err = copy_path(entry.backup, right_path)
+    remove_path(entry.backup)
+  end
+  if not ok then
+    nvim.notify_error("could not restore " .. entry.rel .. ": " .. tostring(err))
+    return false
+  end
+  self.selected_rel = entry.rel
+  self:refresh()
+  return true
+end
+
 function Folder:restore_from_child(context)
   if self.disposed then
     return
@@ -1108,6 +1223,14 @@ function Folder:setup_keymaps()
     map(buf, key("refresh", "R"), function()
       self:refresh()
     end, "Folder", "Compare again")
+    if self.editable_right then
+      map(buf, key("take_left", "<<"), function()
+        self:take_left()
+      end, "Folder", "Make the right file or directory match the left")
+      map(buf, key("undo", "u"), function()
+        self:undo_take()
+      end, "Folder", "Undo the last take")
+    end
     map(buf, "<C-w>l", function()
       if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
         vim.api.nvim_set_current_win(self.right_win)

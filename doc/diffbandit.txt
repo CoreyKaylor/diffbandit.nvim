@@ -284,6 +284,12 @@ Folder diff mappings:
   s              Change the status filter.
   R              Refresh the folder comparison.
   q              Close the folder diff.
+  <<             Editable folders only (`diffbandit edit`): make the right
+                 file or directory match the left. A right-only entry is
+                 removed, a left-only one restored, a changed one reset.
+                 Under `jj split` this moves the entry out of the first
+                 commit.
+  u              Editable folders only: undo the last <<.
 
 Opening a file row creates a child DiffBandit file diff. Pressing q in that
 child diff returns to the original folder comparison with the selected row

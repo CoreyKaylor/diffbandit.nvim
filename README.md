@@ -422,6 +422,15 @@ Default folder keys:
 | `s` | Change the status filter |
 | `R` | Refresh the folder comparison |
 | `q` | Close the folder diff |
+| `<<` | Editable folders only: make the right file or directory match the left |
+| `u` | Editable folders only: undo the last `<<` |
+
+In an editable folder diff (`diffbandit edit`, which `jj split` and
+`jj squash -i` open), `<<` on a row takes the left side for the whole entry: a
+file only on the right is removed, one only on the left is restored, and a
+changed one is reset to the left version. On a directory it does this for
+everything inside. Under `jj split` that moves the entry out of the first
+commit without opening it.
 
 When a file row is opened, it appears as a child DiffBandit file diff. Pressing
 `q` in that child diff returns to the original folder comparison with the row
