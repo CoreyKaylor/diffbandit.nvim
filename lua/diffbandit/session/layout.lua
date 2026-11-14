@@ -146,6 +146,9 @@ local function create_buffers(session)
       mode = session.panel_mode,
       details = session.panel_details,
       visible = false,
+      -- A review opened from the Git log shows the commit in the docked
+      -- log's detail pane, so its panel is just the file tree.
+      nav_only = session:docks_log(),
     }
   end
 
@@ -254,11 +257,13 @@ local function open_windows(session)
       })
       left_overview_win = open_sidecar_win(session.left_overview_buf, left_win, "left", session.overview_width)
     end
-    panel_commit_win = vim.api.nvim_open_win(session.panel.commit_buf, false, {
-      split = "below",
-      win = panel_nav_win,
-      height = panel_config.commit_height or 10,
-    })
+    if not session.panel.nav_only then
+      panel_commit_win = vim.api.nvim_open_win(session.panel.commit_buf, false, {
+        split = "below",
+        win = panel_nav_win,
+        height = panel_config.commit_height or 10,
+      })
+    end
   end
 
   if session.status_enabled then

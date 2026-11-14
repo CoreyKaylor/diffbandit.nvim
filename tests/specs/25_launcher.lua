@@ -497,7 +497,7 @@ do
   assert_eq(older.file_queue.log_walk.index, 3, "the walk steps over the empty commit")
   assert_eq(#older.file_queue.entries, 2, "the second commit changes both files")
   assert_eq(older.file_queue_index, 2, "the walk stays on b.txt")
-  assert_eq(vim.api.nvim_win_get_cursor(browser.win)[1], 4, "the log cursor follows the review")
+  assert_eq(vim.api.nvim_win_get_cursor(older.log_dock.win)[1], 4, "the log cursor follows the review")
 
   assert_eq(diffbandit.git_log_step(older, 1), true, "]r reaches the root commit")
   local root_review = state.sessions[vim.api.nvim_get_current_tabpage()]
@@ -516,8 +516,9 @@ do
   vim.cmd("tabclose")
 end
 
--- Docked log: a review opened from the log keeps it along its bottom, and
--- Enter or follow in the dock replaces the review instead of stacking tabs.
+-- Docked log: a review opened from the log takes the log's place, docked
+-- along its bottom, and Enter or follow in the dock replaces the review
+-- instead of stacking tabs. q in the dock closes the review and the log.
 do
   local diffbandit = require("diffbandit")
   local state = require("diffbandit.state")
@@ -562,7 +563,12 @@ do
   assert_eq(review.tabpage ~= home_tab, true, "the review opens in its own tab")
   assert_eq(shows_log(review.log_dock and review.log_dock.win, browser), true, "the review docks the log")
   assert_eq(vim.api.nvim_win_get_tabpage(review.log_dock.win), review.tabpage, "the dock is in the review's tab")
-  assert_eq(shows_log(browser.win, browser), true, "the home log stays where it was")
+  assert_eq(browser.win, nil, "opening a commit closes the log it came from")
+  assert_eq(#vim.fn.win_findbuf(browser.buf), 1, "the dock is the only log on screen")
+  assert_eq(vim.api.nvim_tabpage_is_valid(home_tab), true, "the tab the log was split into stays")
+  assert_eq(review.panel.commit_win, nil, "the dock's detail pane stands in for the commit box")
+  assert_eq(vim.api.nvim_win_is_valid(review.panel.nav_win), true, "the panel keeps the file tree")
+  assert_eq(require("diffbandit.panel").is_open(review), true, "a file-tree-only panel counts as open")
   assert_eq(vim.api.nvim_win_get_cursor(review.log_dock.win)[1], 2, "the dock sits on the reviewed commit")
   assert_eq(vim.api.nvim_get_current_win(), review.log_dock.win, "Enter keeps the cursor on the log row, in the dock")
 
@@ -596,33 +602,22 @@ do
   assert_eq(oldest.file_queue.log_walk.index, 4, "the dock opens the commit under its cursor")
   assert_eq(vim.api.nvim_get_current_win(), oldest.log_dock.win, "focus stays in the dock")
   assert_eq(#vim.api.nvim_list_tabpages(), tabs, "Enter in the dock does not stack tabs")
-  assert_eq(vim.api.nvim_win_get_cursor(browser.win)[1], 5, "the home log follows the dock")
-
-  -- Enter in the home log reuses the review walking it.
-  vim.api.nvim_set_current_tabpage(home_tab)
-  vim.api.nvim_set_current_win(browser.win)
-  vim.api.nvim_win_set_cursor(browser.win, { 3, 0 })
-  buffer_keymap_callback(browser.buf, "n", "<CR>")()
-  local reused = current_review()
-  assert_eq(reused.file_queue.log_walk.index, 2, "the home log opens its commit in the review")
-  assert_eq(reviews(), 1, "the home log does not stack a second review")
-  assert_eq(#vim.api.nvim_list_tabpages(), tabs, "the home log does not stack tabs")
+  assert_eq(reviews(), 1, "Enter in the dock does not stack reviews")
+  local reused = oldest
 
   -- The dock can be hidden, and stays hidden as the walk steps.
   assert_eq(type(buffer_keymap_callback(reused.right_buf, "n", "gzg")), "function", "the diff maps the dock toggle")
   reused:toggle_log_dock()
   assert_eq(reused.log_dock, nil, "the toggle hides the dock")
-  assert_eq(#vim.fn.win_findbuf(browser.buf), 1, "only the home log is left on screen")
-  assert_eq(diffbandit.git_log_step(reused, 1), true, "the walk steps without the dock")
+  vim.wait(50)
+  assert_eq(#vim.fn.win_findbuf(browser.buf), 0, "no log is left on screen")
+  assert_eq(vim.api.nvim_buf_is_valid(browser.buf), true, "the review keeps the hidden log alive")
+  assert_eq(diffbandit.git_log_step(reused, -1), true, "the walk steps without the dock")
   local undocked = current_review()
   assert_eq(undocked.log_dock, nil, "a hidden dock stays hidden on the next commit")
   undocked:toggle_log_dock()
   assert_eq(shows_log(undocked.log_dock and undocked.log_dock.win, browser), true, "the toggle shows it again")
-  vim.api.nvim_set_current_win(undocked.log_dock.win)
-  buffer_keymap_callback(browser.buf, "n", "q")()
-  assert_eq(undocked.log_dock, nil, "q in the dock hides it")
-  assert_eq(undocked.disposed, false, "q in the dock leaves the review open")
-  assert_eq(shows_log(browser.win, browser), true, "q in the dock leaves the home log open")
+  undocked:toggle_log_dock()
 
   -- L reaches the dock (reopening it); <Tab> and C leave it.
   vim.api.nvim_set_current_win(undocked.right_win)
@@ -636,22 +631,61 @@ do
   assert_eq(vim.api.nvim_get_current_win(), undocked.panel.nav_win, "C in the dock focuses the commit panel")
   buffer_keymap_callback(undocked.panel.nav_buf, "n", "L")()
   assert_eq(vim.api.nvim_get_current_win(), undocked.log_dock.win, "L in the panel focuses the dock")
-  vim.api.nvim_set_current_tabpage(home_tab)
-  vim.api.nvim_set_current_win(browser.win)
-  buffer_keymap_callback(browser.buf, "n", "<Tab>")()
-  assert_eq(vim.api.nvim_get_current_win(), browser.win, "<Tab> in the home log stays put")
-  vim.api.nvim_set_current_tabpage(undocked.tabpage)
 
-  -- Closing the home log keeps the dock; closing the review then wipes the log.
-  vim.api.nvim_set_current_tabpage(home_tab)
-  vim.api.nvim_set_current_win(browser.win)
+  -- q in the dock closes the review, and with it the log.
+  vim.api.nvim_set_current_win(undocked.log_dock.win)
   buffer_keymap_callback(browser.buf, "n", "q")()
-  vim.wait(50)
-  assert_eq(vim.api.nvim_buf_is_valid(browser.buf), true, "the dock keeps the log alive")
-  undocked:close()
+  assert_eq(undocked.disposed, true, "q in the dock closes the review")
   vim.wait(1000, function() return not vim.api.nvim_buf_is_valid(browser.buf) end)
   assert_eq(vim.api.nvim_buf_is_valid(browser.buf), false, "the log is wiped once nothing shows or walks it")
   assert_eq(browser.disposed, true, "the wiped log is disposed")
+  assert_eq(vim.api.nvim_get_current_tabpage(), home_tab, "closing returns to where the log was opened")
+  pcall(vim.cmd, "tabclose")
+
+  -- A log filling its own tab: the review replaces the tab outright.
+  vim.cmd("tabnew")
+  local tabs_before = #vim.api.nvim_list_tabpages()
+  local filled = assert((diffbandit.git_log({ root = repo, fill = true })))
+  local filled_tab = vim.api.nvim_get_current_tabpage()
+  vim.api.nvim_win_set_cursor(filled.win, { 2, 0 })
+  buffer_keymap_callback(filled.buf, "n", "<CR>")()
+  local replacing = current_review()
+  assert_eq(vim.api.nvim_tabpage_is_valid(filled_tab), false, "the log's tab closes")
+  assert_eq(#vim.api.nvim_list_tabpages(), tabs_before, "the review takes the log's place")
+  assert_eq(shows_log(replacing.log_dock and replacing.log_dock.win, filled), true, "the review docks the log")
+  replacing:close()
+  vim.wait(1000, function() return filled.disposed end)
+  assert_eq(filled.disposed, true, "q in the review closes the log too")
+  assert_eq(#vim.api.nvim_list_tabpages(), tabs_before - 1, "nothing is left behind")
+
+  -- The launcher's log fills nvim's only tab, so its review becomes the last
+  -- tab; q must still close it (the launcher then quits).
+  vim.cmd("tabonly")
+  local only_log = assert((diffbandit.git_log({ root = repo, fill = true })))
+  vim.api.nvim_win_set_cursor(only_log.win, { 2, 0 })
+  buffer_keymap_callback(only_log.buf, "n", "<CR>")()
+  local last = current_review()
+  assert_eq(#vim.api.nvim_list_tabpages(), 1, "the review is the only tab")
+  vim.api.nvim_set_current_win(last.right_win)
+  buffer_keymap_callback(last.right_buf, "n", "q")()
+  assert_eq(last.disposed, true, "q closes a review in the last tab")
+  vim.wait(1000, function() return only_log.disposed end)
+  assert_eq(only_log.disposed, true, "and the log with it")
+
+  -- git.log.dock = false keeps the log where it was.
+  local log_settings = state.get_config().git.log
+  log_settings.dock = false
+  vim.cmd("tabnew")
+  local plain_log = assert((diffbandit.git_log({ root = repo })))
+  vim.api.nvim_win_set_cursor(plain_log.win, { 2, 0 })
+  buffer_keymap_callback(plain_log.buf, "n", "<CR>")()
+  local plain_review = current_review()
+  assert_eq(plain_review.log_dock, nil, "no dock when it is off")
+  assert_eq(shows_log(plain_log.win, plain_log), true, "without the dock the log stays open")
+  assert_eq(vim.api.nvim_win_is_valid(plain_review.panel.commit_win), true, "without the dock the commit box stays")
+  plain_review:close()
+  log_settings.dock = true
+  state.unregister_view(plain_log)
   pcall(vim.cmd, "tabclose")
 
   -- Moving the dock cursor opens the commit under it (git.log.follow).
@@ -717,6 +751,9 @@ do
   assert_eq(browser.details_win, nil, "a narrow log opens without the pane")
   buffer_keymap_callback(browser.buf, "n", "p")()
   assert_eq(vim.api.nvim_win_is_valid(browser.details_win), true, "p opens the pane")
+  buffer_keymap_callback(browser.buf, "n", "p")()
+  assert_eq(browser.details_win, nil, "p closes the pane")
+  buffer_keymap_callback(browser.buf, "n", "p")()
   vim.api.nvim_win_set_cursor(browser.win, { 3, 0 })
   vim.api.nvim_exec_autocmds("CursorMoved", { buffer = browser.buf })
   local hash = browser.commits[2].hash
@@ -742,9 +779,8 @@ do
   assert_eq(review.file_queue.entries[review.file_queue_index].path, "b.txt", "Enter on a file opens the review there")
   assert_eq(review.file_queue.log_walk.index, 2, "the review can still walk the log")
   review:close()
-
-  buffer_keymap_callback(browser.buf, "n", "p")()
-  assert_eq(browser.details_win, nil, "p closes the pane")
+  vim.wait(1000, function() return browser.disposed end)
+  assert_eq(browser.disposed, true, "closing the review closes the log it replaced")
 
   -- A file history's pane lists only the files its review would open.
   local scoped

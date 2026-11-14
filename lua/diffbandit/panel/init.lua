@@ -829,13 +829,14 @@ function M.focus_nav(session)
   end
 end
 
--- True when the host's panel is visible with both windows intact.
+-- True when the host's panel is visible with its windows intact (just the
+-- file tree for a nav_only panel).
 function M.is_open(host)
   local panel = host and host.panel
   return (panel
     and panel.visible
     and panel.nav_win and vim.api.nvim_win_is_valid(panel.nav_win)
-    and panel.commit_win and vim.api.nvim_win_is_valid(panel.commit_win)) and true or false
+    and (panel.nav_only or (panel.commit_win and vim.api.nvim_win_is_valid(panel.commit_win)))) and true or false
 end
 
 -- Open the nav/commit window pair to the left of anchor and apply the shared
@@ -849,11 +850,14 @@ function M.open_windows(host, anchor)
     win = anchor,
     width = width,
   })
-  local commit_win = vim.api.nvim_open_win(host.panel.commit_buf, false, {
-    split = "below",
-    win = nav_win,
-    height = height,
-  })
+  local commit_win
+  if not host.panel.nav_only then
+    commit_win = vim.api.nvim_open_win(host.panel.commit_buf, false, {
+      split = "below",
+      win = nav_win,
+      height = height,
+    })
+  end
   host.panel.nav_win = nav_win
   host.panel.commit_win = commit_win
   host.panel.visible = true
@@ -861,7 +865,9 @@ function M.open_windows(host, anchor)
     nvim.set_window_options(win, layout.win_opts.panel())
     nvim.set_window_width(win, width)
   end
-  nvim.set_window_height(commit_win, height)
+  if commit_win then
+    nvim.set_window_height(commit_win, height)
+  end
   return nav_win, commit_win
 end
 
@@ -870,6 +876,8 @@ function M.focus_commit(session)
   if panel and panel.commit_win and vim.api.nvim_win_is_valid(panel.commit_win) then
     vim.api.nvim_set_current_win(panel.commit_win)
     pcall(vim.api.nvim_win_set_cursor, panel.commit_win, { math.min(3, vim.api.nvim_buf_line_count(panel.commit_buf)), 0 })
+  elseif panel and panel.nav_only then
+    M.focus_nav(session)
   end
 end
 

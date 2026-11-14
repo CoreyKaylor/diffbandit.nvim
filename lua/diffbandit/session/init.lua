@@ -173,8 +173,7 @@ function Session.start(sources, config, opts)
     })
   end
   local walk = self.file_queue and self.file_queue.log_walk
-  if walk and walk.browser and not walk.dock_hidden
-      and config_mod.section(self.config, "git", "log").dock ~= false then
+  if self:docks_log() and not walk.dock_hidden then
     self:show_log_dock()
   end
   self:precompute_connector_core_width()
@@ -1377,6 +1376,18 @@ function Session:dispose()
   end
 end
 
+-- Close this session's tab. The last tab cannot close, which happens when
+-- the review replaced the Git log that filled nvim (the launcher's log), so
+-- open an empty tab to land on first; the launcher then quits as usual.
+local function close_tab(tabpage)
+  pcall(vim.api.nvim_set_current_tabpage, tabpage)
+  if #vim.api.nvim_list_tabpages() == 1 then
+    vim.cmd("tabnew")
+    pcall(vim.api.nvim_set_current_tabpage, tabpage)
+  end
+  pcall(vim.cmd, "tabclose")
+end
+
 function Session:close()
   if self.disposed then
     return
@@ -1386,8 +1397,7 @@ function Session:close()
     local parent_session = return_to.session
     local parent_tab = return_to.tabpage
     if self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
-      pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
-      pcall(vim.cmd, "tabclose")
+      close_tab(self.tabpage)
     else
       self:dispose()
     end
@@ -1402,8 +1412,7 @@ function Session:close()
   end
   if vim.api.nvim_tabpage_is_valid(self.tabpage) then
     local current = vim.api.nvim_get_current_tabpage()
-    pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
-    pcall(vim.cmd, "tabclose")
+    close_tab(self.tabpage)
     if vim.api.nvim_tabpage_is_valid(current) then
       pcall(vim.api.nvim_set_current_tabpage, current)
     end
@@ -2055,6 +2064,15 @@ function Session:ensure_panel_buffers()
   self.panel.amend = self.panel.amend or false
   self.panel.mode = self.panel.mode or self.panel_mode or "commit"
   self.panel.details = self.panel.details or self.panel_details
+  self.panel.nav_only = self:docks_log()
+end
+
+-- True for a review opened from a Git log with the dock enabled: the docked
+-- log's detail pane shows the commit, so the panel shows only the files.
+function Session:docks_log()
+  local walk = self.file_queue and self.file_queue.log_walk
+  return (walk and walk.browser ~= nil
+    and config_mod.section(self.config, "git", "log").dock ~= false) and true or false
 end
 
 function Session:show_commit_panel(opts)

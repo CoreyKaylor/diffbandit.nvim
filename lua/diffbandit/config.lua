@@ -162,8 +162,8 @@ local defaults = {
       details_width = 0.4,
       -- Narrower log windows open without the pane (toggle it with the key).
       details_min_columns = 100,
-      -- A review opened from the log keeps the log docked along its bottom,
-      -- so you can browse commits beside the diff (q in the dock hides it).
+      -- A review opened from the log takes its place, docking the log along
+      -- its bottom so you can browse commits beside the diff (gzg hides it).
       dock = true,
       dock_height = 12,
       -- Moving the cursor in the dock opens the commit under it.

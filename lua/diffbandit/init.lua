@@ -558,6 +558,12 @@ function M.git_log(opts)
       if not session and err then
         nvim.notify_error(tostring(err))
       elseif session then
+        if session.log_dock and not open_opts.from_dock and browser and browser.close_home then
+          -- The review's dock is the log now: opening a commit replaces the
+          -- log rather than leaving a second copy behind, so q in the review
+          -- closes everything.
+          browser.close_home()
+        end
         -- Keep the cursor on the log row, now in the review's dock.
         focus_role(session, "log")
       end
@@ -638,6 +644,14 @@ function M.git_log(opts)
         review:focus_commit_panel_for_current_file()
       else
         review:focus_source()
+      end
+    end,
+    close_review = function(browser, tabpage)
+      local review = live_session(tabpage)
+      if review then
+        review:close()
+      else
+        require("diffbandit.util.log_view").undock(browser, tabpage)
       end
     end,
     hide_dock = function(browser, tabpage)

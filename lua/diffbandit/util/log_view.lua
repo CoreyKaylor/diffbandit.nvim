@@ -774,11 +774,27 @@ function M.open(config, opts, callbacks)
   end
   local help_key = config_mod.section(config, "navigation").help_key
 
+  -- Close the home pane (where the log was opened), leaving any docks.
+  function browser.close_home()
+    close_details(browser)
+    if browser.win and vim.api.nvim_win_is_valid(browser.win) then
+      if not pcall(vim.api.nvim_win_close, browser.win, true) then
+        -- The last window of the last tab cannot close; leave an empty one.
+        pcall(vim.api.nvim_win_set_buf, browser.win, vim.api.nvim_create_buf(true, true))
+      end
+    end
+    browser.win = nil
+    vim.schedule(dispose_if_unused)
+  end
+
   local function close_log()
     local pane = active_pane(browser)
     if pane and pane ~= browser then
-      -- q in a review's dock hides the dock; the review stays.
-      if callbacks.hide_dock then
+      -- q in a review's dock closes the review, and the log with it once
+      -- nothing else shows it (gzg only hides the dock).
+      if callbacks.close_review then
+        callbacks.close_review(browser, pane.tabpage)
+      elseif callbacks.hide_dock then
         callbacks.hide_dock(browser, pane.tabpage)
       else
         M.undock(browser, pane.tabpage)
@@ -790,14 +806,7 @@ function M.open(config, opts, callbacks)
       return
     end
     state.unregister_view(browser)
-    close_details(browser)
-    if browser.win and vim.api.nvim_win_is_valid(browser.win) then
-      if not pcall(vim.api.nvim_win_close, browser.win, true) then
-        -- The last window of the last tab cannot close; leave an empty one.
-        pcall(vim.api.nvim_win_set_buf, browser.win, vim.api.nvim_create_buf(true, true))
-      end
-    end
-    vim.schedule(dispose_if_unused)
+    browser.close_home()
   end
 
   -- from_dock: the request came from a review's dock, so the review on this
@@ -856,7 +865,7 @@ function M.open(config, opts, callbacks)
         keyhelp.open(buf, { title = title, help_key = help_key })
       end, map_opts(buf, "General", "Show this key help"))
     end
-    vim.keymap.set("n", "q", close_log, map_opts(buf, "General", "Close the log (hide it in a review's dock)"))
+    vim.keymap.set("n", "q", close_log, map_opts(buf, "General", "Close the log (in a review's dock: close the review)"))
     if keys.toggle_details then
       vim.keymap.set("n", keys.toggle_details, function()
         toggle_details(browser)

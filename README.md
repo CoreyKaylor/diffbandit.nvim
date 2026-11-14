@@ -277,19 +277,21 @@ History" in the menu) can walk the log without going back to it: `]r` opens the
 next (older) commit and `[r` the previous (newer) one, in place, staying on the
 same file when the commit touches it. The log's cursor follows along.
 
-The review keeps the log docked along its bottom, so you can browse commits
-beside the diff. `<CR>` on a commit opens it with the cursor still on that log
-row (in the dock), and from then on moving the cursor in the dock swaps the
-review to the commit under it. The diff keys work from the dock too: `]c`/`[c`,
+The review takes the log's place and keeps it docked along its bottom, so you
+can browse commits beside the diff in one tab. `<CR>` on a commit closes the log
+where you opened it and opens the review with the cursor still on that log row
+(in the dock); from then on moving the cursor in the dock swaps the review to
+the commit under it. The dock's detail pane shows the commit, so the review's
+side panel shows only its files. `q` in the review (the diff, the panel or the
+dock) closes the review and the log together. The diff keys work from the dock too: `]c`/`[c`,
 `]f`/`[f`, `]d`/`[d`, `]s` and `]r`/`[r` act on the review while the cursor
 stays in the log. Focus leaves the log only when you ask: `<Tab>` goes to the
 diff and `C` to the commit panel; `L` from either comes back (reopening a
 hidden dock). `<CR>` on a file in the dock's detail pane opens the commit at
-that file. `<CR>` in the original log reuses the open review rather than
-opening another tab. `gzg` (or `q` in the dock) hides the dock and `gzg` shows
-it again; a hidden dock stays hidden as you walk. Set `git.log.follow = false`
+that file. `gzg` hides the dock and shows it again; a hidden dock stays hidden
+as you walk. Set `git.log.follow = false`
 to swap commits only on `<CR>`, and `git.log.dock = false` to turn the dock
-off.
+off (the log then stays open where it was, and reviews open in their own tab).
 
 ## Standalone Launcher
 
@@ -623,7 +625,7 @@ require("diffbandit").setup({
       details = true,            -- detail pane beside the log
       details_width = 0.4,       -- fraction of the log window it takes
       details_min_columns = 100, -- narrower logs open without it
-      dock = true,               -- reviews from the log keep it docked below
+      dock = true,               -- reviews replace the log and dock it below
       dock_height = 12,
       follow = true,             -- moving in the dock opens that commit
       follow_debounce_ms = 150,

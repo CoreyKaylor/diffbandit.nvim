@@ -121,17 +121,19 @@ COMMANDS                                            *diffbandit-commands*
         staying on the same file when the commit touches it; with a pathspec
         this walks one file's history. Keys: `git.log_keys` in |diffbandit-configuration|.
 
-        The review keeps the log docked along its bottom. <CR> on a commit
-        opens it with the cursor still on that log row (in the dock), and
+        The review takes the log's place and keeps it docked along its
+        bottom: <CR> on a commit closes the log where it was opened and opens
+        the review with the cursor still on that log row (in the dock), and
         moving the cursor in the dock then swaps the review to the commit
-        under it (`git.log.follow`). `]c` `[c` `]f` `[f` `]d` `[d` `]s` `]r`
+        under it (`git.log.follow`). The dock's detail pane shows the commit,
+        so the review's side panel lists only its files. `q` in the review
+        (diff, panel or dock) closes the review and the log together. `]c` `[c` `]f` `[f` `]d` `[d` `]s` `]r`
         `[r` in the dock act on the review while the cursor stays in the log.
         <Tab> in the dock goes to the diff and `C` to the commit panel; `L`
         in either comes back, reopening a hidden dock. <CR> on a file in the
-        dock's detail pane opens the commit at that file; <CR> in the
-        original log reuses the open review instead of opening another tab.
-        `gzg`, or `q` in the dock, hides it; `gzg` shows it again.
-        `git.log.dock = false` turns the dock off.
+        dock's detail pane opens the commit at that file. `gzg` hides the
+        dock and shows it again. `git.log.dock = false` turns the dock off;
+        the log then stays open and reviews open in their own tab.
 
         Each row shows the hash, age, author, lines added and removed, refs,
         and subject; the counts fill in once git has measured them. A detail
@@ -584,7 +586,7 @@ Common configuration:
         details = true,            -- detail pane beside the log
         details_width = 0.4,       -- fraction of the log window it takes
         details_min_columns = 100, -- narrower logs open without it
-        dock = true,               -- reviews from the log keep it docked below
+        dock = true,               -- reviews replace the log and dock it below
         dock_height = 12,
         follow = true,             -- moving in the dock opens that commit
         follow_debounce_ms = 150,
