@@ -689,6 +689,11 @@ require("diffbandit").setup({
       width = 42,
       commit_height = 10,
       preview_on_cursor = true,
+      view = "list", -- or "tree"; toggle in the panel with `t`
+      tree = {
+        indent = 2,
+        icons = { open = "▾", closed = "▸" },
+      },
       keys = {
         toggle_stage = "<Space>",
         focus_diff = "<CR>",
@@ -696,6 +701,8 @@ require("diffbandit").setup({
         focus_commit = "cc",
         file_actions = "a",
         toggle_amend = "<Space>",
+        toggle_view = "t",
+        toggle_dir = "za",
         refresh = "R",
         close = "q",
       },
