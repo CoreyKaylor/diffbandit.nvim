@@ -642,6 +642,10 @@ require("diffbandit").setup({
     initial_focus = "right",
     align_on_jump = true,
     align_strategy = "change_top",
+    hunk_keys = {
+      next = "]c",
+      prev = "[c",
+    },
     document_keys = {
       top = "[d",
       bottom = "]d",

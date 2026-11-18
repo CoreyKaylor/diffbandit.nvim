@@ -591,7 +591,20 @@ do
   buffer_keymap_callback(browser.buf, "n", "]c")()
   assert_eq(vim.api.nvim_get_current_win(), refiled.log_dock.win, "]c in the dock keeps the cursor in the log")
   assert_eq(refiled.current_chunk, 1, "]c in the dock moves the review to the hunk")
-  older = refiled
+
+  -- The dock's ]c steps from the active hunk, even with the diff cursor
+  -- moved below every hunk (#43).
+  buffer_keymap_callback(browser.buf, "n", "[f")()
+  local back = current_review()
+  assert_eq(back.current_chunk, 0, "[f in the dock opens the previous file at its top")
+  local last_line = #back.view.right
+  assert_eq(last_line > 1, true, "the previous file has lines below its first")
+  vim.api.nvim_set_current_win(back.right_win)
+  vim.api.nvim_win_set_cursor(back.right_win, { last_line, 0 })
+  vim.api.nvim_set_current_win(back.log_dock.win)
+  buffer_keymap_callback(browser.buf, "n", "]c")()
+  assert_eq(back.current_chunk, 1, "]c in the dock ignores where the diff cursor was left")
+  older = back
 
   -- Enter in the dock replaces the review and keeps focus in the dock.
   vim.api.nvim_set_current_win(older.log_dock.win)

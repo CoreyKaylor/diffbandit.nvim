@@ -688,3 +688,98 @@ do
   session:close()
   vim.go.winbar = saved
 end
+
+-- Suite 16x: ]c/[c step from the cursor once it has moved off the last jump
+-- (issue #43), and navigation.hunk_keys remaps them.
+do
+  local function lines_with_inserts(n, inserts)
+    local out = {}
+    for i = 1, n do
+      for _, ins in ipairs(inserts) do
+        if ins.at == i then
+          for k = 1, ins.count do
+            out[#out + 1] = ins.prefix .. k
+          end
+        end
+      end
+      out[#out + 1] = "base " .. i
+    end
+    return out
+  end
+  local left = lines_with_inserts(120, {})
+  local right = lines_with_inserts(120, {
+    { at = 10, count = 3, prefix = "A-" },
+    { at = 50, count = 6, prefix = "B-" },
+    { at = 90, count = 3, prefix = "C-" },
+  })
+  local session = assert((Session.start({
+    left = source_mod.from_lines(left, nil, "left"),
+    right = source_mod.from_lines(right, nil, "right"),
+  }, config, { chunk_position = "top" })))
+  assert_eq(#session.view.chunks, 3, "Fixture should have three hunks")
+  local saved_select = vim.ui.select
+  local prompted = false
+  vim.ui.select = function()
+    prompted = true
+  end
+  local function chunk_right_row(index)
+    local _, right_row = session:chunk_cursor_rows(session.view.chunks[index])
+    return right_row
+  end
+
+  vim.api.nvim_set_current_win(session.right_win)
+  session:goto_next_chunk()
+  assert_eq(session.current_chunk, 1, "]c from the top reaches the first hunk")
+
+  -- G then [c: the hunk above the cursor is the last one, not hunk 0.
+  vim.api.nvim_win_set_cursor(session.right_win, { #right, 0 })
+  session:goto_prev_chunk()
+  assert_eq(session.current_chunk, 3, "[c after G jumps to the last hunk above the cursor")
+
+  -- A search lands between hunks 1 and 2: ]c goes to hunk 2.
+  vim.api.nvim_win_set_cursor(session.right_win, { 30, 0 })
+  session:goto_next_chunk()
+  assert_eq(session.current_chunk, 2, "]c from between hunks 1 and 2 jumps to hunk 2")
+
+  -- Unmoved after a jump: keep stepping from the active hunk.
+  session:goto_next_chunk()
+  assert_eq(session.current_chunk, 3, "]c with the cursor where the jump left it steps on")
+  session:goto_prev_chunk()
+  assert_eq(session.current_chunk, 2, "[c with the cursor where the jump left it steps back")
+
+  -- Deeper inside hunk 2: [c returns to its top, like Vim.
+  vim.api.nvim_win_set_cursor(session.right_win, { chunk_right_row(2) + 3, 0 })
+  session:goto_prev_chunk()
+  assert_eq(session.current_chunk, 2, "[c inside a hunk returns to that hunk")
+  assert_eq(vim.api.nvim_win_get_cursor(session.right_win)[1], chunk_right_row(2),
+    "[c inside a hunk puts the cursor on its top")
+
+  -- Pure adds park the left cursor on the line above the hunk; an unmoved
+  -- ]c from the left pane must not land on the same hunk again.
+  vim.api.nvim_set_current_win(session.left_win)
+  session:goto_chunk(1)
+  session:goto_next_chunk()
+  assert_eq(session.current_chunk, 2, "]c from the left pane's origin row moves past the add hunk")
+
+  -- Past the last hunk, ]c reports the end instead of jumping backwards.
+  assert_eq(prompted, false, "No jump before the last hunk should offer the next file")
+  vim.api.nvim_set_current_win(session.right_win)
+  vim.api.nvim_win_set_cursor(session.right_win, { #right, 0 })
+  session:goto_next_chunk()
+  vim.ui.select = saved_select
+  assert_eq(session.current_chunk, 2, "]c below the last hunk stays put")
+  assert_eq(prompted, true, "]c below the last hunk offers the next file")
+  session:close()
+
+  local custom = vim.tbl_deep_extend("force", config, {
+    navigation = { hunk_keys = { next = "]h", prev = false } },
+  })
+  session = assert((Session.start({
+    left = source_mod.from_lines(left, nil, "left"),
+    right = source_mod.from_lines(right, nil, "right"),
+  }, custom, { chunk_position = "top" })))
+  assert(buffer_keymap_callback(session.right_buf, "n", "]h"), "hunk_keys.next should map ]h")
+  assert_eq(buffer_keymap_callback(session.right_buf, "n", "]c"), nil, "Remapped ]c should not be mapped")
+  assert_eq(buffer_keymap_callback(session.right_buf, "n", "[c"), nil, "hunk_keys.prev = false disables [c")
+  session:close()
+end

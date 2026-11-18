@@ -222,10 +222,18 @@ keymap pickers explain them too.
 Diff view mappings:
 
                                                         *diffbandit-]c*
-  ]c            Jump to the next hunk.
+  ]c            Jump to the next hunk. Set by `navigation.hunk_keys.next`;
+                false disables it.
 
                                                         *diffbandit-[c*
-  [c            Jump to the previous hunk.
+  [c            Jump to the previous hunk. Set by `navigation.hunk_keys.prev`;
+                false disables it.
+
+Hunk jumps step from the active hunk while the cursor is still where the last
+jump left it. Once the cursor has moved (`G`, a search, a click), they go to
+the next or previous hunk from the cursor, like Vim's own |]c| and |[c|: inside
+a hunk, |diffbandit-[c| returns to that hunk's top first. Pressed in the commit
+panel or the Git log dock, they always step from the active hunk.
 
                                                         *diffbandit-]f*
   ]f            Jump to the next changed file in a Git queue.
@@ -555,6 +563,10 @@ Common configuration:
       initial_focus = "right",
       align_on_jump = true,
       align_strategy = "change_top",
+      hunk_keys = {
+        next = "]c",
+        prev = "[c",
+      },
       document_keys = {
         top = "[d",
         bottom = "]d",

@@ -215,10 +215,12 @@ function Session.start(sources, config, opts)
             sync_gutters = in_open_viewport,
             render_chrome = true,
           })
+          self:note_chunk_anchor()
         end
       end
     end)
   end
+  self:note_chunk_anchor()
 
   return self
 end
@@ -671,6 +673,7 @@ function Session:setup_keymaps()
   end
   local navigation = self.config.navigation or {}
   local document_keys = navigation.document_keys or {}
+  local hunk_keys = navigation.hunk_keys or {}
   local git_keys = config_mod.section(self.config, "git", "file_keys")
   local log_keys = config_mod.section(self.config, "git", "log_keys")
   local log_walk = self.file_queue and self.file_queue.log_walk
@@ -689,12 +692,16 @@ function Session:setup_keymaps()
         self:close()
       end, "General", "Close this view")
     end
-    map(buf, "]c", function()
-      self:goto_next_chunk()
-    end, "Hunks", "Next hunk")
-    map(buf, "[c", function()
-      self:goto_prev_chunk()
-    end, "Hunks", "Previous hunk")
+    if hunk_keys.next then
+      map(buf, hunk_keys.next, function()
+        self:goto_next_chunk()
+      end, "Hunks", "Next hunk")
+    end
+    if hunk_keys.prev then
+      map(buf, hunk_keys.prev, function()
+        self:goto_prev_chunk()
+      end, "Hunks", "Previous hunk")
+    end
     if document_keys.top then
       map(buf, document_keys.top, function()
         self:goto_document_edge("top")
@@ -1374,6 +1381,7 @@ function Session:goto_document_edge(edge)
   elseif self.last_source_win and vim.api.nvim_win_is_valid(self.last_source_win) then
     pcall(vim.api.nvim_set_current_win, self.last_source_win)
   end
+  self:note_chunk_anchor()
 end
 
 -- Remove DiffBandit paint marks from a buffer that may outlive the session
@@ -1752,6 +1760,7 @@ function Session:replace_sources(sources, opts)
   else
     self:clear_active_chunk()
   end
+  self:note_chunk_anchor()
 
   return true, nil
 end
@@ -1951,6 +1960,7 @@ function Session:goto_chunk(index)
     sync_gutters = false,
     render_chrome = true,
   })
+  self:note_chunk_anchor()
 end
 
 function Session:load_queue_sources(index, step)
@@ -2383,15 +2393,74 @@ function Session:prompt_next_file()
   end)
 end
 
+-- Record where the cursor sits in every pane after DiffBandit placed it (a
+-- jump, a file load, a document edge). While the focused pane's cursor is
+-- still there, ]c/[c step from the active hunk: a pure add or delete parks
+-- one pane's cursor on the line above the hunk, so the cursor alone would
+-- jump to the same hunk again.
+function Session:note_chunk_anchor()
+  local rows = {}
+  for _, win in ipairs({ self.left_win, self.right_win, self.left_num_win, self.right_num_win, self.connector_win }) do
+    if win and vim.api.nvim_win_is_valid(win) then
+      rows[win] = vim.api.nvim_win_get_cursor(win)[1]
+    end
+  end
+  self.chunk_anchor = { view = self.view, rows = rows }
+end
+
+local function cursor_at_chunk_anchor(self)
+  local anchor = self.chunk_anchor
+  if not (anchor and anchor.view == self.view) then
+    return false
+  end
+  local win = vim.api.nvim_get_current_win()
+  local ok, cursor = pcall(vim.api.nvim_win_get_cursor, win)
+  return ok and anchor.rows[win] == cursor[1]
+end
+
+-- Once the cursor has moved off the last hunk jumped to, ]c/[c go to the
+-- next/previous hunk from the cursor, like Vim's own ]c/[c: [c inside a hunk
+-- returns to its top first. Returns the target index (0 or #chunks + 1 when
+-- there is none that way), or nil to step from the active hunk.
+local function chunk_target_from_cursor(self, direction)
+  if self.hunk_jump_from_active or cursor_at_chunk_anchor(self) then
+    return nil
+  end
+  local row = actions.display_row_at_cursor(self)
+  if not row then
+    return nil
+  end
+  local chunks = self.view.chunks
+  if direction == "next" then
+    for index, chunk in ipairs(chunks) do
+      if chunk.display_start > row then
+        return index
+      end
+    end
+    return #chunks + 1
+  end
+  for index = #chunks, 1, -1 do
+    if chunks[index].display_start < row then
+      return index
+    end
+  end
+  return 0
+end
+
 function Session:goto_next_chunk()
   if #self.view.chunks == 0 then
     return
   end
-  if self.chunk_not_reached and actions.chunk_index_at_cursor(self) ~= self.current_chunk then
+  local target = chunk_target_from_cursor(self, "next")
+  if target and target <= #self.view.chunks then
+    self:goto_chunk(target)
+    return
+  end
+  if not target and self.chunk_not_reached and actions.chunk_index_at_cursor(self) ~= self.current_chunk then
     self:goto_chunk(self.current_chunk)
     return
   end
-  if self.current_chunk >= #self.view.chunks then
+  if target or self.current_chunk >= #self.view.chunks then
     if self:confirm_file_boundary("next") then
       return
     end
@@ -2405,7 +2474,12 @@ function Session:goto_prev_chunk()
   if #self.view.chunks == 0 then
     return
   end
-  if self.current_chunk <= 1 then
+  local target = chunk_target_from_cursor(self, "prev")
+  if target and target >= 1 then
+    self:goto_chunk(target)
+    return
+  end
+  if target or self.current_chunk <= 1 then
     if self:confirm_file_boundary("prev") then
       return
     end

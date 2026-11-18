@@ -122,6 +122,12 @@ local defaults = {
     jump_context = 0,
     align_strategy = "change_top",
     initial_focus = "right",
+    -- Hunk jumps in the diff view and from the commit panel. They step from
+    -- the cursor once it has moved off the last hunk jumped to.
+    hunk_keys = {
+      next = "]c",
+      prev = "[c",
+    },
     document_keys = {
       top = "[d",
       bottom = "]d",

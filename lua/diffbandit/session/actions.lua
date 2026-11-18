@@ -32,6 +32,42 @@ function M.chunk_index_at_cursor(session)
   return nil
 end
 
+--- The display row (line_meta index) under the focused pane's cursor, or nil
+--- when the focus is outside the diff panes.
+function M.display_row_at_cursor(session)
+  local win = vim.api.nvim_get_current_win()
+  local ok, cursor = pcall(vim.api.nvim_win_get_cursor, win)
+  if not ok then
+    return nil
+  end
+  local row = cursor[1]
+  if win == session.connector_win then
+    return row
+  end
+  local field
+  if win == session.left_win or win == session.left_num_win then
+    field = "left_index"
+  elseif win == session.right_win or win == session.right_num_win then
+    field = "right_index"
+  else
+    return nil
+  end
+  if win == session.left_num_win or win == session.right_num_win then
+    -- Gutter rows follow wrapped screen rows, not source lines.
+    local maps_ok, left_map, right_map = pcall(session.row_maps, session, { stale_ok = true })
+    local map = maps_ok and (field == "left_index" and left_map or right_map) or nil
+    if map then
+      row = map:line_at_row(row)
+    end
+  end
+  for idx, meta in ipairs(session.view.line_meta or {}) do
+    if meta[field] == row then
+      return idx
+    end
+  end
+  return nil
+end
+
 --- Whether any of the chunk's lines are showing in either source pane. Without
 --- panes (actions driven through the API) nothing counts as off-screen.
 function M.chunk_on_screen(session, chunk)

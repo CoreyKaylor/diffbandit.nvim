@@ -1405,7 +1405,10 @@ function M.review_help(session)
   if session.file_queue and session.file_queue.log_walk and log_keys.next and log_keys.prev then
     add(log_keys.next .. "/" .. log_keys.prev, "commits")
   end
-  add("]c/[c", "hunks")
+  local hunk_keys = config_mod.section((session or {}).config, "navigation", "hunk_keys")
+  if hunk_keys.next and hunk_keys.prev then
+    add(hunk_keys.next .. "/" .. hunk_keys.prev, "hunks")
+  end
   add(keys.close, "close")
   add(help_key, "help")
   return table.concat(parts, "  ")
@@ -1445,6 +1448,7 @@ function M.setup_keymaps(session)
     end
   end
 
+  local hunk_keys = config_mod.section((session or {}).config, "navigation", "hunk_keys")
   local function navigate_change(direction)
     return function()
       M.navigate_change(session, direction)
@@ -1521,8 +1525,8 @@ function M.setup_keymaps(session)
       when = has_log and session.file_queue.log_walk.browser ~= nil, section = "Commits", desc = "Show or hide the Git log" },
     { buf = "nav", lhs = log_keys.focus_dock, fn = function() session:focus_log_dock() end,
       when = has_log and session.file_queue.log_walk.browser ~= nil, section = "Commits", desc = "Focus the Git log (opening it if hidden)" },
-    { buf = "nav", lhs = "]c", fn = navigate_change("next"), section = "Hunks", desc = "Next hunk in the selected file" },
-    { buf = "nav", lhs = "[c", fn = navigate_change("prev"), section = "Hunks", desc = "Previous hunk in the selected file" },
+    { buf = "nav", lhs = hunk_keys.next, fn = navigate_change("next"), section = "Hunks", desc = "Next hunk in the selected file" },
+    { buf = "nav", lhs = hunk_keys.prev, fn = navigate_change("prev"), section = "Hunks", desc = "Previous hunk in the selected file" },
     { buf = "nav", lhs = keys.toggle_stage, fn = function() M.toggle_stage(session) end,
       section = "Staging and actions", desc = "Stage or unstage the selected file" },
     { buf = "nav", lhs = keys.file_actions, fn = function() M.open_file_actions(session) end, when = not review,
@@ -1541,8 +1545,8 @@ function M.setup_keymaps(session)
     { buf = "commit", lhs = file_keys.prev, fn = navigate_file("prev"), when = review and has_queue, section = "Files", desc = "Open the previous file" },
     { buf = "commit", lhs = log_keys.next, fn = step_log(1), when = has_log, section = "Commits", desc = "Next commit in the log (older)" },
     { buf = "commit", lhs = log_keys.prev, fn = step_log(-1), when = has_log, section = "Commits", desc = "Previous commit in the log (newer)" },
-    { buf = "commit", lhs = "]c", fn = navigate_change("next"), when = review, section = "Hunks", desc = "Next hunk" },
-    { buf = "commit", lhs = "[c", fn = navigate_change("prev"), when = review, section = "Hunks", desc = "Previous hunk" },
+    { buf = "commit", lhs = hunk_keys.next, fn = navigate_change("next"), when = review, section = "Hunks", desc = "Next hunk" },
+    { buf = "commit", lhs = hunk_keys.prev, fn = navigate_change("prev"), when = review, section = "Hunks", desc = "Previous hunk" },
 
     { buf = "commit", lhs = keys.commit, fn = commit, when = not review, section = "Commit", desc = "Commit staged changes" },
     { buf = "commit", lhs = keys.toggle_amend, fn = toggle_amend, when = not review, section = "Commit", desc = "Toggle amend mode" },

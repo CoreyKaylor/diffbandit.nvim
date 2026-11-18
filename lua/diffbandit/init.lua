@@ -587,12 +587,13 @@ function M.git_log(opts)
     remote_keys = (function()
       local navigation = config.navigation or {}
       local document_keys = navigation.document_keys or {}
+      local hunk_keys = navigation.hunk_keys or {}
       local file_keys = config_mod.section(config, "git", "file_keys")
       local log_keys = config_mod.section(config, "git", "log_keys")
       local keys, seen = {}, {}
       for _, key in ipairs({
-        { "]c", "Next hunk" },
-        { "[c", "Previous hunk" },
+        { hunk_keys.next, "Next hunk" },
+        { hunk_keys.prev, "Previous hunk" },
         { document_keys.top, "Align the diff to the top" },
         { document_keys.bottom, "Align the diff to the bottom" },
         { navigation.snap_key, "Snap the other pane to the cursor line" },
@@ -623,6 +624,9 @@ function M.git_log(opts)
         return
       end
       vim.api.nvim_set_current_win(win)
+      -- The cursor is in the log, not the diff: hunk jumps step from the
+      -- active hunk rather than from where the diff cursor was left.
+      review.hunk_jump_from_active = true
       local ok, err = pcall(function()
         local mapping = vim.fn.maparg(lhs, "n", false, true)
         if type(mapping) == "table" and mapping.callback then
@@ -631,6 +635,7 @@ function M.git_log(opts)
           vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(lhs, true, false, true), "mx", false)
         end
       end)
+      review.hunk_jump_from_active = nil
       -- ]f and ]r replace the review, so focus whichever one is here now.
       local now = live_session()
       if now then
