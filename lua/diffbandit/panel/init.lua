@@ -204,28 +204,41 @@ local function build_tree(items)
   return root
 end
 
-local function sorted_dirs(node)
+-- A node's folders and files in the file queue's order. The queue is sorted by
+-- full path and ]f/[f, hunk navigation across files and prefetching all step
+-- through it by index, so the tree lists children the same way: a folder sorts
+-- as "<name>/", which compares like the full paths beneath it.
+local function sorted_children(node)
   local list = {}
   for _, child in pairs(node.dirs) do
-    list[#list + 1] = child
+    list[#list + 1] = { key = child.name .. "/", dir = child }
+  end
+  for _, item in ipairs(node.files) do
+    list[#list + 1] = { key = filename(item.entry.path), item = item }
   end
   table.sort(list, function(a, b)
-    return a.name < b.name
+    return a.key < b.key
   end)
   return list
 end
 
-local function sorted_files(node)
-  local list = vim.list_extend({}, node.files)
-  table.sort(list, function(a, b)
-    return filename(a.entry.path) < filename(b.entry.path)
-  end)
-  return list
+-- Collapsed tree folders for the session's repository, keyed by
+-- "<group>:<dir>". Kept in state so they survive panel rebuilds.
+local function collapsed_dirs(session)
+  local panel = session.panel
+  if panel and panel.collapsed_dirs then
+    return panel.collapsed_dirs
+  end
+  local root = (session.file_queue or {}).root or ""
+  state.panel_collapsed_dirs[root] = state.panel_collapsed_dirs[root] or {}
+  if panel then
+    panel.collapsed_dirs = state.panel_collapsed_dirs[root]
+  end
+  return state.panel_collapsed_dirs[root]
 end
 
 local function append_tree_rows(session, rows, group_name, items, width)
-  local panel = session.panel or {}
-  local collapsed = panel.collapsed_dirs or state.panel_collapsed_dirs
+  local collapsed = collapsed_dirs(session)
   local tree_config = panel_config(session).tree or {}
   local indent_width = math.max(1, tonumber(tree_config.indent) or 2)
   local icons = tree_config.icons or {}
@@ -233,34 +246,36 @@ local function append_tree_rows(session, rows, group_name, items, width)
   local closed_icon = icons.closed or "▸"
 
   local function walk(node, depth, prefix_path)
-    for _, child in ipairs(sorted_dirs(node)) do
-      local path = prefix_path == "" and child.name or (prefix_path .. "/" .. child.name)
-      local key = dir_key(group_name, path)
-      local is_collapsed = collapsed[key] == true
-      local lead = string.rep(" ", 2 + depth * indent_width)
-        .. (is_collapsed and closed_icon or open_icon) .. " "
-      local label = child.name .. "/"
-      rows[#rows + 1] = {
-        type = "dir",
-        dir = path,
-        key = key,
-        group = group_name,
-        depth = depth,
-        collapsed = is_collapsed,
-        text = ui.truncate_dotted(lead .. label, width),
-        name_col = #lead,
-        name_end_col = #lead + #label,
-      }
-      if not is_collapsed then
-        walk(child, depth + 1, path)
+    for _, sorted in ipairs(sorted_children(node)) do
+      local child = sorted.dir
+      if child then
+        local path = prefix_path == "" and child.name or (prefix_path .. "/" .. child.name)
+        local key = dir_key(group_name, path)
+        local is_collapsed = collapsed[key] == true
+        local lead = string.rep(" ", 2 + depth * indent_width)
+          .. (is_collapsed and closed_icon or open_icon) .. " "
+        local label = child.name .. "/"
+        rows[#rows + 1] = {
+          type = "dir",
+          dir = path,
+          key = key,
+          group = group_name,
+          depth = depth,
+          collapsed = is_collapsed,
+          text = ui.truncate_dotted(lead .. label, width),
+          name_col = #lead,
+          name_end_col = #lead + #label,
+        }
+        if not is_collapsed then
+          walk(child, depth + 1, path)
+        end
+      else
+        rows[#rows + 1] = file_row(session, sorted.item, width, {
+          depth = depth,
+          indent = string.rep(" ", depth * indent_width),
+          hide_parent = true,
+        })
       end
-    end
-    for _, item in ipairs(sorted_files(node)) do
-      rows[#rows + 1] = file_row(session, item, width, {
-        depth = depth,
-        indent = string.rep(" ", depth * indent_width),
-        hide_parent = true,
-      })
     end
   end
 
@@ -275,7 +290,7 @@ local function nav_text_width(session)
   if win and vim.api.nvim_win_is_valid(win) then
     local info = vim.fn.getwininfo(win)[1]
     local textoff = info and info.textoff or 0
-    return math.max(20, vim.api.nvim_win_get_width(win) - textoff - 1)
+    return math.max(20, vim.api.nvim_win_get_width(win) - textoff)
   end
   return math.max(20, tonumber(panel_config(session).width) or 42)
 end
@@ -383,6 +398,30 @@ local function find_entry_row(rows, entry_index, entries)
   return nil
 end
 
+-- Expand every collapsed folder above the entry. Returns true if any was.
+local function expand_to_entry(session, entry)
+  local path = entry and entry.path
+  if not path then
+    return false
+  end
+  local collapsed = collapsed_dirs(session)
+  local group_name = row_group(entry)
+  local changed = false
+  local dir = path
+  while true do
+    dir = dir:match("^(.*)/[^/]*$")
+    if not dir then
+      break
+    end
+    local key = dir_key(group_name, dir)
+    if collapsed[key] then
+      collapsed[key] = nil
+      changed = true
+    end
+  end
+  return changed
+end
+
 local function first_non_file_row(rows)
   if rows and rows[1] and rows[1].type ~= "file" then
     return 1
@@ -411,7 +450,18 @@ function M.sync_current(session, opts)
     return
   end
   vim.api.nvim_buf_clear_namespace(panel.nav_buf, current_ns, 0, -1)
-  local row = find_file_row(panel.rows, session.file_queue_index)
+  local index = session.file_queue_index
+  local entries = (session.file_queue or {}).entries
+  local row = find_file_row(panel.rows, index)
+  local opened = index ~= panel.synced_index
+  panel.synced_index = index
+  if not row and opened and view_mode(session) == "tree" and expand_to_entry(session, entries and entries[index]) then
+    -- A different file was opened inside a collapsed folder: reveal it. A
+    -- folder collapsed over the file already open stays collapsed.
+    M.render_nav(session, index)
+    return
+  end
+  row = row or find_entry_row(panel.rows, index, entries)
   if not row or row > vim.api.nvim_buf_line_count(panel.nav_buf) then
     return
   end
@@ -1017,15 +1067,28 @@ function M.move(session, delta)
   end
 end
 
--- Collapse or expand the folder under the cursor (tree view only).
-function M.toggle_dir(session)
+-- Collapse or expand the folder under the cursor (tree view only). With
+-- opts.parent, a file row collapses the folder it sits in.
+function M.toggle_dir(session, opts)
+  opts = opts or {}
   local panel = session.panel
   local row, row_index = selected_row(session)
-  if not panel or not row or row.type ~= "dir" then
+  if not panel or not row then
     return false
   end
-  panel.collapsed_dirs = panel.collapsed_dirs or state.panel_collapsed_dirs
-  panel.collapsed_dirs[row.key] = not row.collapsed or nil
+  if row.type == "file" and opts.parent and (row.depth or 0) > 0 then
+    for candidate = row_index - 1, 1, -1 do
+      local parent = panel.rows[candidate]
+      if parent.type == "dir" and parent.depth == row.depth - 1 then
+        row, row_index = parent, candidate
+        break
+      end
+    end
+  end
+  if row.type ~= "dir" then
+    return false
+  end
+  collapsed_dirs(session)[row.key] = not row.collapsed or nil
   M.render_nav(session, nil, { target_row = row_index })
   return true
 end
@@ -1123,8 +1186,20 @@ function M.navigate_change(session, direction)
     return
   end
 
-  local row = selected_row(session)
-  if not row or row.type ~= "file" then
+  local row, row_index = selected_row(session)
+  if row and row.type ~= "file" and session.panel then
+    -- Step over folder and section rows to the nearest file.
+    local step = direction == "prev" and -1 or 1
+    local rows = session.panel.rows or {}
+    local candidate = row_index + step
+    while rows[candidate] and rows[candidate].type ~= "file" do
+      candidate = candidate + step
+    end
+    if rows[candidate] then
+      set_nav_cursor(session, candidate)
+      row = rows[candidate]
+    end
+  elseif not row then
     M.move(session, direction == "prev" and -1 or 1)
     row = selected_row(session)
   end
@@ -1436,8 +1511,8 @@ function M.setup_keymaps(session)
       desc = "Focus the diff of the selected file (toggle a folder in tree view)" },
     { buf = "nav", lhs = keys.toggle_view, fn = function() M.toggle_view(session) end,
       section = "Files", desc = "Switch the file list between flat and tree views" },
-    { buf = "nav", lhs = keys.toggle_dir, fn = function() M.toggle_dir(session) end,
-      section = "Files", desc = "Collapse or expand the folder under the cursor" },
+    { buf = "nav", lhs = keys.toggle_dir, fn = function() M.toggle_dir(session, { parent = true }) end,
+      section = "Files", desc = "Collapse or expand the folder under the cursor (or holding the file)" },
     { buf = "nav", lhs = file_keys.next, fn = navigate_file("next"), when = has_queue, section = "Files", desc = "Open the next file" },
     { buf = "nav", lhs = file_keys.prev, fn = navigate_file("prev"), when = has_queue, section = "Files", desc = "Open the previous file" },
     { buf = "nav", lhs = log_keys.next, fn = step_log(1), when = has_log, section = "Commits", desc = "Next commit in the log (older)" },
@@ -1550,6 +1625,7 @@ end
 
 M._private = {
   build_rows = M.build_rows,
+  watch_resize = watch_resize,
 }
 
 return M

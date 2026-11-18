@@ -561,43 +561,179 @@ if vim.fn.executable("git") == 1 then
   end
 
   do
+    local tree_entries = {
+      { status = "M", path = "a.md", kind = "modified" },
+      { status = "M", path = "lua/diffbandit/git/init.lua", kind = "modified" },
+      { status = "M", path = "lua/diffbandit/git/sources.lua", kind = "modified" },
+      { status = "M", path = "lua/diffbandit/panel/init.lua", kind = "modified" },
+      { status = "M", path = "zeta.md", kind = "modified" },
+    }
     local session = {
       config = config,
-      file_queue = {
-        root = "/tmp/repo",
-        entries = {
-          { status = "M", path = "README.md", kind = "modified" },
-          { status = "M", path = "lua/diffbandit/git/init.lua", kind = "modified" },
-          { status = "M", path = "lua/diffbandit/git/sources.lua", kind = "modified" },
-          { status = "M", path = "lua/diffbandit/panel/init.lua", kind = "modified" },
-        },
-      },
+      file_queue = { root = "/tmp/tree-repo", entries = tree_entries },
       panel = { view = "tree", stage_states = {}, collapsed_dirs = {} },
     }
     local rows = panel_mod._private.build_rows(session)
-    local texts = {}
-    for _, row in ipairs(rows) do
-      texts[#texts + 1] = row.type .. "|" .. vim.trim(row.text)
+    local function shape(list)
+      local out = {}
+      for _, row in ipairs(list) do
+        out[#out + 1] = row.type .. "|" .. vim.trim(row.type == "file" and row.entry.path or row.text)
+      end
+      return table.concat(out, "\n")
     end
-    assert_eq(texts[1], "section|▾ Changes  4 files", "Tree view keeps group sections")
-    assert_eq(rows[2].type, "dir", "Tree view lists folders before files")
-    assert_eq(rows[2].dir, "lua/diffbandit", "Tree view compacts single-child folder chains")
-    assert_eq(vim.trim(rows[2].text), "▾ lua/diffbandit/", "Compacted folder row shows the joined path")
-    assert_eq(rows[3].dir, "lua/diffbandit/git", "Nested folder keeps its full path")
-    assert_eq(rows[4].entry.path, "lua/diffbandit/git/init.lua", "Files nest under their folder")
-    assert_eq(rows[4].text:find("lua/diffbandit", 1, true), nil, "Tree file rows omit the parent hint")
-    assert_eq(rows[6].dir, "lua/diffbandit/panel", "Sibling folder follows")
-    assert_eq(rows[8].entry.path, "README.md", "Root files come after folders")
-    assert_eq(#rows, 8, "Tree view row count")
-    assert_eq(rows[4].text:find("^%s+") ~= nil and #rows[4].text:match("^%s*") > #rows[3].text:match("^%s*"), true,
+    assert_eq(shape(rows), table.concat({
+      "section|▾ Changes  5 files",
+      "file|a.md",
+      "dir|▾ lua/diffbandit/",
+      "dir|▾ git/",
+      "file|lua/diffbandit/git/init.lua",
+      "file|lua/diffbandit/git/sources.lua",
+      "dir|▾ panel/",
+      "file|lua/diffbandit/panel/init.lua",
+      "file|zeta.md",
+    }, "\n"), "Tree view nests compacted folders in file-queue order")
+    local order = {}
+    for _, row in ipairs(rows) do
+      if row.type == "file" then
+        order[#order + 1] = row.index
+      end
+    end
+    assert_eq(table.concat(order, ","), "1,2,3,4,5", "Tree file rows follow the queue order ]f/[f step through")
+    assert_eq(rows[3].dir, "lua/diffbandit", "Tree view compacts single-child folder chains")
+    assert_eq(rows[4].dir, "lua/diffbandit/git", "Nested folder keeps its full path")
+    assert_eq(rows[5].text:find("lua/diffbandit", 1, true), nil, "Tree file rows omit the parent hint")
+    assert_eq(#rows[5].text:match("^%s*") > #rows[4].text:match("^%s*"), true,
       "Files are indented deeper than their folder")
 
-    session.panel.collapsed_dirs[rows[3].key] = true
+    session.panel.collapsed_dirs[rows[4].key] = true
     rows = panel_mod._private.build_rows(session)
-    assert_eq(rows[3].collapsed, true, "Collapsed folder is marked")
-    assert_eq(vim.trim(rows[3].text), "▸ git/", "Collapsed folder uses the closed icon")
-    assert_eq(rows[4].dir, "lua/diffbandit/panel", "Collapsed folder hides its files")
-    assert_eq(#rows, 6, "Collapsed tree row count")
+    assert_eq(rows[4].collapsed, true, "Collapsed folder is marked")
+    assert_eq(vim.trim(rows[4].text), "▸ git/", "Collapsed folder uses the closed icon")
+    assert_eq(rows[5].dir, "lua/diffbandit/panel", "Collapsed folder hides its files")
+    assert_eq(#rows, 7, "Collapsed tree row count")
+
+    -- Collapsed folders are remembered per repository across panel rebuilds.
+    local state = require("diffbandit.state")
+    local function fresh(root)
+      return panel_mod._private.build_rows({
+        config = config,
+        file_queue = { root = root, entries = tree_entries },
+        panel = { view = "tree", stage_states = {} },
+      })
+    end
+    local first = fresh("/tmp/tree-repo-a")
+    state.panel_collapsed_dirs["/tmp/tree-repo-a"][first[3].key] = true
+    assert_eq(fresh("/tmp/tree-repo-a")[3].collapsed, true, "Collapsed folders survive a panel rebuild")
+    assert_eq(fresh("/tmp/tree-repo-b")[3].collapsed, false, "Collapsed folders do not leak to another repo")
+    state.panel_collapsed_dirs["/tmp/tree-repo-a"] = nil
+    state.panel_collapsed_dirs["/tmp/tree-repo-b"] = nil
+  end
+
+  do
+    local state = require("diffbandit.state")
+    local nav_buf = vim.api.nvim_create_buf(false, true)
+    local previous_win = vim.api.nvim_get_current_win()
+    vim.cmd("topleft vsplit")
+    local nav_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(nav_win, nav_buf)
+    vim.api.nvim_win_set_width(nav_win, 40)
+    vim.wo[nav_win].number = false
+    vim.wo[nav_win].signcolumn = "no"
+    local opened = {}
+    local session = {
+      ns = vim.api.nvim_create_namespace("DiffBanditPanelTreeTest"),
+      config = config,
+      file_queue = {
+        root = "/tmp/tree-window-repo",
+        entries = {
+          { status = "M", path = "a.md", kind = "modified" },
+          { status = "M", path = "src/deep/one.lua", kind = "modified" },
+          { status = "M", path = "src/deep/two.lua", kind = "modified" },
+          { status = "M", path = "src/very/long/folder/name/for/truncation/three.lua", kind = "modified" },
+        },
+      },
+      panel = { nav_buf = nav_buf, nav_win = nav_win, view = "tree", stage_states = {}, collapsed_dirs = {} },
+      file_queue_index = 1,
+      goto_queue_file = function(_, index)
+        opened[#opened + 1] = index
+      end,
+    }
+    local current_ns = vim.api.nvim_create_namespace("DiffBanditPanelCurrent")
+    local function rows()
+      return session.panel.rows
+    end
+    local function cursor_row()
+      return rows()[vim.api.nvim_win_get_cursor(nav_win)[1]]
+    end
+    local function marker_row()
+      local marks = vim.api.nvim_buf_get_extmarks(nav_buf, current_ns, 0, -1, {})
+      return marks[1] and rows()[marks[1][2] + 1]
+    end
+    local function row_for_path(path)
+      for index, row in ipairs(rows()) do
+        if (row.type == "file" and row.entry.path == path) or row.dir == path then
+          return index
+        end
+      end
+    end
+
+    panel_mod.render_nav(session, 1)
+    for _, row in ipairs(rows()) do
+      assert_eq(vim.fn.strdisplaywidth(row.text) <= 40, true, "Tree rows fit the nav window width: " .. row.text)
+    end
+
+    -- za on a file collapses the folder holding it; <CR> on a file does not.
+    vim.api.nvim_win_set_cursor(nav_win, { row_for_path("src/deep/two.lua"), 0 })
+    assert_eq(panel_mod.toggle_dir(session), false, "<CR> on a file row leaves folders alone")
+    assert_eq(panel_mod.toggle_dir(session, { parent = true }), true, "za on a file row collapses its folder")
+    assert_eq(cursor_row().dir, "src/deep", "Cursor lands on the folder za collapsed")
+    assert_eq(cursor_row().collapsed, true, "Folder collapsed from a file row is collapsed")
+
+    -- Opening a file inside a collapsed folder reveals it.
+    session.file_queue_index = 2
+    panel_mod.sync_current(session)
+    assert_eq(row_for_path("src/deep/one.lua") ~= nil, true, "Opening a file expands its collapsed folder")
+    assert_eq(marker_row().entry.path, "src/deep/one.lua", "The open-file marker is on the opened file")
+
+    -- Collapsing the folder of the file already open keeps it collapsed and
+    -- moves the marker to the folder.
+    vim.api.nvim_win_set_cursor(nav_win, { row_for_path("src/deep"), 0 })
+    panel_mod.toggle_dir(session)
+    panel_mod.sync_current(session)
+    assert_eq(row_for_path("src/deep/one.lua"), nil, "A folder collapsed over the open file stays collapsed")
+    assert_eq(marker_row().dir, "src/deep", "The open-file marker falls back to the collapsed folder")
+
+    -- ]c on a folder row skips to the next file, not the next folder.
+    vim.api.nvim_win_set_cursor(nav_win, { row_for_path("src/deep"), 0 })
+    panel_mod.navigate_change(session, "next")
+    assert_eq(opened[#opened], 4, "]c on a folder row opens the next file below it")
+
+    -- Resizing the window re-renders rows to the new width.
+    vim.api.nvim_set_current_win(nav_win)
+    panel_mod._private.watch_resize(session)
+    vim.api.nvim_win_set_width(nav_win, 28)
+    vim.api.nvim_exec_autocmds("WinResized", {})
+    assert_eq(session.panel.rendered_width, 28, "Resize re-renders the nav rows")
+    for _, row in ipairs(rows()) do
+      assert_eq(vim.fn.strdisplaywidth(row.text) <= 28, true, "Rows track the resized width: " .. row.text)
+    end
+
+    -- t switches to the flat list and back, keeping the selection.
+    vim.api.nvim_win_set_cursor(nav_win, { row_for_path("a.md"), 0 })
+    panel_mod.toggle_view(session)
+    assert_eq(panel_mod.view_mode(session), "list", "toggle_view switches to the flat list")
+    for _, row in ipairs(rows()) do
+      assert_eq(row.type ~= "dir", true, "Flat list has no folder rows")
+    end
+    assert_eq(cursor_row().entry.path, "a.md", "toggle_view keeps the selected file")
+    panel_mod.toggle_view(session)
+    assert_eq(panel_mod.view_mode(session), "tree", "toggle_view switches back to the tree")
+
+    state.panel_view = nil
+    pcall(vim.api.nvim_del_autocmd, session.panel.resize_autocmd)
+    vim.api.nvim_win_close(nav_win, true)
+    vim.api.nvim_set_current_win(previous_win)
+    vim.api.nvim_buf_delete(nav_buf, { force = true })
   end
 
   do

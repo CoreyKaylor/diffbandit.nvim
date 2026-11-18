@@ -21,7 +21,7 @@ local State = {
   -- Commit panel file-list layout chosen with the toggle key; survives panel
   -- rebuilds (diff <-> merge hand-offs). nil means use config.
   panel_view = nil,
-  -- Collapsed tree folders, keyed by "<group>:<dir>".
+  -- Collapsed tree folders: repo root -> { ["<group>:<dir>"] = true }.
   panel_collapsed_dirs = {},
 }
 

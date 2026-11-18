@@ -440,7 +440,10 @@ Panel mappings:
   <CR>          Focus the diff for the selected file, or collapse/expand
                 the selected folder in tree view.
   t             Toggle between the flat list and the folder tree view.
-  za            Collapse/expand the selected folder in tree view.
+  za            Collapse/expand the selected folder in tree view; on a
+                file, collapse the folder holding it. The tree lists
+                files in the same order as ]f / [f. Opening a file
+                inside a collapsed folder expands it.
   ]c / [c       Navigate hunks in the selected file preview.
   <Space>       Toggle staged state for the selected file.
   a             Open file actions for the selected file.
