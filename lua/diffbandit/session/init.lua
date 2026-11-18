@@ -671,6 +671,14 @@ function Session:setup_keymaps()
       map(buf, lhs, fallback, "Staging and actions", desc)
     end
   end
+  -- Visual-mode action on the selected lines; leaves visual mode first.
+  local function visual_map(buf, lhs, fn, desc)
+    self:set_buffer_keymap("x", buf, lhs, function()
+      local first, last = vim.fn.line("v"), vim.fn.line(".")
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+      fn(math.min(first, last), math.max(first, last))
+    end, keyhelp.opts(buf, "Staging and actions", desc, opts))
+  end
   local navigation = self.config.navigation or {}
   local document_keys = navigation.document_keys or {}
   local hunk_keys = navigation.hunk_keys or {}
@@ -756,6 +764,19 @@ function Session:setup_keymaps()
       action_map(buf, action_keys.apply_right, "DiffBanditApplyRightHunk", function()
         self:apply_right_hunk()
       end, "Copy the right side of the hunk to the left")
+    end
+    -- Editable diffs only: the same keys on a visual selection apply every
+    -- hunk it touches.
+    local source_pane = buf == self.left_buf or buf == self.right_buf
+    if source_pane and not is_git and action_keys.apply_left and self.right and self.right.editable then
+      visual_map(buf, action_keys.apply_left, function(first, last)
+        self:apply_left_range(first, last)
+      end, "Copy the left side of every selected hunk to the right")
+    end
+    if source_pane and not is_git and action_keys.apply_right and self.left and self.left.editable then
+      visual_map(buf, action_keys.apply_right, function(first, last)
+        self:apply_right_range(first, last)
+      end, "Copy the right side of every selected hunk to the left")
     end
     -- Editable diffs only (jj split / squash -i): keep the active hunk's
     -- change and take the other side for every other hunk.
@@ -2544,10 +2565,12 @@ for method, action in pairs({
   apply_right_hunk = "apply_right",
   apply_left_others = "apply_left_others",
   apply_right_others = "apply_right_others",
+  apply_left_range = "apply_left_range",
+  apply_right_range = "apply_right_range",
   undo_action = "undo",
 }) do
-  Session[method] = function(self)
-    self:after_git_action(notify_action_result(actions[action](self)))
+  Session[method] = function(self, ...)
+    self:after_git_action(notify_action_result(actions[action](self, ...)))
   end
 end
 

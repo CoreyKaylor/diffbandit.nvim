@@ -276,9 +276,20 @@ local hunk_commands = {
   { "DiffBanditUndo", "undo", "Undo the last DiffBandit action for the current file" },
 }
 
+-- With a range (:'<,'>), the apply commands take every hunk it touches.
+local range_methods = {
+  apply_left_hunk = "apply_left_range",
+  apply_right_hunk = "apply_right_range",
+}
+
 for _, command in ipairs(hunk_commands) do
   local name, method, desc = command[1], command[2], command[3]
-  vim.api.nvim_create_user_command(name, function()
-    diffbandit[method]()
-  end, { desc = desc })
+  local range_method = range_methods[method]
+  vim.api.nvim_create_user_command(name, function(opts)
+    if range_method and opts.range > 0 then
+      diffbandit[range_method](opts.line1, opts.line2)
+    else
+      diffbandit[method]()
+    end
+  end, { desc = desc, range = range_method ~= nil or nil })
 end

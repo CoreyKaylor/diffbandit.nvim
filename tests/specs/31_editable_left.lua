@@ -276,6 +276,52 @@ do
     end
   end
 
+  -- A visual selection applies every hunk it touches, in one undo step: a
+  -- deletion counts when the selection spans the lines on both sides of it.
+  do
+    local left_path, right_path = file_pair(
+      "visual",
+      "a\nb\nc\nd\ne\nf\ng\n",
+      "a\nB\nc\ne\nf\nX\ng\n"
+    )
+    local session = assert(api.files(left_path, right_path))
+    local function right_text()
+      return table.concat(vim.api.nvim_buf_get_lines(session.right_buf, 0, -1, false), "|")
+    end
+
+    assert_eq(#session.view.chunks, 3, "a change, a deletion, and an insertion")
+    vim.api.nvim_set_current_win(session.right_win)
+    vim.api.nvim_win_set_cursor(session.right_win, { 2, 0 })
+    vim.api.nvim_feedkeys("Vjj>>", "x", false)
+    assert_eq(vim.api.nvim_get_mode().mode, "n", "the mapping leaves visual mode")
+    assert_eq(right_text(), "a|b|c|d|e|f|X|g", "the selected change and deletion take the left side")
+    assert_eq(#session.view.chunks, 1, "the unselected hunk is left")
+
+    session:undo_edit_or_action()
+    assert_eq(right_text(), "a|B|c|e|f|X|g", "one u restores the selection's hunks")
+
+    -- One line beside a deletion does not take it.
+    vim.api.nvim_set_current_win(session.right_win)
+    local applied = actions_mod.apply_left_range(session, 2, 2)
+    assert_eq(applied, true, "a one-line range applies")
+    assert_eq(right_text(), "a|b|c|e|f|X|g", "only the change on that line")
+
+    local none, none_err = actions_mod.apply_left_range(session, 1, 1)
+    assert_eq(none, false, "a range with no hunk applies nothing")
+    assert_eq(none_err, "no hunks in the selection", "and the reason says so")
+
+    if vim.fn.exists(":DiffBanditApplyLeftHunk") ~= 2 then
+      dofile(root .. "/plugin/diffbandit.lua")
+    end
+    vim.cmd("6,7DiffBanditApplyLeftHunk")
+    assert_eq(right_text(), "a|b|c|e|f|g", "the command takes a range")
+
+    session:close()
+    if vim.api.nvim_buf_is_valid(session.right_buf) then
+      vim.api.nvim_buf_delete(session.right_buf, { force = true })
+    end
+  end
+
   -- A file diffed against itself keeps one editable buffer, on the right.
   do
     local left_path = file_pair("same", "one\n", "one\n")

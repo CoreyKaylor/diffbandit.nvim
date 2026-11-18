@@ -191,12 +191,15 @@ COMMANDS                                            *diffbandit-commands*
         Discard the active Git hunk from the worktree.
 
                                               *:DiffBanditApplyLeftHunk*
-:DiffBanditApplyLeftHunk
-        Apply the left side of the active hunk to the right target.
+:[range]DiffBanditApplyLeftHunk
+        Apply the left side of the active hunk to the right target. With
+        a [range] (editable diffs only), apply it to every hunk the lines
+        of the current pane touch.
 
                                              *:DiffBanditApplyRightHunk*
-:DiffBanditApplyRightHunk
-        Apply the right side of the active hunk to the left target.
+:[range]DiffBanditApplyRightHunk
+        Apply the right side of the active hunk to the left target. With
+        a [range], as above for the left target.
 
                                             *:DiffBanditApplyLeftOthers*
 :DiffBanditApplyLeftOthers
@@ -288,6 +291,11 @@ panel or the Git log dock, they always step from the active hunk.
 
                                                        *diffbandit-<<*
   <<            Apply the right side to the left target.
+
+  {Visual}>>    Editable diffs only: apply the left side to every hunk the
+  {Visual}<<    selected lines touch (`<<`: the right side), in one undo
+                step. A deletion counts when the selection reaches the
+                lines on both sides of it.
 
                                                        *diffbandit-g>*
   g>            Editable diffs only: apply the left side to every other
@@ -556,6 +564,8 @@ Git hunk actions operate on the active hunk in Git diff sessions:
   <Space>       Stage an unstaged hunk or unstage a staged hunk in all mode.
   >>            Apply the left side of the hunk to the right target.
   <<            Apply the right side of the hunk to the left target.
+  {Visual}>>    Editable diffs: apply the left side to every selected hunk.
+  {Visual}<<    Editable diffs: apply the right side to every selected hunk.
   g>            Editable diffs: apply the left side to every other hunk.
   g<            Editable diffs: apply the right side to every other hunk.
   u             Undo DiffBandit apply/stage actions in reverse order.
@@ -801,6 +811,8 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.discard_hunk()
   diffbandit.apply_left_hunk()
   diffbandit.apply_right_hunk()
+  diffbandit.apply_left_range(first, last)
+  diffbandit.apply_right_range(first, last)
   diffbandit.apply_left_others()
   diffbandit.apply_right_others()
   diffbandit.undo()
@@ -810,7 +822,8 @@ In a two-file view (|diffbandit-lua-api| `files()`) the right pane is the real
 file buffer: `>>` copies the current hunk into it as an ordinary edit, `u`
 undoes it and `:w` saves. `g>` keeps only the hunk under the cursor: it
 applies the left side to every other hunk in one undo step, which picks a
-single hunk out of many in `jj squash -i` or `jj split`. Pass `{ editable_left = true }` to make the left
+single hunk out of many in `jj squash -i` or `jj split`. In Visual mode,
+`>>` applies every hunk the selection touches. Pass `{ editable_left = true }` to make the left
 pane the real file buffer too, so `<<` copies the current right hunk into it:
 >
   diffbandit.files("source.txt", "live.txt", { editable_left = true })

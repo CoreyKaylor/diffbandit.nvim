@@ -448,6 +448,7 @@ Inside a diff view:
 | `<Space>` | Toggle stage for the active Git hunk (`actions.keys.toggle_stage`) |
 | `>>` | Apply the left side to the right target |
 | `<<` | Apply the right side to the left target |
+| `>>` / `<<` in Visual mode | Editable diffs: apply every hunk the selection touches |
 | `g>` | Editable diffs: apply the left side to every other hunk, keeping only the one under the cursor (`jj squash -i`, `jj split`) |
 | `g<` | Editable left side: apply the right side to every other hunk |
 | `u` | Undo the last DiffBandit hunk action |
@@ -495,7 +496,8 @@ commit without opening it.
 Inside a file opened from it, `>>` drops one hunk from the right side. To pick
 a single hunk out of many, put the cursor on it and press `g>`: every other
 hunk takes the left side in one undo step, so only that hunk is squashed or
-split out.
+split out. To drop a run of hunks instead, select their lines and press `>>`:
+every hunk the selection touches takes the left side, also in one undo step.
 
 When a file row is opened, it appears as a child DiffBandit file diff. Pressing
 `q` in that child diff returns to the original folder comparison with the row

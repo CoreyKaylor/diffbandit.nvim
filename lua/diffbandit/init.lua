@@ -187,7 +187,7 @@ function M.is_running(query)
   return false
 end
 
-local function call_current_session(method)
+local function call_current_session(method, ...)
   local session = current_session()
   if not session then
     nvim.notify_info("no active DiffBandit session")
@@ -197,7 +197,7 @@ local function call_current_session(method)
     nvim.notify_error("unsupported action " .. method)
     return nil
   end
-  return session[method](session)
+  return session[method](session, ...)
 end
 
 local function load_queue_entry(queue, start_index, step)
@@ -942,6 +942,16 @@ end
 
 function M.apply_right_hunk()
   return call_current_session("apply_right_hunk")
+end
+
+--- Apply every hunk touching lines first..last of the focused pane (editable
+--- diffs only), as the visual-mode >> and << do.
+function M.apply_left_range(first, last)
+  return call_current_session("apply_left_range", first, last)
+end
+
+function M.apply_right_range(first, last)
+  return call_current_session("apply_right_range", first, last)
 end
 
 function M.apply_left_others()

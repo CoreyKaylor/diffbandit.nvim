@@ -573,7 +573,32 @@ end
 --
 -- opts.others applies every hunk except the active one instead, so the target
 -- keeps only the active hunk's change: picking one hunk out of many in
--- jj squash -i is one key rather than one per hunk. It is one undo step.
+-- jj squash -i is one key rather than one per hunk. opts.range applies every
+-- hunk touching a span of lines (a visual selection). Either is one undo step.
+
+-- Hunks touching lines first..last of one side. A hunk with no lines on that
+-- side sits between two lines and counts when the span reaches both (or the
+-- file's edge), so selecting across a deletion takes it.
+local function hunks_in_range(session, range)
+  local total = #side_lines(session, range.side)
+  local first, last = math.min(range.first, range.last), math.max(range.first, range.last)
+  local picked = {}
+  for _, hunk in ipairs(session.hunks or {}) do
+    local start, count = side_range(hunk, range.side)
+    local touches
+    if count > 0 then
+      touches = start <= last and range_end(start, count) >= first
+    else
+      -- Zero-width: between line `start` and `start + 1`.
+      touches = (start >= first or start == 0) and (start < last or start >= total)
+    end
+    if touches then
+      picked[#picked + 1] = hunk
+    end
+  end
+  return picked
+end
+
 local function apply_to_editable_side(session, target_side, opts)
   opts = opts or {}
   local target = target_side == "left" and session.left or session.right
@@ -593,13 +618,22 @@ local function apply_to_editable_side(session, target_side, opts)
     session:refresh_editable_side(target_side)
   end
 
-  local hunk, _, hunk_err = active_hunk(session)
-  if not hunk then
-    return false, hunk_err
+  local hunks
+  if opts.range then
+    hunks = hunks_in_range(session, opts.range)
+    if #hunks == 0 then
+      return false, "no hunks in the selection"
+    end
+  else
+    local hunk, _, hunk_err = active_hunk(session)
+    if not hunk then
+      return false, hunk_err
+    end
+    hunks = { hunk }
   end
 
-  local hunks = { hunk }
   if opts.others then
+    local hunk = hunks[1]
     hunks = {}
     for _, other in ipairs(session.hunks or {}) do
       if other ~= hunk then
@@ -609,13 +643,13 @@ local function apply_to_editable_side(session, target_side, opts)
     if #hunks == 0 then
       return false, "no other hunks in this file"
     end
-    -- Bottom-up, so each edit leaves the target ranges above it in place.
-    table.sort(hunks, function(a, b)
-      local a_start = side_range(a, target_side)
-      local b_start = side_range(b, target_side)
-      return a_start > b_start
-    end)
   end
+  -- Bottom-up, so each edit leaves the target ranges above it in place.
+  table.sort(hunks, function(a, b)
+    local a_start = side_range(a, target_side)
+    local b_start = side_range(b, target_side)
+    return a_start > b_start
+  end)
 
   local source_side = target_side == "left" and "right" or "left"
   local source = source_side == "left" and session.left or session.right
@@ -671,6 +705,28 @@ function M.apply_right(session)
     return apply_to_editable_side(session, "left")
   end
   return apply_sides(session, "right", "left", { action = "apply_right" })
+end
+
+-- Apply every hunk touching lines first..last of the focused pane (a visual
+-- selection). Editable (non-Git) diffs only.
+local function apply_range(session, target_side, first, last)
+  if is_git_session(session) then
+    return false, "applying a selection of hunks works only in an editable diff"
+  end
+  local win = vim.api.nvim_get_current_win()
+  local side = (win == session.left_win and "left") or (win == session.right_win and "right") or nil
+  if not side then
+    return false, "select lines in the left or right pane"
+  end
+  return apply_to_editable_side(session, target_side, { range = { side = side, first = first, last = last } })
+end
+
+function M.apply_left_range(session, first, last)
+  return apply_range(session, "right", first, last)
+end
+
+function M.apply_right_range(session, first, last)
+  return apply_range(session, "left", first, last)
 end
 
 -- Keep only the active hunk's change in the editable target: every other hunk
