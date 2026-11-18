@@ -1,6 +1,8 @@
 :DiffBandit	diffbandit.txt	/*:DiffBandit*
 :DiffBanditApplyLeftHunk	diffbandit.txt	/*:DiffBanditApplyLeftHunk*
+:DiffBanditApplyLeftOthers	diffbandit.txt	/*:DiffBanditApplyLeftOthers*
 :DiffBanditApplyRightHunk	diffbandit.txt	/*:DiffBanditApplyRightHunk*
+:DiffBanditApplyRightOthers	diffbandit.txt	/*:DiffBanditApplyRightOthers*
 :DiffBanditBuffers	diffbandit.txt	/*:DiffBanditBuffers*
 :DiffBanditClose	diffbandit.txt	/*:DiffBanditClose*
 :DiffBanditCommitPanel	diffbandit.txt	/*:DiffBanditCommitPanel*
@@ -39,6 +41,8 @@ diffbandit-commit-panel	diffbandit.txt	/*diffbandit-commit-panel*
 diffbandit-configuration	diffbandit.txt	/*diffbandit-configuration*
 diffbandit-editable-left	diffbandit.txt	/*diffbandit-editable-left*
 diffbandit-folder-diff	diffbandit.txt	/*diffbandit-folder-diff*
+diffbandit-g<	diffbandit.txt	/*diffbandit-g<*
+diffbandit-g>	diffbandit.txt	/*diffbandit-g>*
 diffbandit-g?	diffbandit.txt	/*diffbandit-g?*
 diffbandit-git	diffbandit.txt	/*diffbandit-git*
 diffbandit-gzg	diffbandit.txt	/*diffbandit-gzg*

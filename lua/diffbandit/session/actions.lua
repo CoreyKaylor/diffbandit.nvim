@@ -570,7 +570,12 @@ end
 -- file buffer: the hunk is written into it as an ordinary edit, so `u` undoes
 -- it and :w saves. The right side is editable by default; the left side only
 -- when the caller opts in (files(..., { editable_left = true })).
-local function apply_to_editable_side(session, target_side)
+--
+-- opts.others applies every hunk except the active one instead, so the target
+-- keeps only the active hunk's change: picking one hunk out of many in
+-- jj squash -i is one key rather than one per hunk. It is one undo step.
+local function apply_to_editable_side(session, target_side, opts)
+  opts = opts or {}
   local target = target_side == "left" and session.left or session.right
   local bufnr = target_side == "left" and session.left_buf or session.right_buf
   if not (target and target.editable and bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
@@ -593,34 +598,59 @@ local function apply_to_editable_side(session, target_side)
     return false, hunk_err
   end
 
+  local hunks = { hunk }
+  if opts.others then
+    hunks = {}
+    for _, other in ipairs(session.hunks or {}) do
+      if other ~= hunk then
+        hunks[#hunks + 1] = other
+      end
+    end
+    if #hunks == 0 then
+      return false, "no other hunks in this file"
+    end
+    -- Bottom-up, so each edit leaves the target ranges above it in place.
+    table.sort(hunks, function(a, b)
+      local a_start = side_range(a, target_side)
+      local b_start = side_range(b, target_side)
+      return a_start > b_start
+    end)
+  end
+
   local source_side = target_side == "left" and "right" or "left"
   local source = source_side == "left" and session.left or session.right
-  local source_start, source_count = side_range(hunk, source_side)
-  local target_start, target_count = side_range(hunk, target_side)
-  local replacement = text.copy_range(side_lines(session, source_side), source_start, source_count)
-
-  -- Convert the hunk's line range to Neovim's zero-based, end-exclusive span.
-  local first = target_count == 0 and target_start or (target_start - 1)
-  first = math.max(first, 0)
-  local last = target_count == 0 and first or (first + target_count)
-
-  local reaches_end = text.reaches_end(target_start, target_count, #(target.lines or {}))
-    and text.reaches_end(source_start, source_count, #(source.lines or {}))
+  local source_lines = side_lines(session, source_side)
+  local target_total = #(target.lines or {})
 
   -- Start a separate undo step for each hunk action.
   vim.api.nvim_buf_call(bufnr, function()
     vim.cmd("let &undolevels = &undolevels")
   end)
-  vim.api.nvim_buf_set_lines(bufnr, first, last, false, replacement)
 
-  if reaches_end then
-    -- The copied tail carries the source's final-newline state. Recorded
-    -- against this undo step so `u` restores the options with the text.
-    local wanted = { endofline = source.eol ~= false }
-    if source.eol == false then
-      wanted.fixendofline = false
+  for _, each in ipairs(hunks) do
+    local source_start, source_count = side_range(each, source_side)
+    local target_start, target_count = side_range(each, target_side)
+    local replacement = text.copy_range(source_lines, source_start, source_count)
+
+    -- Convert the hunk's line range to Neovim's zero-based, end-exclusive span.
+    local first = target_count == 0 and target_start or (target_start - 1)
+    first = math.max(first, 0)
+    local last = target_count == 0 and first or (first + target_count)
+
+    local reaches_end = text.reaches_end(target_start, target_count, target_total)
+      and text.reaches_end(source_start, source_count, #(source.lines or {}))
+
+    vim.api.nvim_buf_set_lines(bufnr, first, last, false, replacement)
+
+    if reaches_end then
+      -- The copied tail carries the source's final-newline state. Recorded
+      -- against this undo step so `u` restores the options with the text.
+      local wanted = { endofline = source.eol ~= false }
+      if source.eol == false then
+        wanted.fixendofline = false
+      end
+      document.set_eol_state_for_change(target.editable, bufnr, wanted)
     end
-    document.set_eol_state_for_change(target.editable, bufnr, wanted)
   end
 
   session.suppress_editable_textchanged_ticks = session.suppress_editable_textchanged_ticks or {}
@@ -641,6 +671,22 @@ function M.apply_right(session)
     return apply_to_editable_side(session, "left")
   end
   return apply_sides(session, "right", "left", { action = "apply_right" })
+end
+
+-- Keep only the active hunk's change in the editable target: every other hunk
+-- takes the source side. Editable (non-Git) diffs only, such as jj squash -i.
+function M.apply_left_others(session)
+  if is_git_session(session) then
+    return false, "applying every other hunk works only in an editable diff"
+  end
+  return apply_to_editable_side(session, "right", { others = true })
+end
+
+function M.apply_right_others(session)
+  if is_git_session(session) then
+    return false, "applying every other hunk works only in an editable diff"
+  end
+  return apply_to_editable_side(session, "left", { others = true })
 end
 
 function M.stage(session)

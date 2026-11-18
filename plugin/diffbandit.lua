@@ -271,6 +271,8 @@ local hunk_commands = {
   { "DiffBanditDiscardHunk", "discard_hunk", "Discard the current DiffBandit Git hunk" },
   { "DiffBanditApplyLeftHunk", "apply_left_hunk", "Apply the left DiffBandit hunk side to the right target" },
   { "DiffBanditApplyRightHunk", "apply_right_hunk", "Apply the right DiffBandit hunk side to the left target" },
+  { "DiffBanditApplyLeftOthers", "apply_left_others", "Apply the left side to every other hunk, keeping only the current one" },
+  { "DiffBanditApplyRightOthers", "apply_right_others", "Apply the right side to every other hunk, keeping only the current one" },
   { "DiffBanditUndo", "undo", "Undo the last DiffBandit action for the current file" },
 }
 

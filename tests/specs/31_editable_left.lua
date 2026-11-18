@@ -236,6 +236,46 @@ do
     session:close()
   end
 
+  -- Keeping one hunk out of many (jj squash -i): every other hunk takes the
+  -- other side in one undo step, the last one included with its final newline.
+  do
+    local left_path, right_path = file_pair(
+      "keep-one",
+      "a\nb\nc\nd\ne\nf\ng",
+      "a\nB\nc\ne\nf\nX\ng\nh\n"
+    )
+    local session = assert(api.files(left_path, right_path, { editable_left = true }))
+    local function right_text()
+      return table.concat(vim.api.nvim_buf_get_lines(session.right_buf, 0, -1, false), "|")
+    end
+
+    assert_eq(#session.view.chunks >= 3, true, "several hunks to pick from")
+    vim.api.nvim_set_current_win(session.right_win)
+    vim.api.nvim_win_set_cursor(session.right_win, { 6, 0 })
+    local applied, err = actions_mod.apply_left_others(session)
+    assert_eq(applied, true, "apply_left_others succeeds: " .. tostring(err))
+    assert_eq(right_text(), "a|b|c|d|e|f|X|g", "only the hunk under the cursor stays on the right")
+    assert_eq(#session.view.chunks, 1, "one hunk is left")
+    assert_eq(vim.bo[session.right_buf].endofline, false, "the reverted tail takes the left's final newline")
+
+    local alone, alone_err = actions_mod.apply_left_others(session)
+    assert_eq(alone, false, "nothing else to apply")
+    assert_eq(alone_err, "no other hunks in this file", "and the reason says so")
+
+    session:undo_edit_or_action()
+    assert_eq(right_text(), "a|B|c|e|f|X|g|h", "one u restores every other hunk")
+
+    assert_eq((actions_mod.apply_right_others(session)), true, "the left side can keep one hunk too")
+    assert_eq(#session.view.chunks, 1, "one hunk is left after the reverse")
+
+    session:close()
+    for _, buf in ipairs({ session.left_buf, session.right_buf }) do
+      if vim.api.nvim_buf_is_valid(buf) then
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
+    end
+  end
+
   -- A file diffed against itself keeps one editable buffer, on the right.
   do
     local left_path = file_pair("same", "one\n", "one\n")

@@ -448,6 +448,8 @@ Inside a diff view:
 | `<Space>` | Toggle stage for the active Git hunk (`actions.keys.toggle_stage`) |
 | `>>` | Apply the left side to the right target |
 | `<<` | Apply the right side to the left target |
+| `g>` | Editable diffs: apply the left side to every other hunk, keeping only the one under the cursor (`jj squash -i`, `jj split`) |
+| `g<` | Editable left side: apply the right side to every other hunk |
 | `u` | Undo the last DiffBandit hunk action |
 | `q` | Close the diff session (`navigation.close_key`) |
 | `g?` | Show the keys of the current window (`navigation.help_key`) |
@@ -489,6 +491,11 @@ file only on the right is removed, one only on the left is restored, and a
 changed one is reset to the left version. On a directory it does this for
 everything inside. Under `jj split` that moves the entry out of the first
 commit without opening it.
+
+Inside a file opened from it, `>>` drops one hunk from the right side. To pick
+a single hunk out of many, put the cursor on it and press `g>`: every other
+hunk takes the left side in one undo step, so only that hunk is squashed or
+split out.
 
 When a file row is opened, it appears as a child DiffBandit file diff. Pressing
 `q` in that child diff returns to the original folder comparison with the row
@@ -830,6 +837,8 @@ require("diffbandit").setup({
       toggle_stage = "<Space>",
       apply_left = ">>",
       apply_right = "<<",
+      apply_left_others = "g>",
+      apply_right_others = "g<",
       undo = "u",
     },
     staged_indicator = {

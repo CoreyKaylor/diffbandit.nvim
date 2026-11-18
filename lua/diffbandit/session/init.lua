@@ -757,6 +757,18 @@ function Session:setup_keymaps()
         self:apply_right_hunk()
       end, "Copy the right side of the hunk to the left")
     end
+    -- Editable diffs only (jj split / squash -i): keep the active hunk's
+    -- change and take the other side for every other hunk.
+    if action_keys.apply_left_others and not is_git and self.right and self.right.editable then
+      action_map(buf, action_keys.apply_left_others, "DiffBanditApplyLeftOthers", function()
+        self:apply_left_others()
+      end, "Copy the left side to every other hunk (keep only this one on the right)")
+    end
+    if action_keys.apply_right_others and not is_git and self.left and self.left.editable then
+      action_map(buf, action_keys.apply_right_others, "DiffBanditApplyRightOthers", function()
+        self:apply_right_others()
+      end, "Copy the right side to every other hunk (keep only this one on the left)")
+    end
     if action_keys.undo then
       if (buf == self.right_buf and self.right and self.right.editable)
           or (buf == self.left_buf and self.left and self.left.editable) then
@@ -2530,6 +2542,8 @@ for method, action in pairs({
   discard_hunk = "discard",
   apply_left_hunk = "apply_left",
   apply_right_hunk = "apply_right",
+  apply_left_others = "apply_left_others",
+  apply_right_others = "apply_right_others",
   undo_action = "undo",
 }) do
   Session[method] = function(self)

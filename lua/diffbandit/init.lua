@@ -944,6 +944,14 @@ function M.apply_right_hunk()
   return call_current_session("apply_right_hunk")
 end
 
+function M.apply_left_others()
+  return call_current_session("apply_left_others")
+end
+
+function M.apply_right_others()
+  return call_current_session("apply_right_others")
+end
+
 function M.undo()
   return call_current_session("undo_action")
 end

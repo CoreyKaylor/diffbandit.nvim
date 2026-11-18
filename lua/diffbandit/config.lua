@@ -265,6 +265,10 @@ local defaults = {
       toggle_stage = "<Space>",
       apply_left = ">>",
       apply_right = "<<",
+      -- Editable diffs (jj split / squash -i): keep only the hunk under the
+      -- cursor by taking the other side for every other hunk.
+      apply_left_others = "g>",
+      apply_right_others = "g<",
       undo = "u",
     },
     staged_indicator = {
