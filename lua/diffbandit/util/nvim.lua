@@ -16,6 +16,11 @@ function M.notify_warn(msg, prefix)
   notify(msg, vim.log.levels.WARN, prefix)
 end
 
+function M.open_tab()
+  vim.cmd("tabnew")
+  vim.bo.bufhidden = "wipe"
+end
+
 function M.set_buffer_options(buf, opts)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return

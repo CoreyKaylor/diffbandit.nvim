@@ -494,7 +494,7 @@ M.winbar_spec = winbar_spec
 M._private = { source_buffer_name = source_buffer_name }
 
 function M.open(session)
-  vim.cmd("tabnew")
+  nvim.open_tab()
   session.tabpage = vim.api.nvim_get_current_tabpage()
   session.tabnr = vim.api.nvim_tabpage_get_number(session.tabpage)
 
