@@ -212,7 +212,18 @@ end
 function M.files(left_path, right_path, opts)
   opts = opts or {}
   local config = state.get_config()
-  local left_source, left_err = source_mod.from_file(left_path, opts.left_label, config)
+  local left_source, left_err
+
+  if opts.editable_left then
+    left_source, left_err = document.source_from_file_or_buffer(left_path, opts.left_label, {
+      editable = { target = "file" },
+    }, function()
+      return source_mod.from_file(left_path, opts.left_label, config)
+    end)
+  else
+    left_source, left_err = source_mod.from_file(left_path, opts.left_label, config)
+  end
+
   if not left_source then
     return nil, left_err
   end

@@ -69,6 +69,16 @@ function M.source_from_buffer(bufnr, label, metadata)
   return source
 end
 
+function M.disk_text(path)
+  local file = io.open(path, "rb")
+  if not file then
+    return nil
+  end
+  local contents = file:read("*a")
+  file:close()
+  return contents
+end
+
 function M.source_from_file_or_buffer(path, label, metadata, fallback_reader)
   local bufnr = M.find_loaded_buffer(path)
   if bufnr then
@@ -77,6 +87,7 @@ function M.source_from_file_or_buffer(path, label, metadata, fallback_reader)
       target = ((metadata or {}).editable or {}).target or "file",
       bufnr = bufnr,
       path = M.normalize_path(path) or path,
+      disk_snapshot = M.disk_text(path),
     })
     return source, nil
   end
@@ -86,6 +97,7 @@ function M.source_from_file_or_buffer(path, label, metadata, fallback_reader)
       source.editable = vim.tbl_extend("force", {}, source.editable or {}, {
         target = ((metadata or {}).editable or {}).target or "file",
         path = M.normalize_path(path) or path,
+        disk_snapshot = M.disk_text(path),
       })
     end
     return source, err

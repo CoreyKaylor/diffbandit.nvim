@@ -958,11 +958,20 @@ policy (whitespace-only changes disappear from the diff).
 
 ## Lua API
 
+With `editable_left = true`, an ordinary two-file view uses real editable
+buffers for both paths. `>>` copies the current left hunk into the right
+buffer; `<<` copies the current right hunk into the left buffer. Each action
+changes only its target buffer. Use `:w` in that pane to save it, or `u` to
+undo the buffer edit. Unsaved buffers survive closing the view. If the target
+file changes on disk after opening, the hunk action stops and asks for a fresh
+review. The option is off by default and does not change Git diff sessions.
+
 ```lua
 local diffbandit = require("diffbandit")
 
 diffbandit.setup({})
 diffbandit.files("left.txt", "right.txt")
+diffbandit.files("source.txt", "live.txt", { editable_left = true }) -- opt-in two-way file editing
 diffbandit.buffers(left_bufnr, right_bufnr)
 diffbandit.folder_diff("left-dir", "right-dir")
 diffbandit.git({ mode = "all" })

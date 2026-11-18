@@ -2,6 +2,7 @@ local nvim = require("diffbandit.util.nvim")
 local git_mod = require("diffbandit.vcs")
 local diff_mod = require("diffbandit.diff")
 local source_mod = require("diffbandit.util.source")
+local document = require("diffbandit.util.document")
 local text = require("diffbandit.util.text")
 local keep_view = require("diffbandit.session.keep_view")
 
@@ -528,50 +529,73 @@ local function is_git_session(session)
   return queue ~= nil and queue.kind == "git"
 end
 
--- Outside a repository (the diff editor behind `diffbandit edit`, used by
--- jj split / squash -i) the editable right pane is a plain file buffer: the
--- hunk is written into it as an ordinary edit, so `u` undoes it and :w saves.
-local function apply_to_editable_right(session)
-  local bufnr = session.right_buf
-  if not (session.right and session.right.editable and bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
-    return false, "the right side is read-only in this diff"
+-- Non-Git file actions edit a real buffer. The right side is editable by
+-- default; the left side is editable only when the caller opts in.
+local function apply_to_editable_side(session, target_side)
+  local target = target_side == "left" and session.left or session.right
+  local bufnr = target_side == "left" and session.left_buf or session.right_buf
+  if not (target and target.editable and bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    return false, "the " .. target_side .. " side is read-only in this diff"
   end
-  -- A pending debounced re-diff would leave the hunk ranges behind the text.
+
+  local disk_snapshot = target.editable.disk_snapshot
+  if disk_snapshot ~= nil and document.disk_text(target.editable.path) ~= disk_snapshot then
+    return false, "target changed outside DiffBandit; refresh before applying this hunk"
+  end
+
   local current = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  if not vim.deep_equal(current, session.right.lines or {}) then
-    session:refresh_editable_right()
+  if not vim.deep_equal(current, target.lines or {}) then
+    session:refresh_editable_side(target_side)
   end
+
   local hunk, _, hunk_err = active_hunk(session)
   if not hunk then
     return false, hunk_err
   end
-  local source_start, source_count = side_range(hunk, "left")
-  local target_start, target_count = side_range(hunk, "right")
-  local replacement = text.copy_range(side_lines(session, "left"), source_start, source_count)
-  -- Same placement as text.replace_range, as a 0-based [first, last) span.
+
+  local source_side = target_side == "left" and "right" or "left"
+  local source = source_side == "left" and session.left or session.right
+  local source_start, source_count = side_range(hunk, source_side)
+  local target_start, target_count = side_range(hunk, target_side)
+  local replacement = text.copy_range(side_lines(session, source_side), source_start, source_count)
+
+  -- Convert the hunk's line range to Neovim's zero-based, end-exclusive span.
   local first = target_count == 0 and target_start or (target_start - 1)
   first = math.max(first, 0)
   local last = target_count == 0 and first or (first + target_count)
-  -- Each apply is its own undo step, even from a macro or a chain of calls.
+
+  local reaches_end = text.reaches_end(target_start, target_count, #(target.lines or {}))
+    and text.reaches_end(source_start, source_count, #(source.lines or {}))
+
+  -- Start a separate undo step for each hunk action.
   vim.api.nvim_buf_call(bufnr, function()
     vim.cmd("let &undolevels = &undolevels")
   end)
   vim.api.nvim_buf_set_lines(bufnr, first, last, false, replacement)
-  session.suppress_editable_textchanged_tick = vim.api.nvim_buf_get_changedtick(bufnr)
-  session:refresh_editable_right()
+
+  if reaches_end then
+    vim.api.nvim_set_option_value("endofline", source.eol ~= false, { buf = bufnr })
+    if source.eol == false then
+      vim.api.nvim_set_option_value("fixendofline", false, { buf = bufnr })
+    end
+  end
+
+  session.suppress_editable_textchanged_ticks = session.suppress_editable_textchanged_ticks or {}
+  session.suppress_editable_textchanged_ticks[target_side] = vim.api.nvim_buf_get_changedtick(bufnr)
+  session:refresh_editable_side(target_side)
   return true, nil
 end
 
 function M.apply_left(session)
   if not is_git_session(session) then
-    return apply_to_editable_right(session)
+    return apply_to_editable_side(session, "right")
   end
   return apply_sides(session, "left", "right", { action = "apply_left" })
 end
 
 function M.apply_right(session)
   if not is_git_session(session) then
-    return false, "the left side is read-only in this diff"
+    return apply_to_editable_side(session, "left")
   end
   return apply_sides(session, "right", "left", { action = "apply_right" })
 end

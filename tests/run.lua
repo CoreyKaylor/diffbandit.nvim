@@ -42,6 +42,7 @@ local specs = {
   "25_launcher.lua",
   "27_keyhelp.lua",
   "30_session_snap.lua",
+  "31_editable_left.lua",
   "32_document_cache.lua",
   "35_render_recovery.lua",
   "40_oracle.lua",

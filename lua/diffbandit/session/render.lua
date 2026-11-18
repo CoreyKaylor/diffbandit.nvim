@@ -259,7 +259,7 @@ local function write_source_text(self, left_lines, right_lines)
       and (self.written_left_lines ~= left_lines or self.written_left_buf ~= self.left_buf) then
     set_buffer_options(self.left_buf, { modifiable = true })
     vim.api.nvim_buf_set_lines(self.left_buf, 0, -1, false, left_lines)
-    set_buffer_options(self.left_buf, { modifiable = false })
+    set_buffer_options(self.left_buf, { modifiable = self.left.editable ~= nil })
     self.written_left_lines = left_lines
     self.written_left_buf = self.left_buf
   end
@@ -901,7 +901,7 @@ local function apply_buffer_lines(self, ctx)
   vim.api.nvim_buf_set_lines(self.connector_buf, 0, -1, false, ctx.connector_lines)
   self.structural_buffer_key = ctx.structural_key
 
-  set_buffer_options(self.left_buf, { modifiable = false })
+  set_buffer_options(self.left_buf, { modifiable = self.left.editable ~= nil })
   set_buffer_options(self.left_num_buf, { modifiable = false })
   set_buffer_options(self.right_buf, { modifiable = self.right.editable ~= nil })
   set_buffer_options(self.right_num_buf, { modifiable = false })
