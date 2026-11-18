@@ -851,3 +851,57 @@ do
   state.unregister_view(browser)
   vim.cmd("tabclose")
 end
+
+do
+  -- Opening a view's tab wipes the empty buffer :tabnew made, and only that
+  -- buffer: one an autocmd put in the new tab survives.
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir .. "/L", "p")
+  vim.fn.mkdir(dir .. "/R", "p")
+  vim.fn.writefile({ "one", "left" }, dir .. "/L/x.txt")
+  vim.fn.writefile({ "one", "right" }, dir .. "/R/x.txt")
+  vim.fn.writefile({ "one", "base" }, dir .. "/base")
+  local function unnamed_count()
+    local count = 0
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_get_name(buf) == "" and vim.bo[buf].buftype == "" then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local db = require("diffbandit")
+  local before = unnamed_count()
+
+  local file_session = assert((db.files(dir .. "/L/x.txt", dir .. "/R/x.txt")))
+  assert_eq(unnamed_count(), before, "File diff wipes the empty buffer of its tab")
+  file_session:close()
+
+  local folder_session = assert((db.folder_diff(dir .. "/L", dir .. "/R")))
+  assert_eq(unnamed_count(), before, "Folder diff wipes the empty buffer of its tab")
+  folder_session:close()
+
+  local merge_session = assert((db.merge_files({
+    base = dir .. "/base",
+    left = dir .. "/L/x.txt",
+    right = dir .. "/R/x.txt",
+    output = dir .. "/output",
+  })))
+  assert_eq(unnamed_count(), before, "Merge wipes the empty buffer of its tab")
+  merge_session:close()
+
+  local keep = vim.fn.bufadd(dir .. "/base")
+  vim.fn.bufload(keep)
+  local group = vim.api.nvim_create_augroup("diffbandit_spec_open_tab", {})
+  vim.api.nvim_create_autocmd("TabNewEntered", {
+    group = group,
+    callback = function()
+      vim.api.nvim_set_current_buf(keep)
+    end,
+  })
+  local guarded = assert((db.files(dir .. "/L/x.txt", dir .. "/R/x.txt")))
+  vim.api.nvim_del_augroup_by_id(group)
+  assert_eq(vim.api.nvim_buf_is_valid(keep), true, "A buffer an autocmd put in the new tab is not wiped")
+  guarded:close()
+  vim.api.nvim_buf_delete(keep, { force = true })
+end
