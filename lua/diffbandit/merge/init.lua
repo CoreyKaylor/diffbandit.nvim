@@ -343,7 +343,7 @@ function Merge.start(data, config, opts)
   self.result_header_buf = self.status_enabled and make_gutter_buffer() or nil
   self.remote_header_buf = self.status_enabled and make_gutter_buffer() or nil
 
-  vim.cmd("tabnew")
+  nvim.open_tab()
   self.tabpage = vim.api.nvim_get_current_tabpage()
   if self.panel_enabled then
     self.panel = {

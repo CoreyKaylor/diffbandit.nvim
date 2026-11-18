@@ -16,6 +16,19 @@ function M.notify_warn(msg, prefix)
   notify(msg, vim.log.levels.WARN, prefix)
 end
 
+-- Open a new tab for a view and wipe the empty buffer :tabnew made once the
+-- view replaces it. An autocmd (a dashboard, a session plugin) can put another
+-- buffer in the new tab, so only an unnamed, unmodified normal buffer is wiped.
+function M.open_tab()
+  vim.cmd("tabnew")
+  local buf = vim.api.nvim_get_current_buf()
+  if vim.api.nvim_buf_get_name(buf) == ""
+      and vim.bo[buf].buftype == ""
+      and not vim.bo[buf].modified then
+    vim.bo[buf].bufhidden = "wipe"
+  end
+end
+
 function M.set_buffer_options(buf, opts)
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return

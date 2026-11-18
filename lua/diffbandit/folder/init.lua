@@ -448,7 +448,7 @@ function Folder.start(left_path, right_path, config, opts)
 end
 
 function Folder:open_layout()
-  vim.cmd("tabnew")
+  nvim.open_tab()
   self.tabpage = vim.api.nvim_get_current_tabpage()
   self.tabnr = vim.api.nvim_tabpage_get_number(self.tabpage)
 
