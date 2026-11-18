@@ -79,6 +79,83 @@ function M.disk_text(path)
   return contents
 end
 
+-- The disk text the buffer was last read from or written to. Hunk actions
+-- refuse to land on a buffer whose file changed on disk since then.
+function M.update_disk_snapshot(editable)
+  if editable and editable.path then
+    editable.disk_snapshot = M.disk_text(editable.path)
+  end
+end
+
+local function undo_tree(bufnr)
+  local ok, tree = pcall(vim.api.nvim_buf_call, bufnr, vim.fn.undotree)
+  if ok and type(tree) == "table" then
+    return tree
+  end
+  return nil
+end
+
+local function eol_state(bufnr)
+  return {
+    endofline = vim.api.nvim_get_option_value("endofline", { buf = bufnr }),
+    fixendofline = vim.api.nvim_get_option_value("fixendofline", { buf = bufnr }),
+  }
+end
+
+local function set_eol_state(bufnr, wanted)
+  for name, value in pairs(wanted) do
+    if vim.api.nvim_get_option_value(name, { buf = bufnr }) ~= value then
+      vim.api.nvim_set_option_value(name, value, { buf = bufnr })
+    end
+  end
+end
+
+-- 'endofline' and 'fixendofline' are not part of undo history. A hunk action
+-- that changes them records the undo state it created, so undo/redo of that
+-- text change can bring the options along (see sync_eol_state).
+function M.set_eol_state_for_change(editable, bufnr, wanted)
+  local before = eol_state(bufnr)
+  local tree = undo_tree(bufnr)
+  set_eol_state(bufnr, wanted)
+  if not (editable and tree and tree.seq_cur) then
+    return
+  end
+  editable.eol_changes = editable.eol_changes or {}
+  table.insert(editable.eol_changes, { seq = tree.seq_cur, before = before, after = eol_state(bufnr) })
+end
+
+-- Make the buffer's end-of-line options match the undo state it is in. A
+-- recorded change is in effect when its undo entry is on the current branch
+-- (top level of undotree().entries) at or before seq_cur.
+function M.sync_eol_state(editable, bufnr)
+  local changes = editable and editable.eol_changes
+  if not (changes and #changes > 0 and bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    return
+  end
+  local tree = undo_tree(bufnr)
+  if not tree then
+    return
+  end
+  local on_branch = {}
+  for _, entry in ipairs(tree.entries or {}) do
+    on_branch[entry.seq] = true
+  end
+  local seq_cur = tonumber(tree.seq_cur) or 0
+  -- Undo newest first so each change restores what it replaced, then
+  -- re-apply the ones still in effect oldest first.
+  for index = #changes, 1, -1 do
+    local change = changes[index]
+    if not (on_branch[change.seq] and change.seq <= seq_cur) then
+      set_eol_state(bufnr, change.before)
+    end
+  end
+  for _, change in ipairs(changes) do
+    if on_branch[change.seq] and change.seq <= seq_cur then
+      set_eol_state(bufnr, change.after)
+    end
+  end
+end
+
 function M.source_from_file_or_buffer(path, label, metadata, fallback_reader)
   local bufnr = M.find_loaded_buffer(path)
   if bufnr then

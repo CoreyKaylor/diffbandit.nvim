@@ -589,7 +589,12 @@ function Session:setup_autocmds()
           if self.disposed then
             return
           end
+          -- Undo/redo of a hunk action brings its 'endofline' change along.
+          document.sync_eol_state(self[side] and self[side].editable, bufnr)
 
+          -- Undo records the post-undo changedtick; only suppress TextChanged
+          -- when the tick still matches (if TextChanged never fires, a later
+          -- real edit has a new tick and must not be swallowed).
           local ticks = self.suppress_editable_textchanged_ticks or {}
           local suppress_tick = ticks[side]
           if suppress_tick ~= nil then
@@ -627,8 +632,24 @@ function Session:setup_autocmds()
             return
           end
 
-          source.editable.disk_snapshot = document.disk_text(source.editable.path)
+          document.update_disk_snapshot(self[side] and self[side].editable)
           self:request_editable_side_refresh(side)
+        end,
+      })
+      -- :e, :checktime and autoread re-read the file: the buffer matches disk
+      -- again, so hunk actions may land on it. The read also resets
+      -- 'endofline' from the file, so earlier hunk-action records are void.
+      vim.api.nvim_create_autocmd("BufReadPost", {
+        group = augroup,
+        buffer = bufnr,
+        callback = function()
+          local editable = self[side] and self[side].editable
+          if self.disposed or not editable then
+            return
+          end
+          document.update_disk_snapshot(editable)
+          editable.eol_changes = nil
+          self:refresh_editable_side(side)
         end,
       })
     end
@@ -881,14 +902,17 @@ function Session:request_overview_render()
   end, delay)
 end
 
--- Re-diff after either editable file buffer changes.
+-- Immediate re-diff after an editable side's text changed (also used after
+-- undo). request_editable_side_refresh() is the debounced form for typing.
 function Session:refresh_editable_side(side)
   local source = self[side]
   if self.disposed or not (source and source.editable) then
     return
   end
 
+  -- Cancel any armed debounce so the deferred callback does not re-diff again.
   ui.cancel_schedule_once(self, "editable_" .. side .. "_refresh_scheduled")
+  document.sync_eol_state(source.editable, self[side .. "_buf"])
   document.refresh_source_from_editable(source)
   self:replace_sources({ left = self.left, right = self.right }, {
     preserve_view = true,
@@ -910,6 +934,8 @@ function Session:request_editable_side_refresh(side)
 
   local ui_cfg = config_mod.section(self.config, "ui")
   local delay = tonumber(ui_cfg.edit_refresh_debounce_ms) or 150
+  -- Restart the timer on each keystroke so a sustained edit burst only
+  -- re-diffs after idle (schedule_once would fire mid-stream).
   ui.reschedule_once(self, "editable_" .. side .. "_refresh_scheduled", function()
     self:refresh_editable_side(side)
   end, delay)

@@ -214,7 +214,10 @@ function M.files(left_path, right_path, opts)
   local config = state.get_config()
   local left_source, left_err
 
-  if opts.editable_left then
+  -- The same file on both sides would share one buffer between the panes;
+  -- keep the left a read-only snapshot then.
+  local same_file = document.normalize_path(left_path) == document.normalize_path(right_path)
+  if opts.editable_left and not same_file then
     left_source, left_err = document.source_from_file_or_buffer(left_path, opts.left_label, {
       editable = { target = "file" },
     }, function()

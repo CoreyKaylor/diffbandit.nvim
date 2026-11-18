@@ -169,4 +169,81 @@ do
     )
     vim.api.nvim_buf_delete(session.left_buf, { force = true })
   end
+
+  -- Reloading a file that changed on disk clears the conflict, in the default
+  -- view (right side) and with the opt-in left side.
+  do
+    local left_path, right_path = file_pair(
+      "reload-right",
+      "one\nleft\nthree\n",
+      "one\nright\nthree\n"
+    )
+    local session = assert(api.files(left_path, right_path))
+
+    write(right_path, "one\nright\nthree\nfour\n")
+    assert_eq((actions_mod.apply_left(session)), false, "stale right buffer blocks forward transfer")
+    vim.api.nvim_buf_call(session.right_buf, function()
+      vim.cmd("silent edit!")
+    end)
+    local applied, apply_err = actions_mod.apply_left(session)
+    assert_eq(applied, true, "reloaded right buffer accepts forward transfer: " .. tostring(apply_err))
+
+    session:close()
+    vim.api.nvim_buf_delete(session.right_buf, { force = true })
+  end
+
+  do
+    local left_path, right_path = file_pair(
+      "reload-left",
+      "one\nleft\nthree\n",
+      "one\nright\nthree\n"
+    )
+    local session = assert(api.files(left_path, right_path, { editable_left = true }))
+
+    write(left_path, "one\nleft\nthree\nfour\n")
+    assert_eq((actions_mod.apply_right(session)), false, "stale left buffer blocks reverse transfer")
+    vim.api.nvim_buf_call(session.left_buf, function()
+      vim.cmd("silent edit!")
+    end)
+    local applied, apply_err = actions_mod.apply_right(session)
+    assert_eq(applied, true, "reloaded left buffer accepts reverse transfer: " .. tostring(apply_err))
+
+    session:close()
+    vim.api.nvim_buf_delete(session.left_buf, { force = true })
+  end
+
+  -- Undoing a hunk that changed the final newline restores 'endofline', so a
+  -- save after undo writes the original bytes; redo brings the change back.
+  do
+    local left_path, right_path = file_pair("eol-undo", "one\nleft\n", "one\nright")
+    local session = assert(api.files(left_path, right_path, { editable_left = true }))
+
+    assert_eq((actions_mod.apply_right(session)), true, "end-of-file hunk applies to left")
+    assert_eq(vim.bo[session.left_buf].endofline, false, "hunk carries the missing final newline")
+
+    vim.api.nvim_set_current_win(session.left_win)
+    session:undo_edit_or_action()
+    assert_eq(vim.bo[session.left_buf].endofline, true, "undo restores endofline")
+    vim.cmd("silent write")
+    assert_eq(read(left_path), "one\nleft\n", "save after undo keeps the final newline")
+
+    vim.cmd("silent redo")
+    session:refresh_editable_side("left")
+    assert_eq(vim.bo[session.left_buf].endofline, false, "redo re-applies the missing final newline")
+    vim.cmd("silent write")
+    assert_eq(read(left_path), "one\nright", "save after redo matches the source")
+
+    session:close()
+  end
+
+  -- A file diffed against itself keeps one editable buffer, on the right.
+  do
+    local left_path = file_pair("same", "one\n", "one\n")
+    local session = assert(api.files(left_path, left_path, { editable_left = true }))
+
+    assert_eq(session.left_buf ~= session.right_buf, true, "panes do not share a buffer")
+    assert_eq(vim.bo[session.left_buf].modifiable, false, "left stays read-only")
+
+    session:close()
+  end
 end

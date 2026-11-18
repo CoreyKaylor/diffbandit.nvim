@@ -529,8 +529,11 @@ local function is_git_session(session)
   return queue ~= nil and queue.kind == "git"
 end
 
--- Non-Git file actions edit a real buffer. The right side is editable by
--- default; the left side is editable only when the caller opts in.
+-- Outside a repository (two-file views, and the diff editor behind
+-- `diffbandit edit`, used by jj split / squash -i) an editable pane is a plain
+-- file buffer: the hunk is written into it as an ordinary edit, so `u` undoes
+-- it and :w saves. The right side is editable by default; the left side only
+-- when the caller opts in (files(..., { editable_left = true })).
 local function apply_to_editable_side(session, target_side)
   local target = target_side == "left" and session.left or session.right
   local bufnr = target_side == "left" and session.left_buf or session.right_buf
@@ -540,9 +543,10 @@ local function apply_to_editable_side(session, target_side)
 
   local disk_snapshot = target.editable.disk_snapshot
   if disk_snapshot ~= nil and document.disk_text(target.editable.path) ~= disk_snapshot then
-    return false, "target changed outside DiffBandit; refresh before applying this hunk"
+    return false, "the " .. target_side .. " file changed on disk; reload it (:e) before applying this hunk"
   end
 
+  -- A pending debounced re-diff would leave the hunk ranges behind the text.
   local current = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   if not vim.deep_equal(current, target.lines or {}) then
     session:refresh_editable_side(target_side)
@@ -574,10 +578,13 @@ local function apply_to_editable_side(session, target_side)
   vim.api.nvim_buf_set_lines(bufnr, first, last, false, replacement)
 
   if reaches_end then
-    vim.api.nvim_set_option_value("endofline", source.eol ~= false, { buf = bufnr })
+    -- The copied tail carries the source's final-newline state. Recorded
+    -- against this undo step so `u` restores the options with the text.
+    local wanted = { endofline = source.eol ~= false }
     if source.eol == false then
-      vim.api.nvim_set_option_value("fixendofline", false, { buf = bufnr })
+      wanted.fixendofline = false
     end
+    document.set_eol_state_for_change(target.editable, bufnr, wanted)
   end
 
   session.suppress_editable_textchanged_ticks = session.suppress_editable_textchanged_ticks or {}
