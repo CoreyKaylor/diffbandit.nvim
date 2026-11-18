@@ -89,7 +89,7 @@ end
 -- Name the non-editable source panes after their sources. Editable right
 -- panes are the real file buffer and keep their own name.
 function M.name_source_buffers(session)
-  if session.left then
+  if session.left and not session.left.editable then
     set_scratch_name(session.left_buf, source_buffer_name(session.left, "left"))
   end
   if session.right and not session.right.editable then
@@ -99,7 +99,20 @@ end
 
 local function create_buffers(session)
   -- Create buffers with basic options first (avoid bufhidden=wipe until in windows)
-  local left_buf = vim.api.nvim_create_buf(false, true)
+  local left_buf
+  if session.left.editable then
+    local acquired, acquire_err = document.acquire_buffer(session.left.editable)
+    if acquired then
+      left_buf = acquired
+      document.refresh_source_from_editable(session.left)
+    else
+      nvim.notify_warn(tostring(acquire_err))
+      session.left.editable = nil
+      session.preserve_left_buffer_lines = false
+    end
+  end
+  left_buf = left_buf or vim.api.nvim_create_buf(false, true)
+
   local left_overview_buf = session.overview_enabled and vim.api.nvim_create_buf(false, true) or nil
   local left_num_buf = vim.api.nvim_create_buf(false, true)
   local connector_buf = vim.api.nvim_create_buf(false, true)
@@ -118,6 +131,7 @@ local function create_buffers(session)
     end
   end
   right_buf = right_buf or vim.api.nvim_create_buf(false, true)
+
   local left_header_buf = session.status_enabled and vim.api.nvim_create_buf(false, true) or nil
   local center_header_buf = session.status_enabled and vim.api.nvim_create_buf(false, true) or nil
   local right_header_buf = session.status_enabled and vim.api.nvim_create_buf(false, true) or nil
@@ -153,12 +167,16 @@ local function create_buffers(session)
   end
 
   -- Set non-destructive options first
-  set_buffer_options(left_buf, {
-    buftype = "nofile",
-    swapfile = false,
-    modifiable = false,
-    filetype = session.left.filetype,
-  })
+  if session.left.editable then
+    set_buffer_options(left_buf, { modifiable = true, filetype = session.left.filetype })
+  else
+    set_buffer_options(left_buf, {
+      buftype = "nofile",
+      swapfile = false,
+      modifiable = false,
+      filetype = session.left.filetype,
+    })
+  end
 
   if session.right.editable then
     set_buffer_options(right_buf, {
@@ -343,6 +361,17 @@ local function winbar_spec(session)
   }
 end
 
+local function apply_left_source_window_options(session)
+  local hidden = session.overview_enabled
+  local highlight = hidden and layout.winhl.hidden_source or layout.winhl.source
+  local options = layout.win_opts.source(highlight, {
+    signcolumn = session.left.editable and "auto" or "no",
+    fillchars = hidden and layout.hidden_separator_fillchars() or nil,
+  })
+
+  set_window_options(session.left_win, options)
+end
+
 local function apply_right_source_window_options(session)
   local hidden = session.overview_enabled
   set_window_options(session.right_win, layout.win_opts.source(hidden and layout.winhl.hidden_source or layout.winhl.source, {
@@ -353,7 +382,11 @@ local function apply_right_source_window_options(session)
 end
 
 local function apply_window_options(session)
-  set_window_options(session.left_win, layout.win_opts.source())
+  if session.left.editable then
+    apply_left_source_window_options(session)
+  else
+    set_window_options(session.left_win, layout.win_opts.source())
+  end
 
   for _, win in ipairs({ session.left_overview_win, session.right_overview_win }) do
     if win then
@@ -411,6 +444,7 @@ local function finalize_bufhidden(session)
       set_buffer_options(buf, { bufhidden = "wipe" })
     end
   end
+  set_buffer_options(session.left_buf, { bufhidden = session.left.editable and "hide" or "wipe" })
   set_buffer_options(session.right_buf, { bufhidden = session.right.editable and "hide" or "wipe" })
   if session.panel then
     for _, buf in ipairs({ session.panel.nav_buf, session.panel.commit_buf }) do
@@ -428,7 +462,11 @@ local function set_initial_focus(session)
   if session.panel_enabled and (config_mod.section(session.config, "git", "panel").focus_on_open or "panel") == "panel" then
     initial_win = session.panel.nav_win
   end
-  document.ensure_syntax_features(session.left_buf, session.left.filetype)
+  if session.left.editable then
+    document.ensure_language_features(session.left_buf, session.left.filetype)
+  else
+    document.ensure_syntax_features(session.left_buf, session.left.filetype)
+  end
   if session.right.editable then
     document.ensure_language_features(session.right_buf, session.right.filetype)
   else
@@ -442,6 +480,10 @@ local function set_initial_focus(session)
   local right_name = session.right.label or session.right.path or ""
   session.title = string.format("DiffBandit: %s ↔ %s", left_name, right_name)
   vim.api.nvim_tabpage_set_var(session.tabpage, "diffbandit_title", session.title)
+end
+
+function M.apply_left_source_window_options(session)
+  apply_left_source_window_options(session)
 end
 
 function M.apply_right_source_window_options(session)

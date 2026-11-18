@@ -141,6 +141,7 @@ function Session.start(sources, config, opts)
   self.panel_amend = opts.panel_amend == true
   self.normal_queue_opts = opts.panel_normal_queue_opts or (self.file_queue and self.file_queue.normal_opts)
   self.return_to = opts.return_to
+  self.preserve_left_buffer_lines = self.left.editable ~= nil
   self.preserve_right_buffer_lines = self.right.editable ~= nil
   self.suppress_right_context_highlights = self.right.editable ~= nil
 
@@ -348,7 +349,7 @@ function Session:setup_autocmds()
   vim.api.nvim_create_autocmd("DiagnosticChanged", {
     group = augroup,
     callback = function(event)
-      if self.disposed or event.buf ~= self.right_buf then
+      if self.disposed or (event.buf ~= self.right_buf and event.buf ~= self.left_buf) then
         return
       end
       -- Band rows mirror diagnostic glyphs in the sign column, so any
@@ -403,6 +404,9 @@ function Session:setup_autocmds()
       end
       local win = vim.api.nvim_get_current_win()
       if win == self.left_win then
+        if self.left and self.left.editable then
+          document.ensure_language_features(self.left_buf, self.left.filetype)
+        end
         self.last_source_win = self.left_win
         self.last_source_side = "left"
       elseif win == self.right_win then
@@ -565,67 +569,90 @@ function Session:setup_autocmds()
     callback = reassert_source_maps,
   })
 
-  if self.right and self.right.editable then
-    vim.api.nvim_create_autocmd("BufEnter", {
-      group = augroup,
-      buffer = self.right_buf,
-      callback = function()
-        if self.disposed then
-          return
-        end
-        document.ensure_language_features(self.right_buf, self.right.filetype)
-      end,
-    })
-    vim.api.nvim_create_autocmd("TextChanged", {
-      group = augroup,
-      buffer = self.right_buf,
-      callback = function()
-        if self.disposed then
-          return
-        end
-        -- Undo records the post-undo changedtick; only suppress TextChanged
-        -- when the tick still matches (if TextChanged never fires, a later
-        -- real edit has a new tick and must not be swallowed).
-        local suppress_tick = self.suppress_editable_textchanged_tick
-        if suppress_tick ~= nil then
-          self.suppress_editable_textchanged_tick = nil
-          if vim.api.nvim_buf_get_changedtick(self.right_buf) == suppress_tick then
+  for _, side in ipairs({ "left", "right" }) do
+    local source = self[side]
+    local bufnr = self[side .. "_buf"]
+    if source and source.editable then
+      vim.api.nvim_create_autocmd("BufEnter", {
+        group = augroup,
+        buffer = bufnr,
+        callback = function()
+          if not self.disposed then
+            document.ensure_language_features(bufnr, source.filetype)
+          end
+        end,
+      })
+      vim.api.nvim_create_autocmd("TextChanged", {
+        group = augroup,
+        buffer = bufnr,
+        callback = function()
+          if self.disposed then
             return
           end
-        end
-        self:request_editable_right_refresh()
-      end,
-    })
-    vim.api.nvim_create_autocmd("TextChangedI", {
-      group = augroup,
-      buffer = self.right_buf,
-      callback = function()
-        if self.disposed then
-          return
-        end
-        document.refresh_source_from_editable(self.right)
-      end,
-    })
-    vim.api.nvim_create_autocmd("InsertLeave", {
-      group = augroup,
-      buffer = self.right_buf,
-      callback = function()
-        if self.disposed then
-          return
-        end
-        self:request_editable_right_refresh()
-      end,
-    })
-    vim.api.nvim_create_autocmd("BufWritePost", {
-      group = augroup,
-      buffer = self.right_buf,
-      callback = function()
-        if self.disposed then
-          return
-        end
-        self:request_editable_right_refresh()
-      end,
-    })
+          -- Undo/redo of a hunk action brings its 'endofline' change along.
+          document.sync_eol_state(self[side] and self[side].editable, bufnr)
+
+          -- Undo records the post-undo changedtick; only suppress TextChanged
+          -- when the tick still matches (if TextChanged never fires, a later
+          -- real edit has a new tick and must not be swallowed).
+          local ticks = self.suppress_editable_textchanged_ticks or {}
+          local suppress_tick = ticks[side]
+          if suppress_tick ~= nil then
+            ticks[side] = nil
+            if vim.api.nvim_buf_get_changedtick(bufnr) == suppress_tick then
+              return
+            end
+          end
+          self:request_editable_side_refresh(side)
+        end,
+      })
+      vim.api.nvim_create_autocmd("TextChangedI", {
+        group = augroup,
+        buffer = bufnr,
+        callback = function()
+          if not self.disposed then
+            document.refresh_source_from_editable(source)
+          end
+        end,
+      })
+      vim.api.nvim_create_autocmd("InsertLeave", {
+        group = augroup,
+        buffer = bufnr,
+        callback = function()
+          if not self.disposed then
+            self:request_editable_side_refresh(side)
+          end
+        end,
+      })
+      vim.api.nvim_create_autocmd("BufWritePost", {
+        group = augroup,
+        buffer = bufnr,
+        callback = function()
+          if self.disposed then
+            return
+          end
+
+          document.update_disk_snapshot(self[side] and self[side].editable)
+          self:request_editable_side_refresh(side)
+        end,
+      })
+      -- :e, :checktime and autoread re-read the file: the buffer matches disk
+      -- again, so hunk actions may land on it. The read also resets
+      -- 'endofline' from the file, so earlier hunk-action records are void.
+      vim.api.nvim_create_autocmd("BufReadPost", {
+        group = augroup,
+        buffer = bufnr,
+        callback = function()
+          local editable = self[side] and self[side].editable
+          if self.disposed or not editable then
+            return
+          end
+          document.update_disk_snapshot(editable)
+          editable.eol_changes = nil
+          self:refresh_editable_side(side)
+        end,
+      })
+    end
   end
 end
 
@@ -724,7 +751,8 @@ function Session:setup_keymaps()
       end, "Copy the right side of the hunk to the left")
     end
     if action_keys.undo then
-      if buf == self.right_buf and self.right and self.right.editable then
+      if (buf == self.right_buf and self.right and self.right.editable)
+          or (buf == self.left_buf and self.left and self.left.editable) then
         map(buf, action_keys.undo, function()
           self:undo_edit_or_action()
         end, "Staging and actions", "Undo the last edit or hunk action")
@@ -874,18 +902,19 @@ function Session:request_overview_render()
   end, delay)
 end
 
--- Immediate re-diff after editable right text changed (also used after undo).
-function Session:refresh_editable_right()
-  if self.disposed or not (self.right and self.right.editable) then
+-- Immediate re-diff after an editable side's text changed (also used after
+-- undo). request_editable_side_refresh() is the debounced form for typing.
+function Session:refresh_editable_side(side)
+  local source = self[side]
+  if self.disposed or not (source and source.editable) then
     return
   end
+
   -- Cancel any armed debounce so the deferred callback does not re-diff again.
-  ui.cancel_schedule_once(self, "editable_right_refresh_scheduled")
-  document.refresh_source_from_editable(self.right)
-  self:replace_sources({
-    left = self.left,
-    right = self.right,
-  }, {
+  ui.cancel_schedule_once(self, "editable_" .. side .. "_refresh_scheduled")
+  document.sync_eol_state(source.editable, self[side .. "_buf"])
+  document.refresh_source_from_editable(source)
+  self:replace_sources({ left = self.left, right = self.right }, {
     preserve_view = true,
     chunk_position = "preserve",
     preferred_chunk = self.current_chunk,
@@ -893,22 +922,27 @@ function Session:refresh_editable_right()
   })
 end
 
--- Debounced re-diff for typing (TextChanged). Undo / InsertLeave can call
--- refresh_editable_right() for an immediate model rebuild.
-function Session:request_editable_right_refresh()
-  if self.disposed or not (self.right and self.right.editable) then
+function Session:refresh_editable_right()
+  return self:refresh_editable_side("right")
+end
+
+function Session:request_editable_side_refresh(side)
+  local source = self[side]
+  if self.disposed or not (source and source.editable) then
     return
   end
+
   local ui_cfg = config_mod.section(self.config, "ui")
-  local delay = tonumber(ui_cfg.edit_refresh_debounce_ms)
-  if delay == nil then
-    delay = 150
-  end
+  local delay = tonumber(ui_cfg.edit_refresh_debounce_ms) or 150
   -- Restart the timer on each keystroke so a sustained edit burst only
   -- re-diffs after idle (schedule_once would fire mid-stream).
-  ui.reschedule_once(self, "editable_right_refresh_scheduled", function()
-    self:refresh_editable_right()
+  ui.reschedule_once(self, "editable_" .. side .. "_refresh_scheduled", function()
+    self:refresh_editable_side(side)
   end, delay)
+end
+
+function Session:request_editable_right_refresh()
+  return self:request_editable_side_refresh("right")
 end
 
 -- Validated topline of a source pane (line("w0") settles a pending scroll).
@@ -1367,7 +1401,9 @@ function Session:dispose()
   panel_mod.delete_buffers(self)
   -- Editable right reuses the user's buffer; without this, band/intraline
   -- extmarks stay visible after q returns to that buffer (issue #5).
+  self:clear_buffer_paint_namespaces(self.left_buf)
   self:clear_buffer_paint_namespaces(self.right_buf)
+  document.cleanup_created_buffer(self.left and self.left.editable)
   document.cleanup_created_buffer(self.right and self.right.editable)
   state.unregister(self.tabpage)
   if self.autocmd_group then
@@ -1494,6 +1530,15 @@ end
 function Session:replace_sources(sources, opts)
   opts = opts or {}
   self:clear_keymaps()
+  if sources and sources.left and sources.left.editable then
+    local acquired, acquire_err = document.acquire_buffer(sources.left.editable)
+    if acquired then
+      document.refresh_source_from_editable(sources.left)
+    else
+      nvim.notify_warn(tostring(acquire_err))
+      sources.left.editable = nil
+    end
+  end
   if sources and sources.right and sources.right.editable then
     local acquired, acquire_err = document.acquire_buffer(sources.right.editable)
     if acquired then
@@ -1522,7 +1567,9 @@ function Session:replace_sources(sources, opts)
     and self.hunks
     and self.view
   local same_document = same_live
-  if same_live and sources.right and sources.right.editable then
+  local has_editable_source = same_live
+    and ((sources.left and sources.left.editable) or (sources.right and sources.right.editable))
+  if has_editable_source then
     same_document = diff_document.same_identity(self, sources, self.config)
   end
   if same_document then
@@ -1541,14 +1588,43 @@ function Session:replace_sources(sources, opts)
   end
   self.chunk_not_reached = false
 
+  local old_left_editable = self.left and self.left.editable
+  local old_left_buf = self.left_buf
   local old_right_editable = self.right and self.right.editable
   local old_right_buf = self.right_buf
   local previous_replacing_sources = self.replacing_sources
   self.replacing_sources = true
   self.left = sources.left
   self.right = sources.right
+  self.preserve_left_buffer_lines = self.left.editable ~= nil
   self.preserve_right_buffer_lines = self.right.editable ~= nil
   self.suppress_right_context_highlights = self.right.editable ~= nil
+
+  if self.left.editable and self.left.editable.bufnr and self.left.editable.bufnr ~= self.left_buf then
+    self.left_buf = self.left.editable.bufnr
+    if self.left_win and vim.api.nvim_win_is_valid(self.left_win) then
+      vim.api.nvim_win_set_buf(self.left_win, self.left_buf)
+      session_layout.apply_left_source_window_options(self)
+    end
+  elseif not self.left.editable and old_left_editable then
+    self.left_buf = vim.api.nvim_create_buf(false, true)
+    set_buffer_options(self.left_buf, {
+      buftype = "nofile",
+      swapfile = false,
+      modifiable = false,
+      filetype = self.left.filetype,
+    })
+    if self.left_win and vim.api.nvim_win_is_valid(self.left_win) then
+      vim.api.nvim_win_set_buf(self.left_win, self.left_buf)
+      session_layout.apply_left_source_window_options(self)
+    end
+    set_buffer_options(self.left_buf, { bufhidden = "wipe" })
+  end
+  if old_left_buf ~= self.left_buf then
+    self:clear_buffer_paint_namespaces(old_left_buf)
+    document.cleanup_created_buffer(old_left_editable)
+  end
+
   if self.right.editable and self.right.editable.bufnr and self.right.editable.bufnr ~= self.right_buf then
     self.right_buf = self.right.editable.bufnr
     if self.right_win and vim.api.nvim_win_is_valid(self.right_win) then
@@ -1586,9 +1662,16 @@ function Session:replace_sources(sources, opts)
   self:reset_pending_file_boundary()
   self.staged_chunk_states = actions.staged_chunk_states(self)
 
-  set_buffer_options(self.left_buf, { filetype = self.left.filetype })
+  set_buffer_options(self.left_buf, {
+    filetype = self.left.filetype,
+    modifiable = self.left.editable ~= nil,
+  })
   set_buffer_options(self.right_buf, { filetype = self.right.filetype, modifiable = true })
-  document.ensure_syntax_features(self.left_buf, self.left.filetype)
+  if self.left.editable then
+    document.ensure_language_features(self.left_buf, self.left.filetype)
+  else
+    document.ensure_syntax_features(self.left_buf, self.left.filetype)
+  end
   if self.right.editable then
     document.ensure_language_features(self.right_buf, self.right.filetype)
   else
@@ -2400,8 +2483,11 @@ local function buffer_undo_seq(bufnr)
 end
 
 function Session:undo_edit_or_action()
-  if self.right and self.right.editable and vim.api.nvim_get_current_buf() == self.right_buf then
-    local undo_seq = buffer_undo_seq(self.right_buf)
+  local side = vim.api.nvim_get_current_buf() == self.left_buf and "left" or "right"
+  local source = self[side]
+  local bufnr = self[side .. "_buf"]
+  if source and source.editable and vim.api.nvim_get_current_buf() == bufnr then
+    local undo_seq = buffer_undo_seq(bufnr)
     local action_entry = actions.latest_undo(self)
     if action_entry
         and undo_seq ~= nil
@@ -2410,14 +2496,15 @@ function Session:undo_edit_or_action()
       self:undo_action()
       return
     end
-    if buffer_has_undo(self.right_buf) then
-      local before_tick = vim.api.nvim_buf_get_changedtick(self.right_buf)
+    if buffer_has_undo(bufnr) then
+      local before_tick = vim.api.nvim_buf_get_changedtick(bufnr)
       local ok = pcall(vim.cmd, "silent undo")
-      if ok and vim.api.nvim_buf_get_changedtick(self.right_buf) ~= before_tick then
+      if ok and vim.api.nvim_buf_get_changedtick(bufnr) ~= before_tick then
         -- Record post-undo tick before re-diff so the TextChanged that follows
         -- undo is a no-op; a later real edit advances the tick and is not swallowed.
-        self.suppress_editable_textchanged_tick = vim.api.nvim_buf_get_changedtick(self.right_buf)
-        self:refresh_editable_right()
+        self.suppress_editable_textchanged_ticks = self.suppress_editable_textchanged_ticks or {}
+        self.suppress_editable_textchanged_ticks[side] = vim.api.nvim_buf_get_changedtick(bufnr)
+        self:refresh_editable_side(side)
         return
       end
     elseif not self.file_queue then

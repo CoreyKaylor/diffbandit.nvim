@@ -755,6 +755,18 @@ LUA API                                              *diffbandit-lua-api*
   diffbandit.apply_right_hunk()
   diffbandit.undo()
 <
+                                                *diffbandit-editable-left*
+In a two-file view (|diffbandit-lua-api| `files()`) the right pane is the real
+file buffer: `>>` copies the current hunk into it as an ordinary edit, `u`
+undoes it and `:w` saves. Pass `{ editable_left = true }` to make the left
+pane the real file buffer too, so `<<` copies the current right hunk into it:
+>
+  diffbandit.files("source.txt", "live.txt", { editable_left = true })
+<
+Each action changes only its target buffer; unsaved buffers survive closing
+the view. If a file changes on disk after it was read, hunk actions into it
+stop until you reload it (|:edit|). Diffing a file against itself keeps the
+left side read-only. Git diff sessions are not affected.
 
 ==============================================================================
 TESTING                                              *diffbandit-testing*
