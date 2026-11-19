@@ -2,7 +2,9 @@
 -- is not installed.
 
 if vim.fn.executable("jj") ~= 1 then
-  print("SKIP jj specs: jj is not installed")
+  -- Straight to stderr: print() goes through the message area, which earlier
+  -- specs can silence, and tests/run_all.lua must see the skip.
+  io.stderr:write("\nSKIP jj specs: jj is not installed\n")
 else
   local vcs = require("diffbandit.vcs")
   local jj_mod = require("diffbandit.jj")

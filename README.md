@@ -1067,6 +1067,11 @@ The first run fetches [mini.test](https://github.com/nvim-mini/mini.test)
 into `deps/` (`tests/deps.sh`). `DIFFBANDIT_TESTS=scroll,git` runs only the
 matching jobs; `DIFFBANDIT_JOBS=N` sets the worker count.
 
+Some cases need [jj](https://github.com/jj-vcs/jj) or
+[lua-language-server](https://github.com/LuaLS/lua-language-server) on
+`PATH` and skip without them. Skipped cases are listed in the summary; with
+`CI` set, or `DIFFBANDIT_NO_SKIP=1`, a skip fails the run.
+
 The integration tests (`tests/integration/test_*.lua`) drive headless child
 Neovim instances and read the drawn screen cell by cell, including colors, so
 they verify connector geometry, backgrounds, underline spans, Git actions,

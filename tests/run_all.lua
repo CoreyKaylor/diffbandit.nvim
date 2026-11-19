@@ -11,6 +11,7 @@
 --   DIFFBANDIT_SPECS=20,45   run only these unit specs, as one "unit" job
 --   DIFFBANDIT_JOB_TIMEOUT   per-job timeout in seconds (default 180)
 --   DIFFBANDIT_KEEP=1        keep the artifacts directory even when green
+--   DIFFBANDIT_NO_SKIP=1     fail on skipped cases (always on when CI is set)
 local uv = vim.uv or vim.loop
 
 local source = debug.getinfo(1, "S").source:gsub("^@", "")
@@ -119,6 +120,10 @@ while finished < #jobs do
   fill()
 end
 
+-- A skipped case finds no regressions, so CI fails on one instead of going
+-- green; locally a missing tool (jj, lua-language-server) only warns.
+local require_all = vim.env.DIFFBANDIT_NO_SKIP == "1" or (vim.env.CI or "") ~= ""
+
 local failures = {}
 for _, job in ipairs(jobs) do
   local r = job.result
@@ -146,6 +151,24 @@ for _, job in ipairs(jobs) do
       job.note = string.format("%d of %s collected cases reported a result", reported, tostring(total))
     end
   end
+  -- Skips pass the job, so they would otherwise go unseen: unit specs print
+  -- "SKIP <reason>" (often mid-line, after a message Neovim wrote without a
+  -- newline), mini.test reports MiniTest.skip as a "NOTE in" line.
+  job.skips = {}
+  local plain = strip_ansi(out)
+  for reason in plain:gmatch("%f[%w]SKIP ([^\n]+)") do
+    job.skips[#job.skips + 1] = reason
+  end
+  for line in plain:gmatch("[^\n]+") do
+    local reason = line:match("^NOTE in (.+)")
+    if reason then
+      job.skips[#job.skips + 1] = reason
+    end
+  end
+  if ok and #job.skips > 0 and require_all then
+    ok = false
+    job.note = "skipped cases are not allowed here (CI or DIFFBANDIT_NO_SKIP=1)"
+  end
   job.ok = ok
   if not ok then
     failures[#failures + 1] = job
@@ -153,9 +176,16 @@ for _, job in ipairs(jobs) do
 end
 
 local total_s = (uv.hrtime() - started_at) / 1e9
+local skipped = 0
 for _, job in ipairs(jobs) do
-  local status = job.ok and "ok  " or (job.result.signal == 15 or job.result.code == 124) and "TIME" or "FAIL"
+  local status = job.ok and (#job.skips > 0 and "SKIP" or "ok  ")
+    or (job.result.signal == 15 or job.result.code == 124) and "TIME"
+    or "FAIL"
   io.stdout:write(string.format("%s %-22s %6.1fs\n", status, job.name, job.ms / 1000))
+  for _, reason in ipairs(job.skips) do
+    io.stdout:write("       skipped: " .. reason .. "\n")
+  end
+  skipped = skipped + #job.skips
 end
 
 for _, job in ipairs(failures) do
@@ -166,7 +196,8 @@ for _, job in ipairs(failures) do
   io.stdout:write((job.result.stdout or "") .. (job.result.stderr or "") .. "\n")
 end
 
-io.stdout:write(string.format("\n%d jobs, %d failed, %.1fs wall (%d workers)\n", #jobs, #failures, total_s, parallel))
+io.stdout:write(string.format("\n%d jobs, %d failed, %d skipped, %.1fs wall (%d workers)\n",
+  #jobs, #failures, skipped, total_s, parallel))
 if #failures > 0 or vim.env.DIFFBANDIT_KEEP == "1" then
   io.stdout:write("artifacts: " .. artifacts .. "\n")
 else
