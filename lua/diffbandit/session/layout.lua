@@ -520,11 +520,6 @@ function M.open(session)
   session:resize_layout()
   finalize_bufhidden(session)
 
-  -- Set vertical split character to thin line
-  -- Global only: vim.opt would also reset the current window's local
-  -- fillchars (the hidden-separator windows set their own).
-  vim.opt_global.fillchars:append({ vert = "│" })
-
   set_initial_focus(session)
 end
 

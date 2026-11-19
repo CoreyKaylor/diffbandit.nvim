@@ -162,3 +162,57 @@ do
   vim.o.number = saved_number
   vim.fn.delete(repo, "rf")
 end
+
+-- A file a view loaded outlives the view, and Neovim gives a buffer back the
+-- window options it last had: re-showing the file after the diff closes must
+-- not bring the pane's look (padding winbar, highlights, no number column,
+-- hidden separator) into the user's window.
+do
+  local diffbandit = require("diffbandit")
+  local winbar = require("diffbandit.util.winbar")
+  local session_layout = require("diffbandit.session.layout")
+
+  local repo = make_git_repo()
+  write_repo_file(repo, "a.txt", { "a", "b", "c" })
+  write_repo_file(repo, "b.txt", { "x", "y" })
+  commit_baseline(repo)
+  write_repo_file(repo, "a.txt", { "a", "B", "c" })
+  write_repo_file(repo, "b.txt", { "x", "Y" })
+
+  local saved_number, saved_fcs = vim.o.number, vim.o.fillchars
+  vim.o.number = true
+  vim.o.fillchars = "vert:|"
+  local user_win = vim.api.nvim_get_current_win()
+
+  local session = assert(diffbandit.git({ root = repo }))
+  local first = session.right.git_relpath
+  -- A breadcrumb bar on one pane puts the blank bar on the other.
+  vim.wo[session.left_win].winbar = "crumbs"
+  winbar.align(session_layout.winbar_spec(session))
+  assert_eq(vim.wo[session.right_win].winbar, winbar.BLANK, "the right pane gets a blank bar")
+  local loaded = session.right_buf
+
+  -- Moving through the review swaps buffers in the panes; they keep their look.
+  assert(session:goto_next_file() ~= false, "the review moves to the next file")
+  assert_ne(session.right.git_relpath, first, "the review shows another file")
+  local winhl = vim.wo[session.right_win].winhighlight
+  assert(winhl:find("DiffBandit", 1, true), "a pane keeps DiffBandit's highlights across files")
+  session:close()
+
+  assert_eq(vim.api.nvim_buf_is_valid(loaded), true, "the loaded file outlives the view")
+  vim.api.nvim_set_current_win(user_win)
+  vim.cmd("buffer " .. loaded)
+  assert_eq(vim.wo.winbar, "", "the pane's blank winbar stays behind")
+  assert_eq(vim.wo.winhighlight, "", "the pane's highlights stay behind")
+  assert_eq(vim.wo.number, true, "the user's number setting comes back")
+  assert_eq(vim.wo.fillchars, "vert:|", "the user's fillchars come back")
+
+  vim.o.number, vim.o.fillchars = saved_number, saved_fcs
+  vim.cmd("enew")
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_get_name(buf):find(repo, 1, true) then
+      pcall(vim.cmd, "bwipeout! " .. buf)
+    end
+  end
+  vim.fn.delete(repo, "rf")
+end

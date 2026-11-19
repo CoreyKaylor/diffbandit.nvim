@@ -40,10 +40,13 @@ function M.set_buffer_options(buf, opts)
   end
 end
 
+-- Set window-local options on one of DiffBandit's own windows, marking it as
+-- such so its look is not reset as a leak (util/window_options).
 function M.set_window_options(win, opts)
   if not win or not vim.api.nvim_win_is_valid(win) then
     return
   end
+  require("diffbandit.util.window_options").mark(win)
   for key, value in pairs(opts or {}) do
     vim.api.nvim_set_option_value(key, value, { scope = "local", win = win })
   end

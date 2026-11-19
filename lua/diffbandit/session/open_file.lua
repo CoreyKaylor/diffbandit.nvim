@@ -10,8 +10,8 @@ local config_mod = require("diffbandit.config")
 local diff = require("diffbandit.diff")
 local view_builder = require("diffbandit.diff.view")
 local document = require("diffbandit.util.document")
-local layout = require("diffbandit.util.layout")
 local nvim = require("diffbandit.util.nvim")
+local window_options = require("diffbandit.util.window_options")
 
 local M = {}
 
@@ -112,37 +112,6 @@ function M.resolve(session, side, row)
   return { path = path, line = is_binary(session[other]) and 1 or line, exact = exact }
 end
 
--- Every window-local option DiffBandit sets on its panes and panel.
-local function diffbandit_window_options()
-  local names = { winbar = true, fillchars = true }
-  for _, opts in ipairs({ layout.win_opts.source(), layout.win_opts.panel() }) do
-    for name in pairs(opts) do
-      names[name] = true
-    end
-  end
-  return names
-end
-
--- :tabedit and :split copy the current window's options into the new window,
--- and Neovim also restores the options a buffer last had in a window: from a
--- DiffBandit pane either one carries the pane's look (highlights, no number
--- column, padding winbar) into the user's window. Put those options back to
--- the user's global values.
-local function reset_window_options(win)
-  local winhl = vim.api.nvim_get_option_value("winhighlight", { win = win })
-  if not winhl:find("DiffBandit", 1, true) then
-    return
-  end
-  vim.api.nvim_win_call(win, function()
-    for name in pairs(diffbandit_window_options()) do
-      local info = vim.api.nvim_get_option_info2(name, {})
-      -- Global-local options drop their local value; window-local ones
-      -- copy the global one.
-      pcall(vim.cmd, (info.global_local and "set " or "setlocal ") .. name .. "<")
-    end
-  end)
-end
-
 -- The pane's buffer is the user's file now: closing the diff must not delete
 -- it from under the new window.
 local function release_buffer(session, bufnr)
@@ -164,7 +133,9 @@ function M.open(session, target)
   end
   local win = vim.api.nvim_get_current_win()
   local bufnr = vim.api.nvim_get_current_buf()
-  reset_window_options(win)
+  -- :tabedit copies the pane's look (highlights, no number column, padding
+  -- winbar) into the new window; put the user's options back.
+  window_options.reset(win)
   release_buffer(session, bufnr)
   local line, exact = target.line or 1, target.exact
   if target.carry then
