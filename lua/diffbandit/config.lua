@@ -135,6 +135,10 @@ local defaults = {
     snap_key = "]s",
     close_key = "q",
     help_key = "g?",
+    -- Open the file in a new tab: from the diff at the cursor line, from the
+    -- commit panel at the active hunk. A review opens the working-tree file.
+    open_file_key = "gf",
+    open_file_cmd = "tabedit",
     prompt_message = "Reached final change in this diff. Open next file with changes?",
     on_request_next_file = nil,
   },

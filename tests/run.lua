@@ -44,6 +44,7 @@ local specs = {
   "30_session_snap.lua",
   "31_editable_left.lua",
   "32_document_cache.lua",
+  "34_open_file.lua",
   "35_render_recovery.lua",
   "40_oracle.lua",
   "45_kitty.lua",

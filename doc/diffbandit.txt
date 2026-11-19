@@ -280,6 +280,16 @@ panel or the Git log dock, they always step from the active hunk.
   ]s            Snap the other pane to the line facing the cursor line,
                 preserving the cursor's screen offset.
 
+                                                       *diffbandit-gf*
+  gf            Open the file in a new tab at the cursor line (and column).
+                A Git or jj review opens the working-tree file: a line from
+                the left pane, or from an older version (a commit opened from
+                the log, the index), is carried to the matching line of the
+                file as it is now. A deleted file has nothing to open. Set by
+                `navigation.open_file_key` (false disables it);
+                `navigation.open_file_cmd` (default "tabedit") is the command
+                that opens the file.
+
                                                         *diffbandit-C*
   C             Open or focus the commit panel for the current Git file.
 
@@ -482,6 +492,8 @@ Panel mappings:
   ]c / [c       Navigate hunks in the selected file preview.
   <Space>       Toggle staged state for the selected file.
   a             Open file actions for the selected file.
+  gf            Open the selected file in a new tab at the active hunk: the
+                first hunk, or the one ]c / [c moved to. See |diffbandit-gf|.
   cc            Focus the commit message window.
   R             Refresh the panel.
   gzp           Hide the panel, keeping the diff open.
@@ -605,6 +617,8 @@ Common configuration:
       snap_key = "]s",
       close_key = "q",
       help_key = "g?",
+      open_file_key = "gf",
+      open_file_cmd = "tabedit",
     },
     git = {
       default_mode = "all",

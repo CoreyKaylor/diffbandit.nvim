@@ -44,6 +44,7 @@ diffbandit-folder-diff	diffbandit.txt	/*diffbandit-folder-diff*
 diffbandit-g<	diffbandit.txt	/*diffbandit-g<*
 diffbandit-g>	diffbandit.txt	/*diffbandit-g>*
 diffbandit-g?	diffbandit.txt	/*diffbandit-g?*
+diffbandit-gf	diffbandit.txt	/*diffbandit-gf*
 diffbandit-git	diffbandit.txt	/*diffbandit-git*
 diffbandit-gzg	diffbandit.txt	/*diffbandit-gzg*
 diffbandit-gzp	diffbandit.txt	/*diffbandit-gzp*

@@ -443,6 +443,7 @@ Inside a diff view:
 | `[d` | Align both panes to the top of the documents |
 | `]d` | Align both panes to the bottom of the documents |
 | `]s` | Snap the other pane to the cursor line |
+| `gf` | Open the file in a new tab at the cursor line; a Git or jj review opens the working-tree file at the matching line (`navigation.open_file_key`, `navigation.open_file_cmd`) |
 | `C` | Open or focus the commit panel for the current Git file |
 | `gzp` | Show or hide the commit panel |
 | `<Space>` | Toggle stage for the active Git hunk (`actions.keys.toggle_stage`) |
@@ -519,6 +520,7 @@ and every other file switch, and focusing the panel puts the cursor on it.
 | `]c` / `[c` | Navigate hunks in the selected file preview |
 | `<Space>` | Toggle staged state for the selected file |
 | `a` | Open file actions for the selected file |
+| `gf` | Open the selected file in a new tab at the active hunk (the first, or the one `]c`/`[c` moved to) |
 | `cc` | Focus the commit message window |
 | `<Space>` in the commit message window | Toggle amend mode (`git.panel.keys.toggle_amend`; a key other than `<Space>` and the file stage key also works in the file list) |
 | `:w` in the commit message window | Commit staged changes |
@@ -662,6 +664,8 @@ require("diffbandit").setup({
     snap_key = "]s",
     close_key = "q",
     help_key = "g?",
+    open_file_key = "gf",
+    open_file_cmd = "tabedit",
   },
   vcs = {
     prefer = "auto", -- "auto" (jj in jj workspaces), "git", or "jj"

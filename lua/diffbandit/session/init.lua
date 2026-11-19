@@ -22,6 +22,7 @@ local diff_document = require("diffbandit.diff.document")
 local kitty = require("diffbandit.kitty")
 local winbar = require("diffbandit.util.winbar")
 local layout = require("diffbandit.util.layout")
+local open_file = require("diffbandit.session.open_file")
 
 local Session = {}
 Session.__index = Session
@@ -720,6 +721,18 @@ function Session:setup_keymaps()
         self:goto_document_edge("bottom")
       end, "Navigation", "Align both panes to the bottom")
     end
+    if navigation.open_file_key then
+      local open_key = navigation.open_file_key
+      map(buf, open_key, function()
+        -- The pane may be the file's own buffer, shown in other tabs too:
+        -- there the key keeps its usual meaning.
+        if vim.api.nvim_get_current_tabpage() ~= self.tabpage then
+          vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(open_key, true, false, true), "n", false)
+          return
+        end
+        self:open_file()
+      end, "Files", "Open the file in a new tab at the cursor line")
+    end
     if navigation.snap_key then
       map(buf, navigation.snap_key, function()
         self:snap_to_cursor()
@@ -1372,6 +1385,16 @@ function Session:snap_to_cursor()
   if focused_win ~= vim.api.nvim_get_current_win() then
     pcall(vim.api.nvim_set_current_win, focused_win)
   end
+end
+
+-- navigation.open_file_key: the file under the cursor in a tab of its own.
+function Session:open_file()
+  return open_file.open_at_cursor(self)
+end
+
+-- The same from the commit panel: at the active hunk, else the first one.
+function Session:open_file_at_hunk()
+  return open_file.open_at_hunk(self)
 end
 
 function Session:goto_document_edge(edge)

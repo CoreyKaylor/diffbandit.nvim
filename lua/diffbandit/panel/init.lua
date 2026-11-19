@@ -867,6 +867,34 @@ function M.open_file_actions(session)
   end)
 end
 
+-- navigation.open_file_key: open the selected file in a tab of its own, at
+-- the active hunk of the diff (the first hunk until ]c moves on). A file the
+-- diff is not showing yet is loaded first; a host without a diff (a merge, a
+-- standalone panel) opens the working-tree file at the top.
+function M.open_file(session)
+  local row = selected_row(session)
+  if not row or row.type ~= "file" then
+    nvim.notify_info("no file selected")
+    return false
+  end
+  if panel_api.has(session, "open_file_at_hunk") and entry_kind(row.entry) ~= "unmerged" then
+    if row.index ~= session.file_queue_index then
+      local ok, loaded = panel_api.goto_queue_file(session, row.index, "top", { preserve_focus = true })
+      if not (ok and loaded) then
+        return false
+      end
+    end
+    return session:open_file_at_hunk()
+  end
+  local root = (session.file_queue or {}).root
+  local path = root and (root .. "/" .. row.entry.path) or row.entry.path
+  if not (vim.uv or vim.loop).fs_stat(path) then
+    nvim.notify_info(tostring(row.entry.path) .. " is not in the working tree")
+    return false
+  end
+  return require("diffbandit.session.open_file").open(session, { path = path, line = 1 })
+end
+
 function M.render_nav(session, preferred_entry_index, opts)
   opts = opts or {}
   local panel = session.panel
@@ -1490,7 +1518,8 @@ function M.setup_keymaps(session)
 
   -- lhs = nil/false skips the map (unset config key or failed condition);
   -- when = false skips it explicitly.
-  local help_key = config_mod.section((session or {}).config, "navigation").help_key
+  local navigation_keys = config_mod.section((session or {}).config, "navigation")
+  local help_key = navigation_keys.help_key
   local show_help = function()
     M.show_key_help(session)
   end
@@ -1513,6 +1542,8 @@ function M.setup_keymaps(session)
     { buf = "nav", lhs = "k", fn = function() M.move(session, -1) end, section = "Files", desc = "Previous file (previews it)" },
     { buf = "nav", lhs = keys.focus_diff, fn = nav_focus_diff, section = "Files",
       desc = "Focus the diff of the selected file (toggle a folder in tree view)" },
+    { buf = "nav", lhs = navigation_keys.open_file_key, fn = function() M.open_file(session) end,
+      section = "Files", desc = "Open the selected file in a new tab at the active hunk" },
     { buf = "nav", lhs = keys.toggle_view, fn = function() M.toggle_view(session) end,
       section = "Files", desc = "Switch the file list between flat and tree views" },
     { buf = "nav", lhs = keys.toggle_dir, fn = function() M.toggle_dir(session, { parent = true }) end,
