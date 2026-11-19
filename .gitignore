@@ -81,4 +81,4 @@ tools/corpus/
 docs/demo/.frames/
 
 # Test dependencies (tests/deps.sh)
-deps/
+deps
