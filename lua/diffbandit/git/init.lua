@@ -131,6 +131,49 @@ end
 
 local is_absolute = document.is_absolute_path
 
+local fugitive = require("diffbandit.git.fugitive")
+
+local function work_tree_of_git_dir(git_dir)
+  local parent = git_dir:match("^(.*)/%.git/?$")
+  if parent then
+    return parent
+  end
+  -- A linked worktree's git dir names its work tree's .git file.
+  local fd = io.open(git_dir .. "/gitdir", "r")
+  if fd then
+    local dot_git = fd:read("*l")
+    fd:close()
+    if dot_git and dot_git ~= "" then
+      return (dot_git:gsub("/%.git/?$", ""))
+    end
+  end
+  -- Submodules and core.worktree: only git knows.
+  local output = vim.fn.systemlist({ "git", "--git-dir=" .. git_dir, "rev-parse", "--show-toplevel" })
+  if vim.v.shell_error == 0 and output[1] and output[1] ~= "" then
+    return output[1]
+  end
+  return nil
+end
+
+-- A buffer name that is a URL rather than a file. Returns nil for a plain path;
+-- otherwise { file, work_tree }, either of which may be nil. vim-fugitive names
+-- its buffers fugitive://<git dir>//<stage or commit>[/<path>], and its status
+-- buffer has no path. Other schemes (term://, oil://) say nothing about git.
+local function buffer_url(name)
+  if not name or not name:match("^%a[%w+.-]*://") then
+    return nil
+  end
+  local parsed = fugitive.parse_url(name)
+  if not parsed then
+    return {}
+  end
+  local work_tree = work_tree_of_git_dir(parsed.git_dir)
+  return {
+    work_tree = work_tree,
+    file = work_tree and parsed.path and (work_tree .. "/" .. parsed.path) or nil,
+  }
+end
+
 local function path_dir(path)
   if not path or path == "" then
     local uv = vim.uv or vim.loop
@@ -171,6 +214,10 @@ end
 -- A process spawn is most of the cost of opening a view, so the root comes
 -- from the filesystem when it can; git answers the unusual cases.
 function M.find_root(start)
+  local url = buffer_url(start)
+  if url then
+    start = url.work_tree
+  end
   local dir = path_dir(start)
   local discovered = discover_root(dir)
   if discovered then
@@ -185,15 +232,45 @@ end
 
 local function current_buffer_path()
   local name = vim.api.nvim_buf_get_name(0)
-  if name ~= "" then
-    return name
+  if name == "" then
+    return nil
   end
-  return nil
+  local url = buffer_url(name)
+  if url then
+    if url.file or not url.work_tree then
+      return url.file
+    end
+    -- fugitive's status buffer: the file under the cursor.
+    local target = fugitive.status_target()
+    return target and target.path and (url.work_tree .. "/" .. target.path) or nil
+  end
+  return name
+end
+
+function M.current_file()
+  return current_buffer_path()
+end
+
+-- Where to look for the repository: the current file, or the work tree of a
+-- buffer that belongs to one without being a file (fugitive's status).
+local function current_buffer_start()
+  local url = buffer_url(vim.api.nvim_buf_get_name(0))
+  if url then
+    return url.work_tree
+  end
+  return current_buffer_path()
 end
 
 local function relpath(root, path)
   if not path or path == "" then
     return nil
+  end
+  local url = buffer_url(path)
+  if url then
+    path = url.file
+    if not path then
+      return nil
+    end
   end
   local abs = realpath(path) or vim.fn.fnamemodify(path, ":p")
   local root_abs = realpath(root) or vim.fn.fnamemodify(root, ":p")
@@ -733,7 +810,7 @@ function M.queue(opts, config)
   local start = normalized.root
     or normalized.path
     or (normalized.scope == "current" and normalized.pathspecs and normalized.pathspecs[1])
-    or current_buffer_path()
+    or current_buffer_start()
     or uv.cwd()
   local root, root_err = M.find_root(start)
   if not root then
@@ -816,7 +893,7 @@ function M.root(opts)
   local uv = vim.uv or vim.loop
   local start = opts.root
     or opts.path
-    or current_buffer_path()
+    or current_buffer_start()
     or uv.cwd()
   return M.find_root(start)
 end
@@ -1074,6 +1151,29 @@ local function review_queue_opts(opts, review)
   next_opts.read_only = true
   next_opts.include_untracked = false
   next_opts.review = review
+  return next_opts
+end
+
+-- A queue's options with a comparison from fugitive.entry_target applied, or nil
+-- when DiffBandit has no way to show it: staged mode only compares against HEAD.
+function M.with_comparison(root, opts, comparison)
+  if comparison.mode == "staged" then
+    local head = git_output(root, { "rev-parse", "HEAD" })
+    if not head or vim.trim(head) ~= comparison.base then
+      return nil
+    end
+  end
+  local next_opts = vim.tbl_extend("force", {}, opts or {})
+  next_opts.mode = comparison.mode
+  next_opts.base = comparison.mode ~= "staged" and comparison.base or nil
+  next_opts.target = comparison.target
+  next_opts.merge_base = nil
+  next_opts.review = nil
+  next_opts.read_only = comparison.mode == "rev" or nil
+  next_opts.include_untracked = nil
+  if comparison.mode == "rev" then
+    next_opts.include_untracked = false
+  end
   return next_opts
 end
 

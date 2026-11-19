@@ -197,14 +197,9 @@ end, {
 })
 
 vim.api.nvim_create_user_command("DiffBanditGitCommit", function(opts)
-  local rev = opts.fargs[1]
-  if not rev or rev == "" then
-    nvim.notify_error("provide a revision", "DiffBanditGitCommit")
-    return
-  end
-  report(diffbandit.git_commit(rev))
+  report(diffbandit.git_commit(opts.fargs[1]))
 end, {
-  nargs = 1,
+  nargs = "?",
   desc = "Open a read-only DiffBandit review for a commit",
 })
 

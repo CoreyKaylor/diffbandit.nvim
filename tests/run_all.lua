@@ -17,7 +17,7 @@ local source = debug.getinfo(1, "S").source:gsub("^@", "")
 local root = vim.fn.fnamemodify(source, ":p:h:h")
 local nvim = vim.v.progpath
 
-if vim.fn.isdirectory(root .. "/deps/mini.test") ~= 1 then
+if vim.fn.isdirectory(root .. "/deps/mini.test") ~= 1 or vim.fn.isdirectory(root .. "/deps/vim-fugitive") ~= 1 then
   local res = vim.system({ root .. "/tests/deps.sh" }, { text = true }):wait()
   if res.code ~= 0 then
     io.stderr:write("tests/deps.sh failed:\n" .. (res.stderr or "") .. "\n")
