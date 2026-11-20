@@ -1100,6 +1100,27 @@ function M.preview_selected(session)
   end, math.max(0, delay))
 end
 
+-- The file list's focus_diff key: show the selected file, then focus its diff.
+-- With preview_on_cursor the file is usually loaded already; without it this
+-- is the only thing that loads it. Loading can hand over to a new host (a
+-- standalone panel becomes a diff, a diff becomes a merge), possibly in a new
+-- tab, so the diff is focused on whichever host owns the current tab after.
+function M.open_selected(session)
+  local row = selected_row(session)
+  if row and row.type == "file" and row.index ~= session.file_queue_index then
+    if session.panel then
+      -- Drop any debounced preview still waiting to fire.
+      session.panel.preview_token = (session.panel.preview_token or 0) + 1
+    end
+    preview_selected(session)
+    local host = state.sessions[vim.api.nvim_get_current_tabpage()]
+    if host and not host.disposed then
+      session = host
+    end
+  end
+  M.focus_diff(session)
+end
+
 function M.move(session, delta)
   local panel = session.panel
   if not panel or not panel.rows then
@@ -1518,7 +1539,7 @@ function M.setup_keymaps(session)
   end
   local nav_focus_diff = function()
     if not M.toggle_dir(session) then
-      M.focus_diff(session)
+      M.open_selected(session)
     end
   end
   local commit = function()

@@ -113,6 +113,51 @@ T["commit panel"] = function()
   state.diff_contains(repo, "worktree", "alpha.txt", "alpha changed", "panel commit should leave unstaged alpha change")
 end
 
+-- Issue #39: with preview_on_cursor off, j/k only move the cursor and <CR>
+-- loads the selected file and focuses its diff.
+T["enter opens the selected file without preview on cursor"] = function()
+  local dir = child_mod.case_dir("git-panel-no-preview")
+  local repo = state.init_repo(dir .. "/panel-no-preview-repo")
+  state.write(repo .. "/alpha.txt", { "alpha base" })
+  state.write(repo .. "/beta.txt", { "beta base" })
+  state.git(repo, { "add", "alpha.txt", "beta.txt" })
+  state.git(repo, { "commit", "-m", "baseline" })
+  state.write(repo .. "/alpha.txt", { "alpha changed" })
+  state.write(repo .. "/beta.txt", { "beta changed" })
+
+  child:start({ lines = 18, cwd = repo })
+  child:lua("require('diffbandit').setup({ git = { panel = { preview_on_cursor = false } } })")
+  child:cmd("DiffBanditCommitPanel"):settle()
+  child:keys("j")
+  child:settle()
+  local moved = panel_state(dir, "no-preview-after-j")
+  child:keys("<CR>")
+  child:settle()
+  local opened = panel_state(dir, "no-preview-after-enter")
+  child:lua([[
+    local session = require("diffbandit.state").sessions[vim.api.nvim_get_current_tabpage()]
+    require("diffbandit.panel").focus_nav(session)
+  ]])
+  child:keys("j")
+  child:settle()
+  local moved_again = panel_state(dir, "no-preview-after-second-j")
+  child:keys("<CR>")
+  child:settle()
+  local opened_again = panel_state(dir, "no-preview-after-second-enter")
+  child:stop()
+
+  contains(moved, "queue_index=0", "j should not preview the file")
+  contains(moved, "selected_path=alpha.txt", "j selects alpha")
+  contains(opened, "surface=session", "<CR> loads the selected file into a diff")
+  contains(opened, "queue_index=1", "<CR> opens alpha")
+  contains(opened, "focus=right", "<CR> focuses the diff")
+  contains(moved_again, "focus=panel", "back in the file list")
+  contains(moved_again, "queue_index=1", "j still does not preview")
+  contains(moved_again, "selected_path=beta.txt", "j selects beta")
+  contains(opened_again, "queue_index=2", "<CR> opens beta")
+  contains(opened_again, "focus=right", "<CR> focuses beta's diff")
+end
+
 T["panel file actions"] = function()
   local dir = child_mod.case_dir("git-panel-file-actions")
   local repo = state.init_repo(dir .. "/panel-file-actions-repo")
